@@ -38,6 +38,8 @@ class BacktestResult:
     buy_hold_equity: pd.Series
     exposure: pd.Series
     open_position: bool
+    pending_action: str | None
+    pending_reason: str | None
     metrics: dict[str, Any]
 
 
@@ -133,11 +135,7 @@ def run_backtest(
                 pending_exit_reason = "recovery"
             elif held_sessions >= max_holding:
                 pending_exit_reason = "max_holding"
-        elif (
-            signal is not None
-            and signal.date in entry_dates
-            and index + 1 < len(clean)
-        ):
+        elif signal is not None and signal.date in entry_dates:
             pending_entry = True
 
         equity_values.append(cash if entry_index is None else shares * float(row["close"]))
@@ -148,6 +146,15 @@ def run_backtest(
     buy_hold_equity.name = "buy_hold_equity"
     exposure = pd.Series(exposure_values, index=clean.index, name="exposure")
     metrics = calculate_metrics(equity, buy_hold_equity, trades, exposure, clean)
+    pending_action: str | None = None
+    pending_reason: str | None = None
+    if pending_exit_reason is not None and entry_index is not None:
+        pending_action = "exit_next_open"
+        pending_reason = pending_exit_reason
+    elif pending_entry and entry_index is None:
+        pending_action = "enter_next_open"
+        pending_reason = "extreme_fear_entry"
+
     return BacktestResult(
         ticker=ticker,
         cost_bps=one_way_cost_bps,
@@ -156,6 +163,8 @@ def run_backtest(
         buy_hold_equity=buy_hold_equity,
         exposure=exposure,
         open_position=entry_index is not None,
+        pending_action=pending_action,
+        pending_reason=pending_reason,
         metrics=metrics,
     )
 
@@ -219,6 +228,8 @@ def result_to_public(result: BacktestResult) -> dict[str, Any]:
         "ticker": result.ticker,
         "oneWayCostBps": result.cost_bps,
         "openPosition": result.open_position,
+        "pendingAction": result.pending_action,
+        "pendingReason": result.pending_reason,
         "metrics": _public_value(result.metrics),
         "trades": [
             _public_value({

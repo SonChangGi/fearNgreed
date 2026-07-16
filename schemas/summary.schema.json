@@ -3,10 +3,12 @@
   "$id": "https://sonchanggi.github.io/fearNgreed/schemas/summary.schema.json",
   "title": "Fear & Greed quant research summary",
   "type": "object",
+  "additionalProperties": false,
   "required": [
     "schemaVersion",
     "contract",
     "projectId",
+    "methodologyVersion",
     "generatedAt",
     "dataAsOf",
     "status",
@@ -21,35 +23,266 @@
     "schemaVersion": {"const": 1},
     "contract": {"const": "quant-research-summary"},
     "projectId": {"const": "fearngreed"},
-    "methodologyVersion": {"type": "string", "minLength": 1},
+    "methodologyVersion": {"const": "fear-flow-v1"},
     "generatedAt": {"type": "string", "format": "date-time"},
     "dataAsOf": {"type": "string", "format": "date"},
     "status": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["state", "label", "cadence", "expectedFreshnessDays", "degradedReasons"],
       "properties": {
         "state": {"enum": ["ok", "degraded", "stale", "unavailable"]},
-        "label": {"type": "string"},
-        "cadence": {"type": "string"},
-        "expectedFreshnessDays": {"type": "integer", "minimum": 0},
-        "degradedReasons": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+        "label": {"type": "string", "minLength": 1},
+        "cadence": {"const": "weekdays-after-20:30-KST"},
+        "expectedFreshnessDays": {"type": "integer", "minimum": 0, "maximum": 30},
+        "degradedReasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
       }
     },
     "coverage": {
       "type": "object",
-      "required": ["historyStart", "historyEnd", "observationCount", "eventCount", "tradeCount", "sourceCompleteness"]
+      "additionalProperties": false,
+      "required": [
+        "historyStart",
+        "historyEnd",
+        "observationCount",
+        "eventCount",
+        "tradeCount",
+        "sourceCompleteness"
+      ],
+      "properties": {
+        "historyStart": {"type": "string", "format": "date"},
+        "historyEnd": {"type": "string", "format": "date"},
+        "observationCount": {"type": "integer", "minimum": 0},
+        "eventCount": {"type": "integer", "minimum": 0},
+        "tradeCount": {"type": "integer", "minimum": 0},
+        "sourceCompleteness": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ]
+        }
+      }
     },
     "primaryEntities": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "type": "object",
-        "required": ["id", "sentimentPercentile", "residualZ", "rollingR2", "return1d", "flowShare", "disparity50", "position", "primaryProxy"]
+      "maxItems": 1,
+      "items": {"$ref": "#/$defs/primaryEntity"}
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "automation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lastAttemptAt", "lastSuccessAt", "state"],
+      "properties": {
+        "lastAttemptAt": {"type": "string", "format": "date-time"},
+        "lastSuccessAt": {
+          "anyOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "null"}
+          ]
+        },
+        "state": {"enum": ["ok", "degraded", "stale", "unavailable"]}
       }
     },
-    "limitations": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-    "sources": {"type": "array", "minItems": 1, "items": {"type": "object"}},
-    "automation": {"type": "object"},
-    "payload": {"type": "object"}
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dashboardUrl", "historyUrl", "automationStatusUrl"],
+      "properties": {
+        "dashboardUrl": {"type": "string", "minLength": 1},
+        "historyUrl": {"type": "string", "minLength": 1},
+        "automationStatusUrl": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "$defs": {
+    "nullableNumber": {
+      "anyOf": [
+        {"type": "number"},
+        {"type": "null"}
+      ]
+    },
+    "nullablePercent": {
+      "anyOf": [
+        {"type": "number", "minimum": 0, "maximum": 100},
+        {"type": "null"}
+      ]
+    },
+    "nullableRatio": {
+      "anyOf": [
+        {"type": "number", "minimum": 0, "maximum": 1},
+        {"type": "null"}
+      ]
+    },
+    "primaryEntity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "region",
+        "themes",
+        "signalState",
+        "sentimentPercentile",
+        "residualZ",
+        "rollingR2",
+        "return1d",
+        "flowShare",
+        "rawFlowTrillion",
+        "disparity50",
+        "mdd252",
+        "modelQuality",
+        "modelConfidence",
+        "models",
+        "position",
+        "pendingAction",
+        "pendingReason",
+        "primaryProxy",
+        "sourceMode"
+      ],
+      "properties": {
+        "id": {"const": "KOSPI"},
+        "name": {"type": "string", "minLength": 1},
+        "region": {"const": "Korea"},
+        "themes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "signalState": {
+          "enum": ["extreme_fear", "fear", "neutral", "greed", "extreme_greed", "unavailable"]
+        },
+        "sentimentPercentile": {"$ref": "#/$defs/nullablePercent"},
+        "residualZ": {"$ref": "#/$defs/nullableNumber"},
+        "rollingR2": {"$ref": "#/$defs/nullableRatio"},
+        "return1d": {
+          "anyOf": [
+            {"type": "number", "minimum": -1},
+            {"type": "null"}
+          ]
+        },
+        "flowShare": {"$ref": "#/$defs/nullableNumber"},
+        "rawFlowTrillion": {"$ref": "#/$defs/nullableNumber"},
+        "disparity50": {
+          "anyOf": [
+            {"type": "number", "exclusiveMinimum": 0},
+            {"type": "null"}
+          ]
+        },
+        "mdd252": {
+          "anyOf": [
+            {"type": "number", "minimum": -1, "maximum": 0},
+            {"type": "null"}
+          ]
+        },
+        "modelQuality": {
+          "enum": [
+            "ok",
+            "low_model_fit",
+            "duplicate_dates",
+            "insufficient_history",
+            "invalid_regression",
+            "zero_mad",
+            "missing"
+          ]
+        },
+        "modelConfidence": {
+          "enum": ["high", "mixed", "scaled_only", "low_model_fit", "unavailable"]
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scaled", "raw"],
+          "properties": {
+            "scaled": {"$ref": "#/$defs/modelSnapshot"},
+            "raw": {"$ref": "#/$defs/modelSnapshot"}
+          }
+        },
+        "position": {"enum": ["cash", "long"]},
+        "pendingAction": {
+          "anyOf": [
+            {"enum": ["enter_next_open", "exit_next_open"]},
+            {"type": "null"}
+          ]
+        },
+        "pendingReason": {
+          "anyOf": [
+            {"enum": ["extreme_fear_entry", "recovery", "max_holding"]},
+            {"type": "null"}
+          ]
+        },
+        "primaryProxy": {"enum": ["226490"]},
+        "sourceMode": {"enum": ["krx_open_api", "authenticated_pykrx_fallback"]}
+      }
+    },
+    "modelSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "state",
+        "percentile",
+        "residual",
+        "residualZ",
+        "alpha",
+        "beta",
+        "rollingR2",
+        "trainingCount",
+        "quality",
+        "tradeEligible"
+      ],
+      "properties": {
+        "model": {"enum": ["scaled", "raw"]},
+        "state": {
+          "enum": ["extreme_fear", "fear", "neutral", "greed", "extreme_greed", "unavailable"]
+        },
+        "percentile": {"$ref": "#/$defs/nullablePercent"},
+        "residual": {"$ref": "#/$defs/nullableNumber"},
+        "residualZ": {"$ref": "#/$defs/nullableNumber"},
+        "alpha": {"$ref": "#/$defs/nullableNumber"},
+        "beta": {"$ref": "#/$defs/nullableNumber"},
+        "rollingR2": {"$ref": "#/$defs/nullableRatio"},
+        "trainingCount": {"type": "integer", "minimum": 0, "maximum": 252},
+        "quality": {
+          "enum": [
+            "ok",
+            "low_model_fit",
+            "duplicate_dates",
+            "insufficient_history",
+            "invalid_regression",
+            "zero_mad",
+            "missing"
+          ]
+        },
+        "tradeEligible": {"type": "boolean"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "url"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "url": {"type": "string", "format": "uri"},
+        "mode": {"enum": ["krx_open_api", "authenticated_pykrx_fallback"]}
+      }
+    }
   }
 }

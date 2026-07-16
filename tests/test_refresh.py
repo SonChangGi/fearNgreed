@@ -5,7 +5,25 @@ from datetime import date
 
 import pandas as pd
 
-from fearngreed.refresh import _load_incremental_seed, _merge_frames
+from fearngreed.refresh import _fetch_open_stocks, _load_incremental_seed, _merge_frames
+
+
+class FakeStockRow:
+    def __init__(self, ticker: str, close: float):
+        self.ticker = ticker
+        self.open = close - 1
+        self.high = close + 1
+        self.low = close - 2
+        self.close = close
+        self.trading_volume = 100.0
+        self.trading_value = 1_000.0
+
+
+class FakeOpenStockClient:
+    def get_stocks(self, day, tickers):
+        if day.weekday() >= 5:
+            return {}
+        return {ticker: FakeStockRow(ticker, 100.0 + index) for index, ticker in enumerate(tickers)}
 
 
 def test_incremental_seed_freezes_everything_before_latest_five_sessions(tmp_path):
@@ -63,3 +81,13 @@ def test_merge_frames_replaces_mutable_dates_without_touching_older_rows():
     assert merged.loc["2026-07-13", "close"] == 100.0
     assert merged.loc["2026-07-14", "close"] == 201.0
     assert merged.loc["2026-07-15", "close"] == 202.0
+
+
+def test_open_api_stock_crosscheck_frames_cover_both_approved_tickers():
+    result = _fetch_open_stocks(
+        FakeOpenStockClient(), date(2026, 7, 13), date(2026, 7, 15)
+    )
+
+    assert set(result) == {"000660", "005930"}
+    assert result["000660"].index[-1] == pd.Timestamp("2026-07-15")
+    assert result["005930"].loc["2026-07-15", "close"] == 101.0

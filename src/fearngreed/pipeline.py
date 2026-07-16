@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ from .quality import compare_latest_close
 
 METHODOLOGY_VERSION = "fear-flow-v1"
 PROXY_TICKERS = {"226490": "226490.KS", "069500": "069500.KS"}
+STOCK_TICKERS = {"000660": "000660.KS", "005930": "005930.KS"}
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class PipelineInputs:
     generated_at: datetime
     core_source: str
     degraded_reasons: tuple[str, ...] = ()
+    krx_stocks: dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -48,7 +50,12 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         raise ValueError(f"core input quality failed: {','.join(quality.issues)}")
     degraded = list(dict.fromkeys([*inputs.degraded_reasons, *quality.issues]))
     crosschecks = _crosschecks(inputs, frame)
+    if crosschecks["kospi"]["state"] != "ok":
+        degraded.append(f"price_crosscheck_kospi_{crosschecks['kospi']['state']}")
     for ticker, check in crosschecks["etf"].items():
+        if check["state"] != "ok":
+            degraded.append(f"price_crosscheck_{ticker}_{check['state']}")
+    for ticker, check in crosschecks["stock"].items():
         if check["state"] != "ok":
             degraded.append(f"price_crosscheck_{ticker}_{check['state']}")
 
@@ -78,18 +85,13 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
     all_events = extreme_entries(scaled_signals)
     clean_events = non_overlapping(all_events, horizon=20)
     event_section = _event_section(frame, all_events, clean_events, inputs.adjusted, crosschecks)
-    diagnostics = _semiconductor_diagnostics(frame, inputs.adjusted)
+    diagnostics = _semiconductor_diagnostics(frame, inputs.adjusted, crosschecks["stock"])
     latest = frame.iloc[-1]
     latest_signal = scaled_signals[-1]
     base_result = backtests.get("226490", {}).get("base_10bp")
     position = "long" if base_result and base_result.open_position else "cash"
-    pending_action = (
-        "enter_next_open"
-        if latest_signal.trade_eligible
-        and latest_signal.state == "extreme_fear"
-        and position == "cash"
-        else None
-    )
+    pending_action = base_result.pending_action if base_result else None
+    pending_reason = base_result.pending_reason if base_result else None
     status_state = "degraded" if degraded else "ok"
     generated_at = inputs.generated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
     data_as_of = frame.index[-1].date().isoformat()
@@ -107,6 +109,7 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         trade_count=len(base_result.trades) if base_result else 0,
         position=position,
         pending_action=pending_action,
+        pending_reason=pending_reason,
         core_source=inputs.core_source,
     )
     dashboard = {
@@ -117,11 +120,18 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         "status": {"state": status_state, "degradedReasons": degraded},
         "current": summary["primaryEntities"][0],
         "scatter": _scatter(frame),
+        "scatterMeta": _scatter_meta(frame),
+        "models": {
+            "scaled": _model_snapshot(latest, "scaled"),
+            "raw": _model_snapshot(latest, "raw"),
+        },
         "regression": {
             "alpha": public_number(latest["scaled_alpha"]),
             "beta": public_number(latest["scaled_beta"]),
             "window": 252,
             "trainingCount": int(latest["scaled_training_count"]),
+            "scaled": _model_snapshot(latest, "scaled"),
+            "raw": _model_snapshot(latest, "raw"),
         },
         "events": event_section,
         "backtests": _public_backtests(backtests, common_backtests),
@@ -135,6 +145,10 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         "generatedAt": generated_at,
         "dataAsOf": data_as_of,
         "fixture": False,
+        "models": {
+            "scaled": _model_snapshot(latest, "scaled"),
+            "raw": _model_snapshot(latest, "raw"),
+        },
         "series": history_rows,
     }
     automation_status = {
@@ -163,6 +177,7 @@ def _summary(
     trade_count: int,
     position: str,
     pending_action: str | None,
+    pending_reason: str | None,
     core_source: str,
 ) -> dict[str, Any]:
     state_labels = {
@@ -215,8 +230,13 @@ def _summary(
                 "modelConfidence": latest["model_confidence"],
                 "position": position,
                 "pendingAction": pending_action,
+                "pendingReason": pending_reason,
                 "primaryProxy": "226490",
                 "sourceMode": core_source,
+                "models": {
+                    "scaled": _model_snapshot(latest, "scaled"),
+                    "raw": _model_snapshot(latest, "raw"),
+                },
             }
         ],
         "limitations": [
@@ -258,7 +278,9 @@ def _summary(
 def _crosschecks(inputs: PipelineInputs, frame: pd.DataFrame) -> dict[str, Any]:
     kospi_yahoo = inputs.adjusted.get("^KS11")
     kospi_check = (
-        compare_latest_close(frame["close"], kospi_yahoo["close"])
+        compare_latest_close(
+            frame["close"], kospi_yahoo["close"], expected_date=frame.index[-1]
+        )
         if kospi_yahoo is not None
         else {"state": "unavailable", "date": None, "relativeDifference": None}
     )
@@ -267,11 +289,24 @@ def _crosschecks(inputs: PipelineInputs, frame: pd.DataFrame) -> dict[str, Any]:
         official = inputs.krx_etfs.get(ticker)
         secondary = inputs.adjusted.get(yahoo_ticker)
         etf_checks[ticker] = (
-            compare_latest_close(official["close"], secondary["close"])
+            compare_latest_close(
+                official["close"], secondary["close"], expected_date=frame.index[-1]
+            )
             if official is not None and secondary is not None
             else {"state": "unavailable", "date": None, "relativeDifference": None}
         )
-    return {"kospi": kospi_check, "etf": etf_checks}
+    stock_checks: dict[str, Any] = {}
+    for ticker, yahoo_ticker in STOCK_TICKERS.items():
+        official = inputs.krx_stocks.get(ticker)
+        secondary = inputs.adjusted.get(yahoo_ticker)
+        stock_checks[ticker] = (
+            compare_latest_close(
+                official["close"], secondary["close"], expected_date=frame.index[-1]
+            )
+            if official is not None and secondary is not None
+            else {"state": "unavailable", "date": None, "relativeDifference": None}
+        )
+    return {"kospi": kospi_check, "etf": etf_checks, "stock": stock_checks}
 
 
 def _common_period_backtests(
@@ -344,14 +379,21 @@ def _public_backtests(
 def _compact_result(result: BacktestResult, *, include_equity: bool) -> dict[str, Any]:
     public = result_to_public(result)
     if include_equity:
-        public["equity"] = public["equity"][::5]
+        public["equity"] = _sample_with_last(public["equity"], step=5)
     else:
         public.pop("equity", None)
     return public
 
 
 def _scatter(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    recent = frame.tail(252)
+    complete = frame.dropna(subset=["return_1d", "flow_share"])
+    recent = complete.tail(253)
+    if recent.empty:
+        return []
+    current_date = recent.index[-1]
+    latest = recent.iloc[-1]
+    alpha = latest["scaled_alpha"]
+    beta = latest["scaled_beta"]
     rows: list[dict[str, Any]] = []
     for timestamp, row in recent.iterrows():
         if pd.isna(row["return_1d"]) or pd.isna(row["flow_share"]):
@@ -361,16 +403,29 @@ def _scatter(frame: pd.DataFrame) -> list[dict[str, Any]]:
                 "date": timestamp.date().isoformat(),
                 "return1d": public_number(row["return_1d"]),
                 "flowShare": public_number(row["flow_share"]),
-                "predicted": public_number(
-                    row["scaled_alpha"] + row["scaled_beta"] * row["return_1d"]
-                )
-                if pd.notna(row["scaled_alpha"])
+                "predicted": public_number(alpha + beta * row["return_1d"])
+                if pd.notna(alpha) and pd.notna(beta)
                 else None,
                 "percentile": public_number(row["scaled_percentile"]),
                 "state": row["scaled_state"],
+                "role": "current" if timestamp == current_date else "training",
             }
         )
     return rows
+
+
+def _scatter_meta(frame: pd.DataFrame) -> dict[str, Any]:
+    points = _scatter(frame)
+    training_count = sum(point["role"] == "training" for point in points)
+    current_count = sum(point["role"] == "current" for point in points)
+    return {
+        "model": "scaled",
+        "window": 252,
+        "trainingCount": training_count,
+        "currentCount": current_count,
+        "pointCount": len(points),
+        "roles": {"training": "rolling_window", "current": "out_of_sample_observation"},
+    }
 
 
 def _history_rows(
@@ -410,21 +465,42 @@ def _history_rows(
 
 
 def _semiconductor_diagnostics(
-    frame: pd.DataFrame, adjusted: dict[str, pd.DataFrame]
+    frame: pd.DataFrame,
+    adjusted: dict[str, pd.DataFrame],
+    stock_crosschecks: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     required = ("MU", "000660.KS", "005930.KS", "KRW=X")
     if not all(ticker in adjusted for ticker in required):
         return {"status": "unavailable", "reason": "optional_prices_missing"}
+    crosschecks = stock_crosschecks or {}
+    failed_crosschecks = [
+        ticker for ticker in STOCK_TICKERS if crosschecks.get(ticker, {}).get("state") != "ok"
+    ]
+    if failed_crosschecks:
+        return {
+            "status": "unavailable",
+            "reason": "official_stock_crosscheck_failed",
+            "failedTickers": failed_crosschecks,
+        }
     aligned = align_us_before_krx(frame.index, adjusted["MU"]["close"], adjusted["KRW=X"]["close"])
     aligned["hynix"] = adjusted["000660.KS"]["close"].reindex(frame.index)
     aligned["samsung"] = adjusted["005930.KS"]["close"].reindex(frame.index)
     aligned = aligned.dropna().tail(756)
     if aligned.empty:
         return {"status": "unavailable", "reason": "no_aligned_sessions"}
-    for field in ("mu_close_krw", "hynix", "samsung"):
-        aligned[f"{field}_indexed"] = aligned[field] / aligned[field].iloc[0] * 100
-        aligned[f"{field}_mdd252"] = drawdown(aligned[field])
-    sampled = aligned.iloc[::5]
+    for price_field in ("mu_close_krw", "hynix", "samsung"):
+        aligned[f"{price_field}_indexed"] = (
+            aligned[price_field] / aligned[price_field].iloc[0] * 100
+        )
+        aligned[f"{price_field}_mdd252"] = drawdown(aligned[price_field])
+    aligned["mu_hynix_ratio"] = aligned["mu_close_krw"] / aligned["hynix"]
+    aligned["mu_hynix_ratio_indexed"] = (
+        aligned["mu_hynix_ratio"] / aligned["mu_hynix_ratio"].iloc[0] * 100
+    )
+    aligned["mu_hynix_relative_spread"] = (
+        aligned["mu_close_krw_indexed"] - aligned["hynix_indexed"]
+    )
+    sampled = _sample_frame_with_last(aligned, step=5)
     return {
         "status": "ok",
         "alignment": "last_us_and_fx_session_strictly_before_krx_date",
@@ -433,6 +509,13 @@ def _semiconductor_diagnostics(
             "muMdd252": public_number(aligned["mu_close_krw_mdd252"].iloc[-1], digits=6),
             "hynixMdd252": public_number(aligned["hynix_mdd252"].iloc[-1], digits=6),
             "samsungMdd252": public_number(aligned["samsung_mdd252"].iloc[-1], digits=6),
+            "muHynixRatio": public_number(aligned["mu_hynix_ratio"].iloc[-1], digits=6),
+            "muHynixRatioIndexed": public_number(
+                aligned["mu_hynix_ratio_indexed"].iloc[-1], digits=2
+            ),
+            "muHynixRelativeSpread": public_number(
+                aligned["mu_hynix_relative_spread"].iloc[-1], digits=2
+            ),
         },
         "series": [
             {
@@ -440,10 +523,51 @@ def _semiconductor_diagnostics(
                 "muKrwIndexed": public_number(row["mu_close_krw_indexed"], digits=1),
                 "hynixIndexed": public_number(row["hynix_indexed"], digits=1),
                 "samsungIndexed": public_number(row["samsung_indexed"], digits=1),
+                "muHynixRatio": public_number(row["mu_hynix_ratio"], digits=6),
+                "muHynixRatioIndexed": public_number(
+                    row["mu_hynix_ratio_indexed"], digits=2
+                ),
+                "muHynixRelativeSpread": public_number(
+                    row["mu_hynix_relative_spread"], digits=2
+                ),
             }
             for timestamp, row in sampled.iterrows()
         ],
     }
+
+
+def _model_snapshot(row: pd.Series, prefix: str) -> dict[str, Any]:
+    return {
+        "model": prefix,
+        "state": row[f"{prefix}_state"],
+        "percentile": public_number(row[f"{prefix}_percentile"]),
+        "residual": public_number(row[f"{prefix}_residual"]),
+        "residualZ": public_number(row[f"{prefix}_residual_z"]),
+        "alpha": public_number(row[f"{prefix}_alpha"]),
+        "beta": public_number(row[f"{prefix}_beta"]),
+        "rollingR2": public_number(row[f"{prefix}_rolling_r2"]),
+        "trainingCount": int(row[f"{prefix}_training_count"]),
+        "quality": row[f"{prefix}_quality"],
+        "tradeEligible": bool(row[f"{prefix}_trade_eligible"]),
+    }
+
+
+def _sample_with_last(rows: list[dict[str, Any]], *, step: int) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    sampled = rows[::step]
+    if sampled[-1] != rows[-1]:
+        sampled.append(rows[-1])
+    return sampled
+
+
+def _sample_frame_with_last(frame: pd.DataFrame, *, step: int) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    positions = list(range(0, len(frame), step))
+    if positions[-1] != len(frame) - 1:
+        positions.append(len(frame) - 1)
+    return frame.iloc[positions]
 
 
 def public_number(value: Any, digits: int = 10) -> float | None:
