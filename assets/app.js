@@ -7,6 +7,17 @@ const labels = {
   enter_next_open: "다음 거래일 시가 진입", exit_next_open: "다음 거래일 시가 청산", extreme_fear_entry: "극단 공포 최초 진입", hold: "보유 유지"
 };
 
+const qualityLabels = {
+  ok: "정상",
+  degraded: "주의",
+  stale: "갱신 지연",
+  unavailable: "산출 불가"
+};
+
+function qualityLabel(value) {
+  return qualityLabels[value] || value || "미확인";
+}
+
 const fmt = {
   pct: (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : `${(Number(value) * 100).toFixed(digits)}%`,
   signedPct: (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : `${Number(value) >= 0 ? "+" : ""}${(Number(value) * 100).toFixed(digits)}%`,
@@ -90,7 +101,7 @@ function regressionPayload(kind = store.model) {
 }
 
 function modelName(kind = store.model) {
-  return kind === "raw" ? "원문 충실 raw-flow" : "규모 보정";
+  return kind === "raw" ? "원시 수급 비교" : "규모 보정";
 }
 
 function pendingActionText(base) {
@@ -109,9 +120,9 @@ function renderHeader() {
   const state = stateFromValue(model);
   const status = effectiveStatus(summary);
   const badge = $("#status-badge");
-  badge.textContent = status === "stale" ? "stale · 갱신 지연" : (summary.status.label || summary.status.state);
+  badge.textContent = status === "stale" ? "갱신 지연" : (summary.status.label || qualityLabel(summary.status.state));
   badge.className = `badge ${status}`;
-  $("#confidence-badge").textContent = `${modelName()} · ${model?.quality || base.modelQuality || "미확인"}`;
+  $("#confidence-badge").textContent = `${modelName()} · ${qualityLabel(model?.quality || base.modelQuality)}`;
   $("#state").textContent = labels[state] || state;
   $("#asof").textContent = `기준일 ${fmt.date(summary.dataAsOf)}`;
   const reasons = summary.status.degradedReasons || [];
@@ -136,7 +147,7 @@ function renderHeader() {
     `<span><strong>데이터:</strong> ${esc(summary.dataAsOf)}</span>`,
     `<span><strong>선택 모형:</strong> ${esc(modelName())}</span>`,
     `<span><strong>β:</strong> ${esc(fmt.score(beta, 4))}</span>`,
-    `<span><strong>모형 품질:</strong> ${esc(model?.quality || base.modelQuality || "—")}</span>`,
+    `<span><strong>모형 품질:</strong> ${esc(qualityLabel(model?.quality || base.modelQuality))}</span>`,
     `<span><strong>공급 경로:</strong> ${esc(base.sourceMode || "—")}</span>`,
     `<span><strong>관측치:</strong> ${esc(fmt.compact(summary.coverage.observationCount))}</span>`,
     `<span><strong>비중첩 사건:</strong> ${esc(summary.coverage.eventCount)}</span>`,
@@ -221,14 +232,18 @@ function attachChartNavigation(chart, items, formatter) {
     if (valid.length) selectIndex(chart._chartIndex);
     else showTooltip(chart, chart.getAttribute("aria-label") || "차트");
   };
-  chart.onpointermove = (event) => {
+  const selectPointer = (event) => {
     if (!valid.length) return;
     const box = chart.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (event.clientX - box.left + chart.scrollLeft) / Math.max(1, chart.scrollWidth)));
     selectIndex(Math.round(ratio * (valid.length - 1)), { x: event.clientX, y: event.clientY });
   };
+  chart.onpointermove = selectPointer;
   chart.onpointerdown = (event) => {
-    if (event.pointerType !== "mouse") chart.focus({ preventScroll: true });
+    if (event.pointerType !== "mouse") {
+      chart.focus({ preventScroll: true });
+      selectPointer(event);
+    }
   };
   chart.onblur = () => { $("#tooltip").hidden = true; chart.classList.remove("is-exploring"); };
   chart.onmouseleave = () => {
@@ -247,6 +262,17 @@ function attachChartNavigation(chart, items, formatter) {
     else next += 1;
     selectIndex(next);
   };
+  let latestAligned = false;
+  const alignLatest = () => {
+    if (latestAligned || chart.clientWidth <= 0 || chart.scrollWidth <= chart.clientWidth) return;
+    chart.scrollLeft = chart.scrollWidth - chart.clientWidth;
+    latestAligned = true;
+  };
+  requestAnimationFrame(alignLatest);
+  if (typeof ResizeObserver !== "undefined") {
+    const observer = new ResizeObserver(alignLatest);
+    observer.observe(chart);
+  }
 }
 
 function sortableValue(text) {
