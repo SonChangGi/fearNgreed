@@ -34,6 +34,7 @@ jobs:
           node-version: 22
       - run: uv sync --locked
       - name: Refresh derived data
+        id: refresh
         shell: bash
         env:
           BACKFILL_START_DATE: ${{ inputs.backfill_start_date }}
@@ -43,7 +44,30 @@ jobs:
             [[ "$BACKFILL_START_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
             args+=(--backfill-start-date "$BACKFILL_START_DATE")
           fi
+          set +e
           uv run --frozen python -m fearngreed.refresh "${args[@]}"
+          refresh_status=$?
+          set -e
+          if [[ $refresh_status -eq 0 ]]; then
+            echo "outcome=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "outcome=failure" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Enforce failed-refresh mutation boundary
+        if: steps.refresh.outputs.outcome == 'failure'
+        shell: bash
+        run: |
+          unexpected=0
+          while IFS= read -r path; do
+            case "$path" in
+              data/summary.json|data/automation-status.json) ;;
+              *)
+                echo "Unexpected failed-refresh mutation: $path"
+                unexpected=1
+                ;;
+            esac
+          done < <(git diff --name-only -- data)
+          [[ $unexpected -eq 0 ]]
       - run: uv run --frozen pytest
       - run: uv run --frozen ruff check .
       - run: npm test
@@ -58,7 +82,18 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data
+          if [[ "${{ steps.refresh.outputs.outcome }}" == "failure" ]]; then
+            git add data/summary.json data/automation-status.json
+            commit_message="data: publish degraded refresh status"
+          else
+            git add data
+            commit_message="data: refresh fear and greed derivatives"
+          fi
           git diff --cached --check
-          git commit -m "data: refresh fear and greed derivatives"
+          git commit -m "$commit_message"
           git push
+      - name: Report provider refresh failure
+        if: steps.refresh.outputs.outcome == 'failure'
+        run: |
+          echo "The last known-good market outputs were preserved and degraded status was published."
+          exit 1

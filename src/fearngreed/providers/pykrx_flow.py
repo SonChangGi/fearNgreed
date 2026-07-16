@@ -47,6 +47,26 @@ def fetch_etf_prices(ticker: str, start: date, end: date) -> pd.DataFrame:
     )
 
 
+def fetch_stock_prices(ticker: str, start: date, end: date) -> pd.DataFrame:
+    """Fetch official KRX stock OHLCV for recent-price source crosschecks."""
+    return _authenticated_frame(
+        "stock",
+        start,
+        end,
+        ticker=ticker,
+        required_columns=["시가", "고가", "저가", "종가", "거래량", "거래대금"],
+    ).rename(
+        columns={
+            "시가": "open",
+            "고가": "high",
+            "저가": "low",
+            "종가": "close",
+            "거래량": "trading_volume",
+            "거래대금": "trading_value",
+        }
+    )
+
+
 def fetch_individual_flow(start: date, end: date) -> pd.DataFrame:
     """Fetch authenticated KOSPI individual net purchases with all auth output suppressed."""
     if not os.getenv("KRX_ID") or not os.getenv("KRX_PW"):
@@ -107,6 +127,14 @@ def _authenticated_frame(
             elif kind == "etf" and ticker is not None:
                 frame = stock.get_etf_ohlcv_by_date(
                     start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), ticker, freq="d"
+                )
+            elif kind == "stock" and ticker is not None:
+                frame = stock.get_market_ohlcv_by_date(
+                    start.strftime("%Y%m%d"),
+                    end.strftime("%Y%m%d"),
+                    ticker,
+                    freq="d",
+                    adjusted=False,
                 )
             else:
                 raise ProviderError("unsupported authenticated KRX request")

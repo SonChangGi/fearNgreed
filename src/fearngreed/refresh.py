@@ -4,7 +4,10 @@ import argparse
 import fcntl
 import hashlib
 import json
+import os
+import re
 import sys
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -22,7 +25,12 @@ from .pipeline import (
 )
 from .providers.common import ProviderError
 from .providers.krx_open import KRXOpenAPIClient
-from .providers.pykrx_flow import fetch_etf_prices, fetch_individual_flow, fetch_kospi_index
+from .providers.pykrx_flow import (
+    fetch_etf_prices,
+    fetch_individual_flow,
+    fetch_kospi_index,
+    fetch_stock_prices,
+)
 from .providers.yahoo import fetch_adjusted_prices
 
 PUBLIC_LIMITS = {
@@ -59,6 +67,7 @@ def probe(day: date) -> int:
         )
         result["krxKospi"] = client.get_kospi(day) is not None
         result["krxEtfCount"] = len(client.get_etfs(day, ["226490", "069500"]))
+        result["krxStockCount"] = len(client.get_stocks(day, ["000660", "005930"]))
     except ProviderError as error:
         result["krxOpenApi"] = {"ok": False, "reason": str(error)}
     try:
@@ -66,6 +75,9 @@ def probe(day: date) -> int:
         result["pykrxKospiRows"] = len(fetch_kospi_index(day, day))
         result["pykrxEtfRows"] = {
             ticker: len(fetch_etf_prices(ticker, day, day)) for ticker in ("226490", "069500")
+        }
+        result["pykrxStockRows"] = {
+            ticker: len(fetch_stock_prices(ticker, day, day)) for ticker in ("000660", "005930")
         }
     except ProviderError as error:
         result["pykrx"] = {"ok": False, "reason": str(error)}
@@ -85,19 +97,24 @@ def refresh(
     generated_at = datetime.now(UTC)
     degraded: list[str] = []
     core_source = "krx_open_api"
+    open_client: KRXOpenAPIClient | None = None
 
     try:
-        client = KRXOpenAPIClient.from_env(cache_dir=root / "var" / "cache" / "krx-open")
-        latest_open = _latest_open_row(client, end)
+        open_client = KRXOpenAPIClient.from_env(
+            cache_dir=root / "var" / "cache" / "krx-open",
+            cache_revalidate_after=start,
+        )
+        latest_open = _latest_open_row(open_client, end)
         if latest_open is None:
             raise ProviderError("KRX Open API returned no recent KOSPI row")
-        recent_kospi = _fetch_open_kospi(client, start, end)
+        recent_kospi = _fetch_open_kospi(open_client, start, end)
         krx_etfs = _fetch_open_etfs(
-            client,
+            open_client,
             max(start, end - timedelta(days=14), date(2015, 8, 24)),
             end,
         )
     except ProviderError as error:
+        open_client = None
         core_source = "authenticated_pykrx_fallback"
         degraded.append(_open_api_reason(error))
         recent_kospi = fetch_kospi_index(start, end)
@@ -107,6 +124,16 @@ def refresh(
             ),
             "069500": fetch_etf_prices("069500", max(start, end - timedelta(days=14)), end),
         }
+
+    stock_crosscheck_start = max(start, end - timedelta(days=14))
+    if open_client is not None:
+        try:
+            krx_stocks = _fetch_open_stocks(open_client, stock_crosscheck_start, end)
+        except ProviderError:
+            degraded.append("krx_open_api_stock_unavailable")
+            krx_stocks = _fetch_authenticated_stocks(stock_crosscheck_start, end, degraded)
+    else:
+        krx_stocks = _fetch_authenticated_stocks(stock_crosscheck_start, end, degraded)
 
     recent_flow = fetch_individual_flow(start, end)
     recent_adjusted = fetch_adjusted_prices(CORE_YAHOO_TICKERS, start, end)
@@ -130,6 +157,7 @@ def refresh(
             generated_at=generated_at,
             core_source=core_source,
             degraded_reasons=tuple(degraded),
+            krx_stocks=krx_stocks,
         )
     )
     if seed:
@@ -361,6 +389,45 @@ def _fetch_open_etfs(client: KRXOpenAPIClient, start: date, end: date) -> dict[s
     return output
 
 
+def _fetch_open_stocks(client: KRXOpenAPIClient, start: date, end: date) -> dict[str, pd.DataFrame]:
+    records: dict[str, list[dict[str, object]]] = {"000660": [], "005930": []}
+    for timestamp in pd.bdate_range(start, end):
+        for ticker, row in client.get_stocks(timestamp.date(), records).items():
+            records[ticker].append(
+                {
+                    "date": timestamp,
+                    "open": row.open,
+                    "high": row.high,
+                    "low": row.low,
+                    "close": row.close,
+                    "trading_volume": row.trading_volume,
+                    "trading_value": row.trading_value,
+                }
+            )
+    output = {
+        ticker: pd.DataFrame.from_records(rows).set_index("date").sort_index()
+        for ticker, rows in records.items()
+        if rows
+    }
+    if set(output) != set(records):
+        raise ProviderError("KRX Open API stock crosscheck history is incomplete")
+    return output
+
+
+def _fetch_authenticated_stocks(
+    start: date, end: date, degraded: list[str]
+) -> dict[str, pd.DataFrame]:
+    try:
+        stocks = {
+            ticker: fetch_stock_prices(ticker, start, end) for ticker in ("000660", "005930")
+        }
+    except ProviderError:
+        degraded.append("stock_crosscheck_provider_unavailable")
+        return {}
+    degraded.append("stock_crosscheck_authenticated_pykrx_fallback")
+    return stocks
+
+
 def _open_api_reason(error: ProviderError) -> str:
     text = str(error)
     if "HTTP 401" in text:
@@ -373,14 +440,29 @@ def _open_api_reason(error: ProviderError) -> str:
 def mark_failed(reason: str) -> None:
     root = repository_root()
     data_dir = root / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    reason = _public_failure_reason(reason)
     attempted_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     automation_path = data_dir / "automation-status.json"
+    previous_automation: dict[str, object] = {}
+    if automation_path.exists():
+        try:
+            loaded = json.loads(automation_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                previous_automation = loaded
+        except (OSError, ValueError):
+            pass
+    previous_reasons = previous_automation.get("degradedReasons", [])
+    if not isinstance(previous_reasons, list):
+        previous_reasons = []
     automation = {
         "schemaVersion": 1,
         "state": "degraded",
         "lastAttemptAt": attempted_at,
-        "lastSuccessAt": None,
-        "degradedReasons": [reason],
+        "lastSuccessAt": previous_automation.get("lastSuccessAt"),
+        "dataAsOf": previous_automation.get("dataAsOf"),
+        "degradedReasons": list(dict.fromkeys([*previous_reasons, reason])),
+        "sourceMode": previous_automation.get("sourceMode", "unavailable"),
     }
     summary_path = data_dir / "summary.json"
     if summary_path.exists():
@@ -391,17 +473,57 @@ def mark_failed(reason: str) -> None:
             summary["status"]["degradedReasons"] = list(dict.fromkeys([*previous, reason]))
             summary.setdefault("automation", {})["lastAttemptAt"] = attempted_at
             summary["automation"]["state"] = "degraded"
-            automation["lastSuccessAt"] = summary.get("automation", {}).get("lastSuccessAt")
-            summary_path.write_text(
-                json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
-                encoding="utf-8",
+            automation["lastSuccessAt"] = summary.get("automation", {}).get(
+                "lastSuccessAt", automation["lastSuccessAt"]
             )
+            automation["dataAsOf"] = summary.get("dataAsOf", automation["dataAsOf"])
+            entities = summary.get("primaryEntities", [])
+            if isinstance(entities, list) and entities and isinstance(entities[0], dict):
+                automation["sourceMode"] = entities[0].get(
+                    "sourceMode", automation["sourceMode"]
+                )
+            _write_json_atomic(summary_path, summary)
         except (OSError, ValueError):
             pass
-    automation_path.write_text(
-        json.dumps(automation, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
-        encoding="utf-8",
+    _write_json_atomic(automation_path, automation)
+
+
+def _public_failure_reason(reason: str) -> str:
+    value = str(reason).strip()
+    if re.fullmatch(r"[a-z0-9_]{1,80}", value):
+        return value
+    lowered = value.lower()
+    if "another refresh" in lowered:
+        return "refresh_already_running"
+    if "credential" in lowered or "not configured" in lowered:
+        return "krx_credentials_missing"
+    if "krx open api" in lowered:
+        return "krx_open_api_unavailable"
+    if "pykrx" in lowered:
+        return "authenticated_pykrx_unavailable"
+    if "yfinance" in lowered:
+        return "yfinance_unavailable"
+    return "refresh_provider_failed"
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    encoded = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
     )
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+    ) as handle:
+        handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    temporary.replace(path)
 
 
 @contextmanager
@@ -445,7 +567,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
     except ProviderError as error:
-        reason = str(error)
+        reason = _public_failure_reason(str(error))
         mark_failed(reason)
         print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False))
         return 1

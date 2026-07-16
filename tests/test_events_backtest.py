@@ -1,8 +1,9 @@
 from datetime import date, timedelta
 
+import pandas as pd
 import pytest
 
-from fearngreed.backtest import ProxyBar, run_long_cash
+from fearngreed.backtest import ProxyBar, run_backtest, run_long_cash
 from fearngreed.events import extreme_entries, non_overlapping
 from fearngreed.model import FlowSignal
 
@@ -87,3 +88,45 @@ def test_same_extreme_regime_does_not_reenter_after_max_holding_exit() -> None:
 
     assert len(trades) == 1
     assert trades[0].reason == "max_holding"
+
+
+def test_final_extreme_entry_is_reported_for_next_open_without_false_reentry() -> None:
+    signals = [signal(index, "neutral", 50) for index in range(3)]
+    signals[-1] = signal(2, "extreme_fear", 2)
+    bars = pd.DataFrame(
+        {"open": [100.0, 101.0, 102.0], "close": [100.0, 101.0, 102.0]},
+        index=pd.to_datetime([item.date for item in signals]),
+    )
+
+    result = run_backtest(signals, bars, ticker="226490")
+
+    assert result.open_position is False
+    assert result.pending_action == "enter_next_open"
+    assert result.pending_reason == "extreme_fear_entry"
+
+    same_regime = [signal(index, "extreme_fear", 2) for index in range(25)]
+    same_bars = pd.DataFrame(
+        {"open": [100.0] * 25, "close": [100.0] * 25},
+        index=pd.to_datetime([item.date for item in same_regime]),
+    )
+    exhausted = run_backtest(same_regime, same_bars, ticker="226490")
+    assert exhausted.open_position is False
+    assert exhausted.pending_action is None
+
+
+def test_final_recovery_is_reported_as_next_open_exit() -> None:
+    signals = [
+        signal(0, "extreme_fear", 2),
+        signal(1, "fear", 10),
+        signal(2, "neutral", 55),
+    ]
+    bars = pd.DataFrame(
+        {"open": [100.0, 101.0, 102.0], "close": [100.0, 101.0, 102.0]},
+        index=pd.to_datetime([item.date for item in signals]),
+    )
+
+    result = run_backtest(signals, bars, ticker="226490")
+
+    assert result.open_position is True
+    assert result.pending_action == "exit_next_open"
+    assert result.pending_reason == "recovery"

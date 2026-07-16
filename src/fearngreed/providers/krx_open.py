@@ -5,7 +5,7 @@ import os
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ from .common import ProviderError, first_present, parse_number
 BASE_URL = "https://data-dbg.krx.co.kr/svc/apis"
 KOSPI_PATH = "idx/kospi_dd_trd"
 ETF_PATH = "etp/etf_bydd_trd"
+STOCK_PATH = "sto/stk_bydd_trd"
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,19 @@ class KRXETFRow:
     trading_value: float
 
 
+@dataclass(frozen=True)
+class KRXStockRow:
+    date: date
+    ticker: str
+    name: str
+    close: float
+    open: float
+    high: float
+    low: float
+    trading_volume: float
+    trading_value: float
+
+
 class KRXOpenAPIClient:
     """Minimal KRX Open API client that never logs request metadata or payloads."""
 
@@ -54,6 +68,7 @@ class KRXOpenAPIClient:
         base_url: str = BASE_URL,
         session: requests.Session | None = None,
         cache_dir: Path | None = None,
+        cache_revalidate_after: date | None = None,
         min_interval_seconds: float = 0.04,
     ) -> None:
         if not api_key:
@@ -63,6 +78,14 @@ class KRXOpenAPIClient:
         self._base_url = base_url.rstrip("/")
         self._session = session or requests.Session()
         self._cache_dir = cache_dir
+        # KRX may revise the latest sessions after the first publication.  A
+        # fourteen-calendar-day safety window covers at least the five mutable
+        # sessions used by the incremental refresh, including ordinary Korean
+        # exchange holiday clusters.  Callers can pass the exact mutable
+        # boundary when replaying a historical as-of date.
+        self._cache_revalidate_after = cache_revalidate_after or (
+            date.today() - timedelta(days=14)
+        )
         self._min_interval = max(0.0, min_interval_seconds)
         self._last_request_at = 0.0
 
@@ -147,12 +170,37 @@ class KRXOpenAPIClient:
             )
         return result
 
+    def get_stocks(self, day: date, tickers: Iterable[str]) -> dict[str, KRXStockRow]:
+        """Return official KRX daily prices for selected KOSPI stock tickers."""
+        wanted = set(tickers)
+        result: dict[str, KRXStockRow] = {}
+        for row in self._request_rows(STOCK_PATH, day):
+            ticker = str(
+                row.get("ISU_SRT_CD") or row.get("ISU_CD") or row.get("ISU_CODE") or ""
+            ).strip()
+            if ticker not in wanted:
+                continue
+            result[ticker] = KRXStockRow(
+                date=day,
+                ticker=ticker,
+                name=str(first_present(row, "ISU_NM")),
+                close=parse_number(first_present(row, "TDD_CLSPRC"), field="TDD_CLSPRC"),
+                open=parse_number(first_present(row, "TDD_OPNPRC"), field="TDD_OPNPRC"),
+                high=parse_number(first_present(row, "TDD_HGPRC"), field="TDD_HGPRC"),
+                low=parse_number(first_present(row, "TDD_LWPRC"), field="TDD_LWPRC"),
+                trading_volume=parse_number(first_present(row, "ACC_TRDVOL"), field="ACC_TRDVOL"),
+                trading_value=parse_number(first_present(row, "ACC_TRDVAL"), field="ACC_TRDVAL"),
+            )
+        return result
+
     def _cache_path(self, path: str, day: date) -> Path | None:
         if self._cache_dir is None:
             return None
         return self._cache_dir / path.replace("/", "-") / f"{day.isoformat()}.json"
 
     def _read_cache(self, path: str, day: date) -> list[dict[str, Any]] | None:
+        if day >= self._cache_revalidate_after:
+            return None
         cache_path = self._cache_path(path, day)
         if cache_path is None or not cache_path.exists():
             return None
