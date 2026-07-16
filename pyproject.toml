@@ -3,11 +3,20 @@ name = "fearngreed-flow-lab"
 version = "0.1.0"
 description = "Point-in-time Fear & Greed flow research for the KOSPI"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "jsonschema>=4.23,<5",
+  "numpy>=2.1,<3",
+  "pandas>=2.2,<3",
+  "pykrx>=1.0.51,<2",
+  "requests>=2.32,<3",
+  "scipy>=1.15,<2",
+  "yfinance>=0.2.65,<0.3",
+]
 
 [dependency-groups]
 dev = [
   "pytest>=8.4,<9",
+  "pytest-cov>=6.2,<7",
   "ruff>=0.12,<0.13",
 ]
 

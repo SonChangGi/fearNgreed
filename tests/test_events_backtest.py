@@ -50,4 +50,40 @@ def test_next_open_entry_and_recovery_exit_with_costs() -> None:
     assert trade.entry_date == bars[1].date
     assert trade.exit_date == bars[3].date
     assert trade.reason == "recovery"
-    assert trade.net_return == pytest.approx(130 / 110 - 1 - 0.002)
+    assert trade.net_return == pytest.approx((130 / 110) * 0.999 * 0.999 - 1)
+
+
+def test_ineligible_gap_does_not_create_duplicate_extreme_event() -> None:
+    signals = [
+        signal(0, "extreme_fear", 2),
+        signal(1, "unavailable", 0, eligible=False),
+        signal(2, "extreme_fear", 3),
+        signal(3, "neutral", 50),
+        signal(4, "extreme_fear", 1),
+    ]
+    assert [event.index for event in extreme_entries(signals)] == [0, 4]
+
+
+def test_repeated_fear_is_ignored_while_position_is_open() -> None:
+    signals = [
+        signal(0, "extreme_fear", 2),
+        signal(1, "extreme_fear", 1),
+        signal(2, "extreme_fear", 3),
+        signal(3, "neutral", 55),
+        signal(4, "neutral", 60),
+    ]
+    bars = [ProxyBar(item.date, 100 + index, 100 + index) for index, item in enumerate(signals)]
+    trades = run_long_cash(signals, bars)
+    assert len(trades) == 1
+    assert trades[0].entry_date == bars[1].date
+    assert trades[0].exit_date == bars[4].date
+
+
+def test_same_extreme_regime_does_not_reenter_after_max_holding_exit() -> None:
+    signals = [signal(index, "extreme_fear", 2) for index in range(50)]
+    bars = [ProxyBar(item.date, 100, 100) for item in signals]
+
+    trades = run_long_cash(signals, bars, one_way_cost_bps=10)
+
+    assert len(trades) == 1
+    assert trades[0].reason == "max_holding"

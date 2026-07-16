@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sonchanggi.github.io/fearNgreed/schemas/summary.schema.json",
+  "title": "Fear & Greed quant research summary",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "projectId",
+    "generatedAt",
+    "dataAsOf",
+    "status",
+    "coverage",
+    "primaryEntities",
+    "limitations",
+    "sources",
+    "automation",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "contract": {"const": "quant-research-summary"},
+    "projectId": {"const": "fearngreed"},
+    "methodologyVersion": {"type": "string", "minLength": 1},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "dataAsOf": {"type": "string", "format": "date"},
+    "status": {
+      "type": "object",
+      "required": ["state", "label", "cadence", "expectedFreshnessDays", "degradedReasons"],
+      "properties": {
+        "state": {"enum": ["ok", "degraded", "stale", "unavailable"]},
+        "label": {"type": "string"},
+        "cadence": {"type": "string"},
+        "expectedFreshnessDays": {"type": "integer", "minimum": 0},
+        "degradedReasons": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["historyStart", "historyEnd", "observationCount", "eventCount", "tradeCount", "sourceCompleteness"]
+    },
+    "primaryEntities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "sentimentPercentile", "residualZ", "rollingR2", "return1d", "flowShare", "disparity50", "position", "primaryProxy"]
+      }
+    },
+    "limitations": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "sources": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "automation": {"type": "object"},
+    "payload": {"type": "object"}
+  }
+}

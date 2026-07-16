@@ -1,7 +1,1 @@
-{
-  "schemaVersion": 1,
-  "state": "not_configured",
-  "lastAttemptAt": null,
-  "lastSuccessAt": null,
-  "degradedReasons": ["krx_secrets_not_configured", "synthetic_fixture"]
-}
+{"schemaVersion":1,"state":"ok","lastAttemptAt":"2026-07-16T05:25:55.554803Z","lastSuccessAt":"2026-07-16T05:25:55.554803Z","dataAsOf":"2026-07-15","degradedReasons":[],"sourceMode":"krx_open_api"}

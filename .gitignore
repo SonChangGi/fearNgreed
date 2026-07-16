@@ -9,6 +9,7 @@ __pycache__/
 cookies.json
 session.json
 raw/
+var/
 dist/
 playwright-report/
 test-results/
