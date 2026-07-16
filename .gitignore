@@ -1,0 +1,23 @@
+# Private source material must never be committed.
+/references/private/
+.env*
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+cookies.json
+session.json
+raw/
+dist/
+playwright-report/
+test-results/
+
+.env
+.env.*
+!.env.example
+*.cookie
+*.cookies
+*.session
+*.headers
+*raw-response*

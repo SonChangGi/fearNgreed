@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "contract": "quant-research-summary",
+  "projectId": "fearngreed",
+  "methodologyVersion": "fear-flow-v1",
+  "generatedAt": "2026-07-16T02:00:00Z",
+  "dataAsOf": "2026-07-15",
+  "status": {
+    "state": "degraded",
+    "label": "합성 fixture · 실제 공급자 미연결",
+    "cadence": "weekdays-after-20:30-KST",
+    "expectedFreshnessDays": 3,
+    "degradedReasons": ["synthetic_fixture", "krx_secrets_not_configured"]
+  },
+  "coverage": {
+    "historyStart": "2025-07-16",
+    "historyEnd": "2026-07-15",
+    "observationCount": 252,
+    "eventCount": 0,
+    "tradeCount": 0,
+    "sourceCompleteness": 0
+  },
+  "primaryEntities": [{
+    "id": "KOSPI",
+    "name": "KOSPI",
+    "region": "Korea",
+    "themes": ["Sentiment", "Flow"],
+    "sentimentPercentile": 12.4,
+    "residualZ": -1.33,
+    "rollingR2": 0.42,
+    "return1d": -0.012,
+    "flowShare": 0.0041,
+    "disparity50": 91.8,
+    "position": "cash",
+    "primaryProxy": "226490"
+  }],
+  "limitations": [
+    "현재 수치는 UI와 계약 검증용 합성 fixture이며 실제 시장 관측이 아니다.",
+    "원문 사례와 과거검증은 예측력 또는 인과관계를 증명하지 않는다."
+  ],
+  "sources": [
+    {"id": "fixture", "label": "Synthetic fixture", "status": "not-production"}
+  ],
+  "automation": {"lastAttemptAt": null, "lastSuccessAt": null, "state": "not_configured"},
+  "payload": {"dashboardUrl": "./dashboard.json", "historyUrl": "./history.json"}
+}

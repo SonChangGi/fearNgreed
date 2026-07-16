@@ -1,0 +1,8 @@
+{
+  "name": "fearngreed-flow-lab-web",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests-js/*.test.mjs",
+    "check": "npm test"
+  }
+}

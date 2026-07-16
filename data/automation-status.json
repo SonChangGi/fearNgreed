@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "state": "not_configured",
+  "lastAttemptAt": null,
+  "lastSuccessAt": null,
+  "degradedReasons": ["krx_secrets_not_configured", "synthetic_fixture"]
+}

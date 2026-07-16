@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "methodologyVersion": "fear-flow-v1",
+  "fixture": true,
+  "series": [
+    {"date": "2026-07-04", "kospi": 3020, "percentile": 52, "position": "cash"},
+    {"date": "2026-07-07", "kospi": 3005, "percentile": 41, "position": "cash"},
+    {"date": "2026-07-08", "kospi": 2975, "percentile": 28, "position": "cash"},
+    {"date": "2026-07-09", "kospi": 2940, "percentile": 18, "position": "cash"},
+    {"date": "2026-07-10", "kospi": 2895, "percentile": 8, "position": "cash"},
+    {"date": "2026-07-11", "kospi": 2860, "percentile": 4, "position": "long"},
+    {"date": "2026-07-14", "kospi": 2880, "percentile": 7, "position": "long"},
+    {"date": "2026-07-15", "kospi": 2910, "percentile": 12.4, "position": "cash"}
+  ]
+}

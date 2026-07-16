@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "methodologyVersion": "fear-flow-v1",
+  "dataAsOf": "2026-07-15",
+  "fixture": true,
+  "scatter": [
+    {"return1d": -0.023, "flowShare": 0.017},
+    {"return1d": -0.016, "flowShare": 0.012},
+    {"return1d": -0.010, "flowShare": 0.008},
+    {"return1d": -0.006, "flowShare": 0.006},
+    {"return1d": -0.002, "flowShare": 0.003},
+    {"return1d": 0.002, "flowShare": 0.001},
+    {"return1d": 0.006, "flowShare": -0.003},
+    {"return1d": 0.011, "flowShare": -0.006},
+    {"return1d": 0.016, "flowShare": -0.011},
+    {"return1d": 0.022, "flowShare": -0.015},
+    {"return1d": 0.026, "flowShare": -0.019},
+    {"return1d": 0.031, "flowShare": -0.023}
+  ],
+  "regression": {"alpha": 0, "beta": -0.72, "current": {"return1d": -0.012, "flowShare": 0.0041}},
+  "eventStudy": {"status": "insufficient_real_events", "rows": []},
+  "backtests": {"status": "not_run_on_real_data", "rows": []},
+  "trades": []
+}
