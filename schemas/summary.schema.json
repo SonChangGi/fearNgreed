@@ -23,7 +23,7 @@
     "schemaVersion": {"const": 1},
     "contract": {"const": "quant-research-summary"},
     "projectId": {"const": "fearngreed"},
-    "methodologyVersion": {"const": "fear-flow-v1"},
+    "methodologyVersion": {"const": "fear-flow-v2"},
     "generatedAt": {"type": "string", "format": "date-time"},
     "dataAsOf": {"type": "string", "format": "date"},
     "status": {
@@ -32,7 +32,10 @@
       "required": ["state", "label", "cadence", "expectedFreshnessDays", "degradedReasons"],
       "properties": {
         "state": {"enum": ["ok", "degraded", "stale", "unavailable"]},
-        "label": {"type": "string", "minLength": 1},
+        "label": {
+          "enum": ["데이터 정상", "데이터 저하", "데이터 지연", "데이터 산출 불가"],
+          "description": "Operational data state label; signal semantics live on primaryEntities."
+        },
         "cadence": {"const": "weekdays-after-20:30-KST"},
         "expectedFreshnessDays": {"type": "integer", "minimum": 0, "maximum": 30},
         "degradedReasons": {
@@ -51,6 +54,7 @@
         "observationCount",
         "eventCount",
         "tradeCount",
+        "dateOverlapRatio",
         "sourceCompleteness"
       ],
       "properties": {
@@ -59,11 +63,20 @@
         "observationCount": {"type": "integer", "minimum": 0},
         "eventCount": {"type": "integer", "minimum": 0},
         "tradeCount": {"type": "integer", "minimum": 0},
+        "dateOverlapRatio": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ],
+          "description": "Jaccard overlap of KOSPI-price and participant-flow session dates."
+        },
         "sourceCompleteness": {
           "anyOf": [
             {"type": "number", "minimum": 0, "maximum": 1},
             {"type": "null"}
-          ]
+          ],
+          "deprecated": true,
+          "description": "Compatibility alias for dateOverlapRatio; not a broad completeness score."
         }
       }
     },
@@ -138,6 +151,7 @@
         "region",
         "themes",
         "signalState",
+        "signalLabel",
         "sentimentPercentile",
         "residualZ",
         "rollingR2",
@@ -150,10 +164,14 @@
         "modelConfidence",
         "models",
         "position",
+        "positionQuality",
+        "positionUnavailableReason",
         "pendingAction",
         "pendingReason",
         "primaryProxy",
-        "sourceMode"
+        "sourceMode",
+        "strategyModel",
+        "fieldSources"
       ],
       "properties": {
         "id": {"const": "KOSPI"},
@@ -167,6 +185,9 @@
         },
         "signalState": {
           "enum": ["extreme_fear", "fear", "neutral", "greed", "extreme_greed", "unavailable"]
+        },
+        "signalLabel": {
+          "enum": ["극단적 공포", "공포", "중립", "탐욕", "극단적 탐욕", "산출 불가"]
         },
         "sentimentPercentile": {"$ref": "#/$defs/nullablePercent"},
         "residualZ": {"$ref": "#/$defs/nullableNumber"},
@@ -198,23 +219,41 @@
             "duplicate_dates",
             "insufficient_history",
             "invalid_regression",
+            "invalid_current_observation",
+            "invalid_training_observation",
+            "mixed_channels",
             "zero_mad",
             "missing"
           ]
         },
         "modelConfidence": {
-          "enum": ["high", "mixed", "scaled_only", "low_model_fit", "unavailable"]
+          "enum": [
+            "high",
+            "mixed",
+            "mixed_trigger",
+            "scaled_only",
+            "low_model_fit",
+            "unavailable"
+          ]
         },
         "models": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["scaled", "raw"],
+          "required": ["scaled", "raw", "robust"],
           "properties": {
             "scaled": {"$ref": "#/$defs/modelSnapshot"},
-            "raw": {"$ref": "#/$defs/modelSnapshot"}
+            "raw": {"$ref": "#/$defs/modelSnapshot"},
+            "robust": {"$ref": "#/$defs/modelSnapshot"}
           }
         },
-        "position": {"enum": ["cash", "long"]},
+        "position": {"enum": ["cash", "long", "unavailable"]},
+        "positionQuality": {"enum": ["ok", "unavailable"]},
+        "positionUnavailableReason": {
+          "anyOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ]
+        },
         "pendingAction": {
           "anyOf": [
             {"enum": ["enter_next_open", "exit_next_open"]},
@@ -228,8 +267,44 @@
           ]
         },
         "primaryProxy": {"enum": ["226490"]},
-        "sourceMode": {"enum": ["krx_open_api", "authenticated_pykrx_fallback"]}
-      }
+        "sourceMode": {"enum": ["krx_open_api", "authenticated_pykrx_fallback"]},
+        "strategyModel": {"type": "string", "minLength": 1},
+        "fieldSources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kospi", "retailFlow", "adjustedProxy"],
+          "properties": {
+            "kospi": {"enum": ["krx_open_api", "authenticated_pykrx_fallback"]},
+            "retailFlow": {"const": "authenticated_pykrx"},
+            "adjustedProxy": {
+              "enum": [
+                "yfinance_adjusted",
+                "yfinance_adjusted_plus_scaled_krx_gap_rows"
+              ]
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"position": {"const": "unavailable"}},
+            "required": ["position"]
+          },
+          "then": {
+            "properties": {
+              "positionQuality": {"const": "unavailable"},
+              "positionUnavailableReason": {"type": "string", "minLength": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "positionQuality": {"const": "ok"},
+              "positionUnavailableReason": {"type": "null"}
+            }
+          }
+        }
+      ]
     },
     "modelSnapshot": {
       "type": "object",
@@ -245,10 +320,14 @@
         "rollingR2",
         "trainingCount",
         "quality",
-        "tradeEligible"
+        "tradeEligible",
+        "expected",
+        "observed",
+        "fitMethod",
+        "fitScore"
       ],
       "properties": {
-        "model": {"enum": ["scaled", "raw"]},
+        "model": {"enum": ["scaled", "raw", "robust"]},
         "state": {
           "enum": ["extreme_fear", "fear", "neutral", "greed", "extreme_greed", "unavailable"]
         },
@@ -266,11 +345,18 @@
             "duplicate_dates",
             "insufficient_history",
             "invalid_regression",
+            "invalid_current_observation",
+            "invalid_training_observation",
+            "mixed_channels",
             "zero_mad",
             "missing"
           ]
         },
-        "tradeEligible": {"type": "boolean"}
+        "tradeEligible": {"type": "boolean"},
+        "expected": {"$ref": "#/$defs/nullableNumber"},
+        "observed": {"$ref": "#/$defs/nullableNumber"},
+        "fitMethod": {"enum": ["ols", "huber", "tukey_bisquare"]},
+        "fitScore": {"$ref": "#/$defs/nullableNumber"}
       }
     },
     "source": {

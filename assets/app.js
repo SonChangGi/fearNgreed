@@ -14,6 +14,26 @@ const qualityLabels = {
   unavailable: "산출 불가"
 };
 
+const DEGRADED_REASON_LABELS = Object.freeze({
+  core_latest_common_date_alignment: "공급자 최신일 차이로 공통 거래일까지 계산",
+  krx_credentials_missing: "KRX 인증정보 미설정",
+  krx_open_api_unavailable: "KRX Open API 일시 이용 불가",
+  authenticated_pykrx_unavailable: "인증 KRX 수급 경로 일시 이용 불가",
+  yfinance_unavailable: "조정가격 연구 소스 일시 이용 불가",
+  refresh_provider_failed: "공급자 갱신 실패",
+  refresh_pipeline_failed: "파생 산출 갱신 실패"
+});
+
+function degradedReasonLabel(reason) {
+  if (DEGRADED_REASON_LABELS[reason]) return DEGRADED_REASON_LABELS[reason];
+  const reconciledTicker = String(reason).match(/^adjusted_history_gap_reconciled_(\d+)$/)?.[1];
+  if (reconciledTicker) return `${reconciledTicker} 조정가격 누락일을 공식 KRX 세션으로 검증·보정`;
+  if (/^price_crosscheck_/.test(reason)) return "공식 종가 교차검증 미통과";
+  if (/^historical_etf_/.test(reason)) return "ETF 공식 이력 일부 이용 불가";
+  if (/^official_etf_provider_disagreement_/.test(reason)) return "ETF 공식 경로 간 최근값 불일치";
+  return "데이터 품질 점검 필요";
+}
+
 function qualityLabel(value) {
   return qualityLabels[value] || value || "미확인";
 }
@@ -29,18 +49,44 @@ const fmt = {
 
 const esc = (value) => String(value ?? "").replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[char]);
 
+const DEFAULT_CONTROLS = Object.freeze({
+  window: 756,
+  model: "robust",
+  eventAsset: "KOSPI",
+  eventSample: "nonOverlapping20d",
+  backtestProxy: "226490",
+  backtestVariant: "scaled_huber",
+  backtestCost: 10,
+  backtestPeriod: "common"
+});
+
+const CONTROL_QUERY = Object.freeze({
+  window: "window",
+  model: "model",
+  eventAsset: "eventAsset",
+  eventSample: "eventSample",
+  backtestProxy: "proxy",
+  backtestVariant: "strategy",
+  backtestCost: "cost",
+  backtestPeriod: "period"
+});
+
+const CONTROL_ALLOWED = Object.freeze({
+  window: ["252", "756", "all"],
+  model: ["robust", "scaled", "raw"],
+  eventAsset: ["KOSPI", "226490", "069500"],
+  eventSample: ["nonOverlapping20d", "all"],
+  backtestProxy: ["226490", "069500"],
+  backtestVariant: ["scaled_huber", "scaled_ols", "raw_ols", "disparity"],
+  backtestCost: ["0", "5", "10", "20"],
+  backtestPeriod: ["common", "full"]
+});
+
 let store = {
   summary: null,
   dashboard: null,
   history: null,
-  window: 756,
-  model: "scaled",
-  eventAsset: "KOSPI",
-  eventSample: "nonOverlapping20d",
-  backtestProxy: "226490",
-  backtestVariant: "base",
-  backtestCost: 10,
-  backtestPeriod: "common"
+  ...DEFAULT_CONTROLS
 };
 
 async function loadJson(path) {
@@ -51,9 +97,23 @@ async function loadJson(path) {
 
 function validateContracts(summary, dashboard, history) {
   if (summary?.schemaVersion !== 1 || summary?.contract !== "quant-research-summary" || summary?.projectId !== "fearngreed") throw new Error("summary.json 계약이 올바르지 않습니다.");
-  if (summary?.methodologyVersion !== "fear-flow-v1" || dashboard?.methodologyVersion !== "fear-flow-v1" || history?.methodologyVersion !== "fear-flow-v1") throw new Error("공개 데이터 방법론 버전이 올바르지 않습니다.");
+  const methodology = summary?.methodologyVersion;
+  if (!/^fear-flow-v\d+$/.test(methodology || "") || dashboard?.methodologyVersion !== methodology || history?.methodologyVersion !== methodology) throw new Error("공개 데이터 방법론 버전이 올바르지 않습니다.");
   if (dashboard?.schemaVersion !== 1 || history?.schemaVersion !== 1 || dashboard?.dataAsOf !== summary.dataAsOf || history?.dataAsOf !== summary.dataAsOf) throw new Error("공개 데이터 스키마 또는 기준일이 올바르지 않습니다.");
-  if (!["ok", "degraded", "stale", "unavailable"].includes(summary?.status?.state) || !Array.isArray(summary.primaryEntities) || summary.primaryEntities.length !== 1 || !summary.primaryEntities[0]?.models?.scaled || !summary.primaryEntities[0]?.models?.raw || !Array.isArray(history.series)) throw new Error("공개 데이터의 필수 계약이 없습니다.");
+  const hasSeries = Array.isArray(history.series) || (Array.isArray(history.seriesColumns) && Array.isArray(history.seriesRows));
+  const models = summary.primaryEntities?.[0]?.models || dashboard?.models || {};
+  if (!["ok", "degraded", "stale", "unavailable"].includes(summary?.status?.state) || !Array.isArray(summary.primaryEntities) || summary.primaryEntities.length !== 1 || !models.scaled || !models.raw || !hasSeries) throw new Error("공개 데이터의 필수 계약이 없습니다.");
+}
+
+function decodeHistory(history) {
+  if (Array.isArray(history?.series)) return history;
+  const columns = history?.seriesColumns;
+  const rows = history?.seriesRows;
+  if (!Array.isArray(columns) || !Array.isArray(rows)) return { ...history, series: [] };
+  return {
+    ...history,
+    series: rows.map((values) => Object.fromEntries(columns.map((column, index) => [column, values[index]])))
+  };
 }
 
 function stateFromValue(model) {
@@ -76,6 +136,12 @@ function effectiveStatus(summary) {
 
 function entity() {
   return store.summary?.primaryEntities?.[0] || {};
+}
+
+function primaryModelKind() {
+  const declared = store.dashboard?.primaryModel || store.summary?.payload?.primaryModel || entity().primaryModel;
+  if (["robust", "scaled", "raw"].includes(declared)) return declared;
+  return modelPayload("robust") ? "robust" : "scaled";
 }
 
 function modelPayload(kind = store.model) {
@@ -101,7 +167,17 @@ function regressionPayload(kind = store.model) {
 }
 
 function modelName(kind = store.model) {
-  return kind === "raw" ? "원시 수급 비교" : "규모 보정";
+  if (kind === "robust") return "실전 신호 · 강건 회귀";
+  if (kind === "raw") return "PDF 원문 근사 · 절대 수급";
+  return "OLS 기준선 · 규모 보정";
+}
+
+function compactModelName(kind = store.model) {
+  return ({ robust: "실전 강건 회귀", scaled: "규모보정 OLS", raw: "절대수급 원문 근사" })[kind] || kind;
+}
+
+function modelRole(kind = store.model) {
+  return ({ robust: "실전 신호", scaled: "연구 기준선", raw: "PDF 원문 근사" })[kind] || "비교 모형";
 }
 
 function pendingActionText(base) {
@@ -113,20 +189,57 @@ function metric(label, value, note) {
   return `<article class="metric"><span>${esc(label)}</span><strong title="${esc(value)}">${esc(value)}</strong><small>${esc(note)}</small></article>`;
 }
 
+function bridgeStep(step, label, value, note, tone = "") {
+  return `<li class="bridge-step ${esc(tone)}"><span>${esc(step)}</span><strong>${esc(label)}</strong><b>${esc(value)}</b><small>${esc(note)}</small></li>`;
+}
+
+function renderSignalBridge() {
+  const base = entity();
+  const model = modelPayload();
+  const regression = regressionPayload();
+  const state = stateFromValue(model);
+  const isRaw = store.model === "raw";
+  const actual = model?.observed ?? (isRaw ? base.rawFlowTrillion : base.flowShare);
+  const regressionInputs = [regression.alpha, regression.beta, base.return1d];
+  const expected = model?.expected ?? (regressionInputs.every((value) => value != null && Number.isFinite(Number(value))) ? Number(regression.alpha) + Number(regression.beta) * Number(base.return1d) : null);
+  const residual = model?.residual;
+  const unitFormat = isRaw ? (value) => Number.isFinite(Number(value)) ? `${fmt.score(value, 3)}조원` : "—" : (value) => fmt.pct(value, 3);
+  const percentile = model?.percentile ?? model?.sentimentPercentile;
+  const tone = state.includes("fear") ? "fear" : state.includes("greed") ? "greed" : state;
+  $("#bridge-model-scope").textContent = `${modelRole()} · ${compactModelName()}`;
+  $("#bridge-model-scope").className = `scope-badge ${store.model === "raw" ? "replica" : store.model === "robust" ? "practical" : "baseline"}`;
+  $("#signal-bridge").innerHTML = `<ol>
+    ${bridgeStep("1", "실제 수급", unitFormat(actual), isRaw ? "개인 순매수대금" : "KOSPI 거래대금 대비")}
+    ${bridgeStep("2", "회귀 예상", unitFormat(expected), `KOSPI ${fmt.signedPct(base.return1d)}일 때`)}
+    ${bridgeStep("3", "잔차", unitFormat(residual), "실제 − 예상", residual == null ? "" : Number(residual) < 0 ? "fear" : "greed")}
+    ${bridgeStep("4", "과거 백분위", fmt.score(percentile, 1), "직전 학습 잔차 분포")}
+    ${bridgeStep("5", "연구 상태", labels[state] || state, model?.tradeEligible === false ? "신규 거래 신호 차단" : "고정 경계 적용", tone)}
+  </ol>`;
+  const difference = residual == null ? Number.NaN : Number(residual);
+  let interpretation = "현재 잔차를 산출할 수 없습니다.";
+  if (Number.isFinite(difference)) {
+    const direction = difference < 0 ? "예상보다 개인 수급이 더 약해 공포 방향" : difference > 0 ? "예상보다 개인 수급이 덜 약하거나 더 강해 탐욕 방향" : "예상과 일치해 중립 방향";
+    interpretation = `${unitFormat(actual)}의 절대값만 보지 않습니다. 같은 날 수익률의 기대값 ${unitFormat(expected)}에 비해 ${direction}입니다.`;
+  }
+  $("#bridge-explanation").textContent = interpretation;
+}
+
 function renderHeader() {
   const summary = store.summary;
   const base = entity();
   const model = modelPayload();
-  const state = stateFromValue(model);
   const status = effectiveStatus(summary);
+  const state = status === "unavailable" ? "unavailable" : stateFromValue(model);
   const badge = $("#status-badge");
-  badge.textContent = status === "stale" ? "갱신 지연" : (summary.status.label || qualityLabel(summary.status.state));
+  badge.textContent = `데이터 ${qualityLabel(status)}`;
   badge.className = `badge ${status}`;
-  $("#confidence-badge").textContent = `${modelName()} · ${qualityLabel(model?.quality || base.modelQuality)}`;
+  $("#confidence-badge").textContent = `${modelRole()} · 품질 ${qualityLabel(model?.quality || base.modelQuality)}`;
   $("#state").textContent = labels[state] || state;
+  $("#signal-badge").textContent = labels[state] || state;
+  $("#signal-badge").className = `state-badge ${state}`;
   $("#asof").textContent = `기준일 ${fmt.date(summary.dataAsOf)}`;
   const reasons = summary.status.degradedReasons || [];
-  $("#status-note").textContent = reasons.length ? reasons.join(" · ") : "핵심 공급자와 계산 품질 게이트 통과";
+  $("#status-note").textContent = reasons.length ? `운영 주의: ${reasons.map(degradedReasonLabel).join(" · ")}. 표시 기준일과 공급자 상태를 함께 확인하세요.` : "핵심 공급자와 계산 품질 게이트 통과";
 
   const percentile = model?.percentile ?? model?.sentimentPercentile;
   const inputValue = store.model === "raw" ? `${fmt.score(base.rawFlowTrillion, 3)}조원` : fmt.pct(base.flowShare, 3);
@@ -138,22 +251,36 @@ function renderHeader() {
     metric("KOSPI 1일", fmt.signedPct(base.return1d), "종가 대비 전 거래일"),
     metric(store.model === "raw" ? "개인 순매수대금" : "개인 순매수율", inputValue, inputNote),
     metric("50일 이격도", fmt.score(base.disparity50, 1), "100 = 50일 이동평균"),
-    metric("모형 포지션", labels[base.position] || "—", `${base.primaryProxy || "226490"} · ${pendingActionText(base)}`),
+    metric("현재 포지션 모형", labels[base.position] || labels.unavailable, `${base.primaryProxy || "226490"} · ${pendingActionText(base)}`),
     metric("252일 낙폭", fmt.pct(base.mdd252), "롤링 고점 대비")
   ].join("");
+  renderSignalBridge();
 
   const beta = model?.beta ?? regressionPayload()?.beta;
+  const adjustedSource = base.fieldSources?.adjustedProxy === "yfinance_adjusted_plus_scaled_krx_gap_rows"
+    ? "yfinance 조정가 + KRX 검증 보정행"
+    : "yfinance 조정가 · KRX 교차검증";
+  const reconciliationItems = ["226490", "069500"].map((ticker) => {
+    const report = store.dashboard?.crosschecks?.etf?.[ticker]?.historyReconciliation;
+    if (!report) return "";
+    return `<span><strong>${ticker} 세션:</strong> ${esc(fmt.compact(report.officialSessionCount))} · 보정 ${esc(report.filledCount)} · 미해결 ${esc(report.unresolvedCount)}</span>`;
+  }).filter(Boolean);
   $("#quality-strip").innerHTML = [
-    `<span><strong>데이터:</strong> ${esc(summary.dataAsOf)}</span>`,
-    `<span><strong>선택 모형:</strong> ${esc(modelName())}</span>`,
+    `<span><strong>데이터 기준일:</strong> ${esc(summary.dataAsOf)}</span>`,
+    `<span><strong>선택 트랙:</strong> ${esc(modelName())}</span>`,
     `<span><strong>β:</strong> ${esc(fmt.score(beta, 4))}</span>`,
     `<span><strong>모형 품질:</strong> ${esc(qualityLabel(model?.quality || base.modelQuality))}</span>`,
-    `<span><strong>공급 경로:</strong> ${esc(base.sourceMode || "—")}</span>`,
+    `<span><strong>가격:</strong> ${esc(base.sources?.price || base.sourceMode || "KRX")}</span>`,
+    `<span><strong>수급:</strong> ${esc(base.sources?.flow || "pykrx 파생")}</span>`,
+    `<span><strong>ETF 조정가:</strong> ${esc(base.sources?.adjustedPrice || adjustedSource)}</span>`,
+    ...reconciliationItems,
     `<span><strong>관측치:</strong> ${esc(fmt.compact(summary.coverage.observationCount))}</span>`,
     `<span><strong>비중첩 사건:</strong> ${esc(summary.coverage.eventCount)}</span>`,
     `<span><strong>거래:</strong> ${esc(summary.coverage.tradeCount)}</span>`
   ].join("");
-  $("#model-selection-note").textContent = `${modelName()}의 서버 사전 계산값을 표시합니다. 기본 거래 신호는 규모 보정 모델로 고정됩니다.`;
+  const eventsFollowModel = Boolean(store.dashboard?.eventsByModel?.[store.model]);
+  $("#model-selection-note").textContent = `${modelName()}의 서버 사전 계산값입니다. 현재값·해석 브리지·산점도${eventsFollowModel ? "·사건 검증" : ""}에 적용되며, 전략은 별도 신호·진입 규칙에서 선택합니다.`;
+  $("#scatter-model-scope").textContent = modelRole();
 }
 
 function scale(domainMin, domainMax, rangeMin, rangeMax) {
@@ -212,8 +339,10 @@ function showTooltip(chart, text, point = null) {
 
 function attachChartNavigation(chart, items, formatter) {
   const valid = items.filter(Boolean);
+  chart._resizeObserver?.disconnect();
   chart._chartItems = valid;
   chart._chartIndex = Math.max(0, valid.length - 1);
+  chart.querySelectorAll(".chart-crosshair, .chart-crosshair-point").forEach((node) => node.remove());
   const crosshair = document.createElement("span");
   crosshair.className = "chart-crosshair";
   crosshair.setAttribute("aria-hidden", "true");
@@ -272,7 +401,81 @@ function attachChartNavigation(chart, items, formatter) {
   if (typeof ResizeObserver !== "undefined") {
     const observer = new ResizeObserver(alignLatest);
     observer.observe(chart);
+    chart._resizeObserver = observer;
   }
+}
+
+function attachScatterNavigation(chart, items, formatter, viewBox) {
+  const valid = items.filter((item) => Number.isFinite(item.plotX) && Number.isFinite(item.plotY));
+  chart._chartItems = valid;
+  const currentIndex = valid.findIndex((item) => item.row.role === "current");
+  chart._chartIndex = currentIndex >= 0 ? currentIndex : Math.max(0, valid.length - 1);
+  chart.querySelectorAll(".chart-crosshair, .chart-crosshair-point").forEach((node) => node.remove());
+  const marker = document.createElement("span");
+  marker.className = "chart-crosshair-point";
+  marker.setAttribute("aria-hidden", "true");
+  chart.append(marker);
+
+  const markerPosition = (item) => {
+    const svg = chart.querySelector("svg");
+    if (!svg) return { left: 0, top: 0 };
+    const svgRect = svg.getBoundingClientRect();
+    const chartRect = chart.getBoundingClientRect();
+    return {
+      left: chart.scrollLeft + svgRect.left - chartRect.left + item.plotX / viewBox.width * svgRect.width,
+      top: chart.scrollTop + svgRect.top - chartRect.top + item.plotY / viewBox.height * svgRect.height
+    };
+  };
+  const selectIndex = (index, point = null) => {
+    if (!valid.length) return;
+    chart._chartIndex = Math.max(0, Math.min(valid.length - 1, index));
+    const item = valid[chart._chartIndex];
+    const position = markerPosition(item);
+    marker.style.left = `${position.left}px`;
+    marker.style.top = `${position.top}px`;
+    chart.classList.add("is-exploring");
+    const text = formatter(item.row, chart._chartIndex);
+    showTooltip(chart, text, point);
+    chart.setAttribute("aria-valuetext", text);
+  };
+  const nearestIndex = (event) => {
+    const svg = chart.querySelector("svg");
+    if (!svg || !valid.length) return -1;
+    const box = svg.getBoundingClientRect();
+    const pointerX = (event.clientX - box.left) / Math.max(1, box.width) * viewBox.width;
+    const pointerY = (event.clientY - box.top) / Math.max(1, box.height) * viewBox.height;
+    let nearest = 0;
+    let distance = Number.POSITIVE_INFINITY;
+    valid.forEach((item, index) => {
+      const candidate = (item.plotX - pointerX) ** 2 + (item.plotY - pointerY) ** 2;
+      if (candidate < distance) {
+        distance = candidate;
+        nearest = index;
+      }
+    });
+    return nearest;
+  };
+  chart.onfocus = () => valid.length ? selectIndex(chart._chartIndex) : showTooltip(chart, chart.getAttribute("aria-label") || "산점도");
+  chart.onpointermove = (event) => selectIndex(nearestIndex(event), { x: event.clientX, y: event.clientY });
+  chart.onpointerdown = (event) => {
+    if (event.pointerType !== "mouse") {
+      chart.focus({ preventScroll: true });
+      selectIndex(nearestIndex(event), { x: event.clientX, y: event.clientY });
+    }
+  };
+  chart.onblur = () => { $("#tooltip").hidden = true; chart.classList.remove("is-exploring"); };
+  chart.onmouseleave = () => {
+    if (document.activeElement !== chart) {
+      $("#tooltip").hidden = true;
+      chart.classList.remove("is-exploring");
+    }
+  };
+  chart.onkeydown = (event) => {
+    if (!valid.length || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? valid.length - 1 : chart._chartIndex + (event.key === "ArrowLeft" ? -1 : 1);
+    selectIndex(next);
+  };
 }
 
 function sortableValue(text) {
@@ -378,6 +581,9 @@ function initializeSectionNav() {
 }
 
 function renderHistory() {
+  const primary = primaryModelKind();
+  $("#history-model-scope").textContent = `${modelRole(primary)} · ${compactModelName(primary)}`;
+  $("#history-model-scope").className = `scope-badge ${primary === "robust" ? "practical" : "baseline"}`;
   const rows = selectedHistory().filter((row) => row.kospiClose != null || row.kospi != null);
   const container = $("#history-chart");
   if (rows.length < 8) return showEmpty(container, "시계열 관측치가 부족합니다.");
@@ -415,12 +621,18 @@ function renderHistory() {
 }
 
 function scatterPoints() {
+  const published = store.dashboard?.scatterByModel?.[store.model];
+  if (Array.isArray(published)) {
+    const field = store.model === "raw" ? "rawFlowTrillion" : "flowShare";
+    return published.filter((row) => row.return1d != null && (row.y != null || row[field] != null)).map((row, index, rows) => ({ ...row, y: row.y ?? row[field], role: row.role || (index === rows.length - 1 ? "current" : "training") }));
+  }
   if (store.model === "scaled" && Array.isArray(store.dashboard.scatter)) return store.dashboard.scatter.filter((row) => row.return1d != null && row.flowShare != null).map((row, index, rows) => ({ ...row, y: row.flowShare, role: row.role || (index === rows.length - 1 ? "current" : "training") }));
-  const model = modelPayload("raw");
+  const model = modelPayload(store.model);
   if (!model) return [];
   const count = Number(model.trainingCount || 252) + 1;
-  const rows = (store.history.series || []).filter((row) => row.return1d != null && row.rawFlowTrillion != null).slice(-count);
-  return rows.map((row, index) => ({ ...row, y: row.rawFlowTrillion, role: index === rows.length - 1 ? "current" : "training" }));
+  const field = store.model === "raw" ? "rawFlowTrillion" : "flowShare";
+  const rows = (store.history.series || []).filter((row) => row.return1d != null && row[field] != null).slice(-count);
+  return rows.map((row, index) => ({ ...row, y: row[field], role: index === rows.length - 1 ? "current" : "training" }));
 }
 
 function renderScatter() {
@@ -445,7 +657,8 @@ function renderScatter() {
   const xTicks = linearTicks(xmin, xmax).map((value) => `<line class="grid-line" x1="${x(value)}" y1="${p.t}" x2="${x(value)}" y2="${h - p.b}"/><text class="axis-label" x="${x(value)}" y="${h - p.b + 17}" text-anchor="middle">${esc(fmt.pct(value, 1))}</text>`).join("");
   const yFormat = store.model === "raw" ? (value) => `${Number(value).toFixed(1)}조` : (value) => fmt.pct(value, 1);
   const yTicks = linearTicks(ymin, ymax).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 8}" y="${y(value) + 3}" text-anchor="end">${esc(yFormat(value))}</text>`).join("");
-  const marks = points.map((row) => `<circle class="scatter-point ${row.role === "current" ? "current" : ""}" cx="${x(row.return1d)}" cy="${y(row.y)}" r="${row.role === "current" ? 6 : 3}"><title>${esc(`${row.date} · 수익률 ${fmt.pct(row.return1d)} · ${store.model === "raw" ? `순매수 ${fmt.score(row.y, 3)}조원` : `순매수율 ${fmt.pct(row.y, 3)}`}`)}</title></circle>`).join("");
+  const pointGeometry = points.map((row) => ({ row, plotX: x(row.return1d), plotY: y(row.y) }));
+  const marks = pointGeometry.map(({ row, plotX, plotY }) => `<circle class="scatter-point ${row.role === "current" ? "current" : ""}" cx="${plotX}" cy="${plotY}" r="${row.role === "current" ? 6 : 3}"><title>${esc(`${row.date} · 수익률 ${fmt.pct(row.return1d)} · ${store.model === "raw" ? `순매수 ${fmt.score(row.y, 3)}조원` : `순매수율 ${fmt.pct(row.y, 3)}`}`)}</title></circle>`).join("");
   const current = points.find((row) => row.role === "current") || points.at(-1);
   const currentPredicted = predicted(current.return1d);
   const residual = Number.isFinite(currentPredicted) ? `<line class="residual-arrow" x1="${x(current.return1d)}" y1="${y(currentPredicted)}" x2="${x(current.return1d)}" y2="${y(current.y)}"/>` : "";
@@ -456,12 +669,15 @@ function renderScatter() {
   $("#scatter-subtitle").textContent = `${modelName()} · 직전 ${regression.trainingCount || regression.window || points.length - 1}거래일과 현재 관측`;
   container.setAttribute("aria-label", `${points.length}개 관측치 ${modelName()} 산점도. 현재 수익률 ${fmt.pct(current.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(current.y, 3)}조원` : fmt.pct(current.y, 3)}.`);
   $("#scatter-note").textContent = `학습 n=${points.filter((row) => row.role !== "current").length} · 현재 n=${points.filter((row) => row.role === "current").length} · β=${fmt.score(regression.beta, 4)} · R²=${fmt.score(modelPayload()?.rollingR2, 3)}`;
-  attachChartNavigation(container, points, (row) => `${row.date}, KOSPI ${fmt.signedPct(row.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3)}${row.role === "current" ? ", 현재 관측" : ", 학습 관측"}`);
+  attachScatterNavigation(container, pointGeometry, (row) => `${row.date}, KOSPI ${fmt.signedPct(row.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3)}${row.role === "current" ? ", 현재 관측" : ", 학습 관측"}`, { width: w, height: h });
   const tableRows = recentRows(points).map((row) => [row.date, fmt.signedPct(row.return1d), store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3), row.role === "current" ? "현재" : "학습"]);
   $("#scatter-data-table").innerHTML = dataTable(["날짜", "KOSPI 1일", inputLabel, "역할"], tableRows, `${modelName()} 최근 ${tableRows.length}개 산점도 관측`);
 }
 
 function renderResidual() {
+  const primary = primaryModelKind();
+  $("#residual-model-scope").textContent = `${modelRole(primary)} · ${compactModelName(primary)}`;
+  $("#residual-model-scope").className = `scope-badge ${primary === "robust" ? "practical" : "baseline"}`;
   const rows = selectedHistory().slice(-756);
   const container = $("#residual-chart");
   if (rows.length < 8) return showEmpty(container, "잔차 시계열이 부족합니다.");
@@ -472,14 +688,80 @@ function renderResidual() {
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="residual-band-fear" x="${p.l}" y="${y(20)}" width="${w - p.l - p.r}" height="${y(0) - y(20)}"/><rect class="residual-band-greed" x="${p.l}" y="${y(100)}" width="${w - p.l - p.r}" height="${y(80) - y(100)}"/>${boundaries}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-primary">${pathSegments(cleanRows, "percentile", x, y)}</g><text class="axis-title" x="${p.l}" y="13">백분위 (0–100)</text><text class="axis-label" x="${p.l}" y="${h - 10}">${esc(rows[0].date)}</text><text class="axis-label" text-anchor="end" x="${w - p.r}" y="${h - 10}">${esc(rows.at(-1).date)}</text></svg>`;
   const validRows = rows.filter((row) => Number.isFinite(Number(row.percentile)));
   const latest = validRows.at(-1);
-  container.setAttribute("aria-label", `규모보정 잔차 백분위 ${rows[0].date}부터 ${rows.at(-1).date}. 최신 ${latest ? fmt.score(latest.percentile) : "산출 불가"}.`);
-  attachChartNavigation(container, validRows, (row) => `${row.date}, 규모보정 잔차 백분위 ${fmt.score(row.percentile)}, ${labels[row.state] || row.state}, 품질 ${row.quality}`);
+  container.setAttribute("aria-label", `${compactModelName(primary)} 잔차 백분위 ${rows[0].date}부터 ${rows.at(-1).date}. 최신 ${latest ? fmt.score(latest.percentile) : "산출 불가"}.`);
+  attachChartNavigation(container, validRows, (row) => `${row.date}, ${compactModelName(primary)} 잔차 백분위 ${fmt.score(row.percentile)}, ${labels[row.state] || row.state}, 품질 ${row.quality}`);
   const tableRows = recentRows(rows).map((row) => [row.date, fmt.score(row.percentile), labels[row.state] || row.state, row.quality || "—"]);
-  $("#residual-data-table").innerHTML = dataTable(["날짜", "백분위", "상태", "품질"], tableRows, `최근 ${tableRows.length}개 규모보정 잔차 백분위`);
+  $("#residual-data-table").innerHTML = dataTable(["날짜", "백분위", "상태", "품질"], tableRows, `최근 ${tableRows.length}개 ${compactModelName(primary)} 잔차 백분위`);
 }
 
 function selectedEventSection() {
-  return store.dashboard.events?.[store.eventAsset]?.[store.eventSample];
+  const byModel = store.dashboard.eventsByModel?.[store.model];
+  return (byModel || store.dashboard.events)?.[store.eventAsset]?.[store.eventSample];
+}
+
+function eventModelKind() {
+  return store.dashboard.eventsByModel?.[store.model] ? store.model : primaryModelKind();
+}
+
+function eventBenchmark(row) {
+  return row.benchmarkMean ?? row.matchedBenchmarkMean ?? row.unconditionalMean ?? null;
+}
+
+function eventExcess(row) {
+  return row.meanExcessReturn ?? row.excessMean ?? row.excessReturn ?? null;
+}
+
+function renderEventVisual(section) {
+  const container = $("#event-ci-chart");
+  const rows = section?.summary || [];
+  if (!rows.length) {
+    $("#event-benchmark-note").textContent = "선택 표본이 없어 불확실성 차트를 표시하지 않습니다.";
+    return showEmpty(container, "사건 신뢰구간 없음");
+  }
+  const values = rows.flatMap((row) => [row.mean, ...(row.meanCi95 || []), eventBenchmark(row), eventExcess(row), ...(row.meanExcessReturnCi95 || row.excessCi95 || row.excessMeanCi95 || [])]).map(Number).filter(Number.isFinite);
+  const min0 = Math.min(0, ...values), max0 = Math.max(0, ...values), pad = (max0 - min0 || .01) * .12;
+  const min = min0 - pad, max = max0 + pad;
+  const w = 880, rowHeight = 37, h = Math.max(330, rows.length * rowHeight + 78), p = { l: 154, r: 72, t: 24, b: 48 };
+  const x = scale(min, max, p.l, w - p.r);
+  const rowY = (index) => p.t + 18 + index * ((h - p.t - p.b - 22) / Math.max(1, rows.length - 1));
+  const ticks = linearTicks(min, max, 6).map((value) => `<line class="grid-line" x1="${x(value)}" y1="${p.t}" x2="${x(value)}" y2="${h - p.b}"/><text class="axis-label" x="${x(value)}" y="${h - 17}" text-anchor="middle">${esc(fmt.pct(value, 1))}</text>`).join("");
+  let hasBenchmark = false;
+  let hasExcess = false;
+  const benchmarkTreatments = new Set([
+    section?.meanExcessReturnCi95BenchmarkTreatment,
+    ...rows.map((row) => row.meanExcessReturnCi95BenchmarkTreatment)
+  ].filter(Boolean));
+  const geometry = [];
+  const marks = rows.map((row, index) => {
+    const y = rowY(index);
+    const mean = Number(row.mean);
+    const [low, high] = (row.meanCi95 || []).map(Number);
+    const benchmarkValue = eventBenchmark(row);
+    const excessValue = eventExcess(row);
+    const benchmark = benchmarkValue == null ? Number.NaN : Number(benchmarkValue);
+    const excess = excessValue == null ? Number.NaN : Number(excessValue);
+    const excessCi = (row.meanExcessReturnCi95 || row.excessCi95 || row.excessMeanCi95 || []).map(Number);
+    const greed = String(row.state).includes("greed");
+    const stateLabel = labels[row.state] || row.state;
+    geometry.push({ row, plotX: x(mean), plotY: y });
+    if (Number.isFinite(benchmark)) hasBenchmark = true;
+    if (Number.isFinite(excess)) hasExcess = true;
+    const interval = Number.isFinite(low) && Number.isFinite(high) ? `<line class="event-interval" x1="${x(low)}" y1="${y}" x2="${x(high)}" y2="${y}"/><line class="event-interval-cap" x1="${x(low)}" y1="${y - 5}" x2="${x(low)}" y2="${y + 5}"/><line class="event-interval-cap" x1="${x(high)}" y1="${y - 5}" x2="${x(high)}" y2="${y + 5}"/>` : "";
+    const meanMark = greed ? `<rect class="event-mean greed" x="${x(mean) - 5}" y="${y - 5}" width="10" height="10" transform="rotate(45 ${x(mean)} ${y})"/>` : `<circle class="event-mean fear" cx="${x(mean)}" cy="${y}" r="5"/>`;
+    const benchmarkMark = Number.isFinite(benchmark) ? `<rect class="event-benchmark" x="${x(benchmark) - 4}" y="${y - 4}" width="8" height="8"/><line class="event-excess-connector" x1="${x(benchmark)}" y1="${y + 8}" x2="${x(mean)}" y2="${y + 8}"/>` : "";
+    const excessInterval = excessCi.length === 2 && excessCi.every(Number.isFinite) ? `<line class="event-excess-interval" x1="${x(excessCi[0])}" y1="${y + 10}" x2="${x(excessCi[1])}" y2="${y + 10}"/>` : "";
+    const excessLabel = Number.isFinite(excess) ? `<text class="event-excess-label" x="${w - p.r + 8}" y="${y + 4}">Δ ${esc(fmt.signedPct(excess, 1))}</text>` : "";
+    return `<text class="event-row-label" x="${p.l - 12}" y="${y + 4}" text-anchor="end">${esc(`${stateLabel} · ${row.horizon}일 · n=${row.eventCount}`)}</text>${interval}${benchmarkMark}${excessInterval}${meanMark}${excessLabel}`;
+  }).join("");
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${ticks}<line class="reference-line" x1="${x(0)}" y1="${p.t}" x2="${x(0)}" y2="${h - p.b}"/>${marks}<line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><text class="axis-title" x="${p.l}" y="14">평균 선행수익률 · 95% CI</text></svg>`;
+  container.setAttribute("aria-label", `${store.eventAsset} ${rows.length}개 사건 요약. 평균과 95% 신뢰구간${hasBenchmark ? ", 비교 벤치마크" : ""}${hasExcess ? ", 초과수익" : ""}.`);
+  attachScatterNavigation(container, geometry, (row) => `${labels[row.state] || row.state} ${row.horizon}일, 평균 ${fmt.signedPct(row.mean)}, 95% 신뢰구간 ${fmt.pct(row.meanCi95?.[0])}에서 ${fmt.pct(row.meanCi95?.[1])}, 사건 ${row.eventCount}개${eventBenchmark(row) == null ? "" : `, 벤치마크 ${fmt.signedPct(eventBenchmark(row))}`}${eventExcess(row) == null ? "" : `, 초과수익 ${fmt.signedPct(eventExcess(row))}`}`, { width: w, height: h });
+  const conditionalCiNote = benchmarkTreatments.has("fixed_external_mean")
+    ? " 초과수익 95% CI는 무조건부 벤치마크 평균을 고정한 조건부 구간이며, 벤치마크 평균의 추정오차는 포함하지 않습니다."
+    : benchmarkTreatments.has("paired_event_returns")
+      ? " 초과수익 95% CI는 사건별 벤치마크 수익률을 함께 재표집한 구간입니다."
+      : "";
+  $("#event-benchmark-note").textContent = hasBenchmark ? `비교 벤치마크와의 차이를 연결선과 Δ로 표시합니다.${hasExcess ? " 초과수익은 서버가 발행한 값입니다." : " 초과수익 수치는 아직 별도 발행되지 않았습니다."}${conditionalCiNote}` : "비교 벤치마크·초과수익이 공개 계약에 없어 0% 기준선만 표시합니다. 평균수익률 자체를 시장 대비 초과성과로 해석하지 마세요.";
 }
 
 function renderEvents() {
@@ -488,51 +770,103 @@ function renderEvents() {
   resetTableSort($("#event-table"));
   const sampleLabel = store.eventSample === "all" ? "전체 사건" : "20일 비중첩";
   $("#event-table caption").textContent = `${store.eventAsset} ${sampleLabel} 극단 상태 이후 선행수익률`;
-  $("#event-source-line").textContent = `${store.eventAsset} · ${sampleLabel} · bootstrap 10,000회`;
+  const modelKind = eventModelKind();
+  const bootstrap = section?.summary?.[0]?.bootstrapMethod;
+  const blockLength = section?.summary?.[0]?.bootstrapBlockLength;
+  const bootstrapLabel = bootstrap === "moving_block" ? `이동블록 bootstrap 10,000회${blockLength ? ` · 블록 ${blockLength}` : ""}` : "bootstrap 10,000회";
+  $("#event-model-scope").textContent = `${modelRole(modelKind)} · ${compactModelName(modelKind)}`;
+  $("#event-model-scope").className = `scope-badge ${modelKind === "raw" ? "replica" : modelKind === "robust" ? "practical" : "baseline"}`;
+  $("#event-source-line").textContent = `${store.eventAsset} · ${sampleLabel} · ${compactModelName(modelKind)} · ${bootstrapLabel}`;
+  $("#event-visual-subtitle").textContent = `${store.eventAsset} · ${sampleLabel} · 0% 기준선 · 공급된 경우 벤치마크와 초과수익 포함`;
   if (!section?.summary?.length) {
     body.innerHTML = `<tr><td colspan="7">선택한 사전 계산 사건 표본이 없습니다.</td></tr>`;
     $("#event-note").textContent = "사건 수가 없을 때 성과를 강조하지 않습니다.";
+    renderEventVisual(section);
     return;
   }
   body.innerHTML = section.summary.map((row) => `<tr class="${row.smallSample ? "small-sample" : ""}"><td><span class="state-mark ${row.state.includes("greed") ? "greed" : ""}">${esc(labels[row.state] || row.state)}</span></td><td>${esc(row.horizon)}일</td><td>${esc(row.eventCount)}${row.smallSample ? "*" : ""}</td><td>${esc(fmt.pct(row.mean))}</td><td>${esc(fmt.pct(row.median))}</td><td>${esc(fmt.pct(row.positiveRate, 1))}</td><td>${esc(fmt.pct(row.meanCi95?.[0]))} ~ ${esc(fmt.pct(row.meanCi95?.[1]))}</td></tr>`).join("");
   $("#event-note").textContent = `${sampleLabel} ${section.eventCount}개. * 20개 미만 표본은 소표본으로 흐리게 표시하며 통계적 확정으로 해석하지 않습니다.`;
+  renderEventVisual(section);
 }
 
 function variantKey(variant = store.backtestVariant, cost = store.backtestCost) {
-  return variant === "disparity" ? `disparity_${cost}bp` : `base_${cost}bp`;
+  const published = ({ scaled_huber: "robust", scaled_ols: "scaled", raw_ols: "raw", disparity: "disparity" })[variant] || variant;
+  return `${published}_${cost}bp`;
 }
 
 function variantLabel(name) {
-  return ({ base_5bp: "극단 공포 · 5bp", base_10bp: "극단 공포 · 10bp", base_20bp: "극단 공포 · 20bp", disparity_10bp: "이격도 하위10% · 10bp" })[name] || name;
+  const match = String(name).match(/^(robust|scaled|raw|scaled_huber|scaled_ols|raw_ols|base|disparity)_(\d+)bp$/);
+  if (!match) return name;
+  const role = ({ robust: "실전 강건 회귀", scaled: "규모보정 OLS 기준선", raw: "절대수급 원문 근사", scaled_huber: "실전 강건 회귀", scaled_ols: "규모보정 OLS 기준선", raw_ols: "절대수급 원문 근사", base: "규모보정 OLS 기준선", disparity: "이격도 강건성" })[match[1]];
+  return `${role} · ${match[2]}bp`;
+}
+
+function legacyVariantKey(variant = store.backtestVariant, cost = store.backtestCost) {
+  if (variant === "scaled_ols") return `base_${cost}bp`;
+  if (variant === "disparity") return `disparity_${cost}bp`;
+  return null;
 }
 
 function resultFor({ proxy = store.backtestProxy, period = store.backtestPeriod, variant = store.backtestVariant, cost = store.backtestCost } = {}) {
   const data = store.dashboard.backtests?.proxies?.[proxy];
   if (!data) return null;
   const key = variantKey(variant, cost);
-  if (period === "full") return data.fullPeriod?.[key] || null;
-  const common = data.commonPeriod;
-  if (!common) return null;
-  if (common[key]?.metrics) return common[key];
-  if (common.metrics && variant === "base" && Number(common.oneWayCostBps ?? 10) === Number(cost)) return common;
+  const legacyKey = legacyVariantKey(variant, cost);
+  const section = period === "full" ? data.fullPeriod : data.commonPeriod;
+  if (!section) return null;
+  if (section[key]?.metrics) return section[key];
+  if (legacyKey && section[legacyKey]?.metrics) return section[legacyKey];
+  if (section.metrics && variant === "scaled_ols" && Number(section.oneWayCostBps ?? 10) === Number(cost)) return section;
   return null;
 }
 
 function hasAnyResult({ proxy = store.backtestProxy, period = store.backtestPeriod, variant = store.backtestVariant, cost = store.backtestCost } = {}) {
   if (resultFor({ proxy, period, variant, cost })) return true;
-  return ["base", "disparity"].some((v) => [5, 10, 20].some((c) => resultFor({ proxy, period, variant: v, cost: c })));
+  return ["scaled_huber", "scaled_ols", "raw_ols", "disparity"].some((v) => [0, 5, 10, 20].some((c) => resultFor({ proxy, period, variant: v, cost: c })));
 }
 
 function ensureBacktestSelection() {
   if (resultFor()) return;
   const candidates = [
     { variant: store.backtestVariant, cost: 10 },
-    { variant: "base", cost: 10 },
-    { variant: "base", cost: 5 },
-    { variant: "base", cost: 20 }
+    { variant: "scaled_huber", cost: 10 },
+    { variant: "scaled_ols", cost: 10 },
+    { variant: "raw_ols", cost: 10 },
+    { variant: "scaled_ols", cost: 5 },
+    { variant: "scaled_ols", cost: 0 },
+    { variant: "scaled_ols", cost: 20 }
   ];
   const fallback = candidates.find((candidate) => resultFor(candidate));
   if (fallback) Object.assign(store, { backtestVariant: fallback.variant, backtestCost: fallback.cost });
+}
+
+function renderProxyComparison() {
+  const card = $("#proxy-comparison-card");
+  const results = ["226490", "069500"].map((proxy) => ({ proxy, result: resultFor({ proxy, period: "common" }) })).filter(({ result }) => result?.metrics);
+  if (results.length !== 2) {
+    card.hidden = true;
+    $("#proxy-comparison").innerHTML = "";
+    return;
+  }
+  card.hidden = false;
+  const key = variantKey();
+  $("#proxy-comparison-subtitle").textContent = `${variantLabel(key)} · ETF 공통기간 · 같은 신호·비용`;
+  $("#proxy-comparison").innerHTML = results.map(({ proxy, result }) => {
+    const m = result.metrics;
+    return `<section class="proxy-panel" aria-label="${esc(proxy)} 공통기간 결과">
+      <div><span>${esc(proxy)}</span><strong>${esc(fmt.signedPct(m.totalReturn))}</strong><small>전략 총수익률</small></div>
+      <dl>
+        <div><dt>CAGR</dt><dd>${esc(fmt.pct(m.cagr))}</dd></div>
+        <div><dt>Sharpe</dt><dd>${esc(fmt.score(m.sharpe, 2))}</dd></div>
+        <div><dt>최대낙폭</dt><dd>${esc(fmt.pct(m.maxDrawdown))}</dd></div>
+        <div><dt>노출도</dt><dd>${esc(fmt.pct(m.exposure, 1))}</dd></div>
+        <div><dt>동일 타이밍 0bp</dt><dd>${esc(fmt.signedPct(m.zeroCostTimingReturn ?? m.exposureMatchedReturn))}</dd></div>
+        <div><dt>위험 일치 BH</dt><dd>${esc(fmt.signedPct(m.riskMatchedBuyHoldReturn))}</dd></div>
+        <div><dt>거래 수</dt><dd>${esc(m.tradeCount)}</dd></div>
+        <div><dt>매수·보유</dt><dd>${esc(fmt.signedPct(m.buyAndHoldReturn))}</dd></div>
+      </dl>
+    </section>`;
+  }).join("");
 }
 
 function renderBacktests() {
@@ -540,11 +874,12 @@ function renderBacktests() {
   const body = $("#backtest-table tbody");
   resetTableSort($("#backtest-table"));
   resetTableSort($("#trade-table"));
-  if (backtests?.status !== "ok" || !Object.keys(backtests?.proxies || {}).length) {
-    body.innerHTML = `<tr><td colspan="14">가격 교차검증을 통과한 백테스트가 없습니다.</td></tr>`;
+  if ((backtests?.status && backtests.status !== "ok") || !Object.keys(backtests?.proxies || {}).length) {
+    body.innerHTML = `<tr><td colspan="16">가격 교차검증을 통과한 백테스트가 없습니다.</td></tr>`;
     $("#backtest-cards").innerHTML = `<p class="chart-note">KRX와 조정가격의 최근 공통 종가가 허용오차 0.5% 이내여야 공개됩니다.</p>`;
     showEmpty($("#equity-chart"), "백테스트 공개 보류");
     $("#trade-table tbody").innerHTML = `<tr><td colspan="5">거래 없음</td></tr>`;
+    $("#proxy-comparison-card").hidden = true;
     return;
   }
   ensureBacktestSelection();
@@ -553,13 +888,16 @@ function renderBacktests() {
   const periodLabel = store.backtestPeriod === "common" ? "ETF 공통 기간" : "전체 가능 기간";
   const key = variantKey();
   const selectionLabel = `${store.backtestProxy} · ${variantLabel(key)} · ${periodLabel}`;
+  const strategyRole = store.backtestVariant === "scaled_huber" ? ["실전 신호", "practical"] : store.backtestVariant === "raw_ols" ? ["PDF 원문 근사", "replica"] : store.backtestVariant === "scaled_ols" ? ["OLS 기준선", "baseline"] : ["강건성 변형", "fixed"];
+  $("#strategy-model-scope").textContent = strategyRole[0];
+  $("#strategy-model-scope").className = `scope-badge ${strategyRole[1]}`;
   $("#backtest-card-subtitle").textContent = selectionLabel;
   $("#equity-title").textContent = `${store.backtestProxy} 누적가치와 낙폭`;
   $("#equity-subtitle").textContent = `${variantLabel(key)} · ${periodLabel} · 전략 대 매수·보유`;
   $("#backtest-table caption").textContent = `${selectionLabel} 성과·위험 상세`;
   $("#trade-table caption").textContent = `${selectionLabel} 최근 거래내역`;
   if (!result?.metrics) {
-    body.innerHTML = `<tr><td colspan="14">선택 조합의 사전 계산 결과가 공개되지 않았습니다.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="16">선택 조합의 사전 계산 결과가 공개되지 않았습니다.</td></tr>`;
     $("#backtest-cards").innerHTML = `<p class="chart-note">다른 기간·비용·진입 규칙을 선택해 주세요.</p>`;
     showEmpty($("#equity-chart"), "선택 결과 없음");
     $("#trade-table tbody").innerHTML = `<tr><td colspan="5">거래 없음</td></tr>`;
@@ -567,24 +905,52 @@ function renderBacktests() {
     return;
   }
   const m = result.metrics;
-  body.innerHTML = `<tr><td>${esc(`${store.backtestProxy} · ${variantLabel(key)}`)}</td><td>${esc(`${m.start}~${m.end}`)}</td><td>${esc(fmt.pct(m.totalReturn))}</td><td>${esc(fmt.pct(m.cagr))}</td><td>${esc(fmt.pct(m.volatility))}</td><td>${esc(fmt.score(m.sharpe, 2))}</td><td>${esc(fmt.pct(m.maxDrawdown))}</td><td>${esc(fmt.pct(m.winRate, 1))}</td><td>${esc(fmt.pct(m.exposure, 1))}</td><td>${esc(fmt.score(m.turnover, 2))}×</td><td>${esc(m.tradeCount)}</td><td>${esc(fmt.score(m.averageHoldingSessions, 1))}일</td><td>${esc(fmt.pct(m.buyAndHoldReturn))}</td><td>${esc(fmt.pct(m.buyAndHoldMaxDrawdown))}</td></tr>`;
+  const strategyModel = ({ scaled_huber: "robust", scaled_ols: "scaled", raw_ols: "raw" })[store.backtestVariant];
+  const breakEven = strategyModel ? backtests.proxies?.[store.backtestProxy]?.costBreakEvenBps?.[strategyModel] : null;
+  body.innerHTML = `<tr><td>${esc(`${store.backtestProxy} · ${variantLabel(key)}`)}</td><td>${esc(`${m.start}~${m.end}`)}</td><td>${esc(fmt.pct(m.totalReturn))}</td><td>${esc(fmt.pct(m.cagr))}</td><td>${esc(fmt.pct(m.volatility))}</td><td>${esc(fmt.score(m.sharpe, 2))}</td><td>${esc(fmt.pct(m.maxDrawdown))}</td><td>${esc(fmt.pct(m.winRate, 1))}</td><td>${esc(fmt.pct(m.exposure, 1))}</td><td>${esc(fmt.pct(m.zeroCostTimingReturn ?? m.exposureMatchedReturn))}</td><td>${esc(fmt.pct(m.riskMatchedBuyHoldReturn))}</td><td>${esc(fmt.score(m.turnover, 2))}×</td><td>${esc(m.tradeCount)}</td><td>${esc(fmt.score(m.averageHoldingSessions, 1))}일</td><td>${esc(fmt.pct(m.buyAndHoldReturn))}</td><td>${esc(fmt.pct(m.buyAndHoldMaxDrawdown))}</td></tr>`;
   $("#backtest-cards").innerHTML = [
     metric("전략 총수익률", fmt.pct(m.totalReturn), `CAGR ${fmt.pct(m.cagr)}`),
     metric("전략 최대낙폭", fmt.pct(m.maxDrawdown), `변동성 ${fmt.pct(m.volatility)}`),
     metric("매수·보유 수익률", fmt.pct(m.buyAndHoldReturn), `MDD ${fmt.pct(m.buyAndHoldMaxDrawdown)}`),
+    metric("동일 타이밍 무비용", fmt.pct(m.zeroCostTimingReturn ?? m.exposureMatchedReturn), "같은 진입·청산 · 비용 0bp"),
+    metric("위험 일치 매수·보유", fmt.pct(m.riskMatchedBuyHoldReturn), `시장 비중 ${fmt.pct(m.riskMatchedScale, 1)}`),
     metric("거래 승률", fmt.pct(m.winRate, 1), `${m.tradeCount}건 · 평균 ${fmt.score(m.averageHoldingSessions, 1)}일`),
-    metric("노출도", fmt.pct(m.exposure, 1), `회전율 ${fmt.score(m.turnover, 2)}×`),
-    metric("Sharpe", fmt.score(m.sharpe, 2), "현금수익률 0%")
+    metric("노출도", fmt.pct(m.exposure, 1), `연환산 매매측수 ${fmt.score(m.turnover, 2)}×`),
+    metric("Sharpe", fmt.score(m.sharpe, 2), "현금수익률 0%"),
+    metric("비용 손익분기", breakEven == null ? "—" : `${fmt.score(breakEven, 2)}bp`, "편도 비용 선형 보간")
   ].join("");
   renderEquity(result, selectionLabel);
   const trades = result.trades || [];
-  $("#trade-table tbody").innerHTML = trades.length ? trades.slice(-12).reverse().map((trade) => `<tr><td>${esc(trade.entry_date)}</td><td>${esc(trade.exit_date)}</td><td>${esc(trade.holding_sessions)}</td><td>${esc(labels[trade.reason] || trade.reason)}</td><td>${esc(fmt.pct(trade.net_return))}</td></tr>`).join("") : `<tr><td colspan="5">완결된 거래 없음</td></tr>`;
+  $("#trade-card-subtitle").textContent = result.tradeHistoryTruncated ? "보유 중 반복 공포 신호는 무시 · 공개 JSON은 최근 거래만 보존 · 화면 최신 12건" : "보유 중 반복 공포 신호는 무시 · 화면 최신 12건";
+  const tradeRows = trades.length
+    ? trades.slice(-12).reverse().map((trade) => `<tr><td>${esc(trade.entry_date)}</td><td>${esc(trade.exit_date)}</td><td>${esc(trade.holding_sessions)}</td><td>${esc(labels[trade.reason] || trade.reason)}</td><td>${esc(fmt.pct(trade.net_return))}</td></tr>`).join("")
+    : result.tradeHistoryTruncated && Number(m.tradeCount) > 0
+      ? `<tr><td colspan="5">이 조합의 거래 ${esc(m.tradeCount)}건 중 상세 행은 경량 공개 계약에서 생략했습니다.</td></tr>`
+      : `<tr><td colspan="5">완결된 거래 없음</td></tr>`;
+  $("#trade-table tbody").innerHTML = tradeRows;
   applyTableFilter($("#trade-filter"));
+  renderProxyComparison();
   renderConclusion();
 }
 
-function renderEquity(result, selectionLabel) {
+function hydratedEquityRows(result) {
   const rows = result.equity || [];
+  const proxy = store.dashboard.backtests?.proxies?.[store.backtestProxy] || {};
+  const benchmarkRows = proxy.commonBenchmarkEquity || proxy.benchmarkEquity || [];
+  if (!benchmarkRows.length || rows.every((row) => row.buyHoldValue != null && row.buyHoldDrawdown != null)) return rows;
+  const benchmark = new Map(benchmarkRows.map((row) => [row.date, row]));
+  return rows.map((row) => {
+    const matched = benchmark.get(row.date) || {};
+    return {
+      ...row,
+      buyHoldValue: row.buyHoldValue ?? matched.buyHoldValue ?? matched.value ?? null,
+      buyHoldDrawdown: row.buyHoldDrawdown ?? matched.buyHoldDrawdown ?? matched.drawdown ?? null
+    };
+  });
+}
+
+function renderEquity(result, selectionLabel) {
+  const rows = hydratedEquityRows(result);
   const container = $("#equity-chart");
   if (rows.length < 2) {
     $("#equity-data-table").innerHTML = `<p class="empty-inline">선택 기간의 일별 누적가치가 공개 계약에 없습니다. 성과 표의 정확값을 확인하세요.</p>`;
@@ -614,32 +980,59 @@ function renderConclusion() {
   const section = selectedEventSection();
   const result = resultFor();
   const fear20 = section?.summary?.find((row) => row.state === "extreme_fear" && Number(row.horizon) === 20);
-  const greed20 = section?.summary?.find((row) => row.state === "extreme_greed" && Number(row.horizon) === 20);
   const metrics = result?.metrics;
-  const eventConclusive = Number(fear20?.meanCi95?.[0]) > 0;
-  const strategyOutperforms = metrics && Number(metrics.totalReturn) > Number(metrics.buyAndHoldReturn);
-  let tone = "mixed";
-  let verdict = "선택 결과의 근거가 충분하지 않아 가설을 판정할 수 없습니다.";
-  if (fear20 && metrics) {
-    if (eventConclusive && strategyOutperforms) {
-      tone = "supportive";
-      verdict = "선택한 사건 표본과 전략 비교는 공포 뒤 반등 가설을 함께 지지합니다.";
-    } else if (!eventConclusive && !strategyOutperforms) {
-      tone = "caution";
-      verdict = "선택한 공개 결과는 ‘극단적 공포가 저점과 잘 맞는다’는 가설을 강하게 뒷받침하지 않습니다.";
-    } else {
-      verdict = "사건 연구와 거래 전략의 증거가 엇갈립니다. 한 결과만으로 예측력을 주장할 수 없습니다.";
-    }
-  }
+  const replica = pdfReplicaPayload();
+  const annotated = pdfReplicaEvents(replica);
+  const replicaMatch = replica?.directionMatchCount ?? replica?.matchedCount ?? replica?.summary?.directionMatchCount ?? (annotated.length ? annotated.filter((row) => row.directionMatched === true).length : null);
+  const excess = fear20 ? eventExcess(fear20) : null;
+  const excessCi = fear20?.meanExcessReturnCi95 || fear20?.excessCi95 || fear20?.excessMeanCi95;
+  const eventConclusive = Array.isArray(excessCi) ? Number(excessCi[0]) > 0 : Number(fear20?.meanCi95?.[0]) > 0;
+  const strategyPositive = metrics && Number(metrics.totalReturn) > 0 && Number(metrics.sharpe) > 0;
+  const tone = eventConclusive && strategyPositive ? "supportive" : !fear20 || !metrics ? "mixed" : "caution";
+  const verdict = "원문 날짜 재현, 전체 사건 일반화, 비용 후 전략 실용성을 서로 다른 질문으로 판정합니다.";
   const sampleLabel = store.eventSample === "all" ? "전체 사건" : "20일 비중첩";
   const key = variantKey();
-  const facts = [
-    fear20 ? `<span><strong>극단 공포 후 20일</strong>${esc(fmt.signedPct(fear20.mean))} · 95% CI ${esc(fmt.pct(fear20.meanCi95?.[0]))}~${esc(fmt.pct(fear20.meanCi95?.[1]))} · n=${esc(fear20.eventCount)}</span>` : `<span><strong>사건 근거</strong>선택 표본 없음</span>`,
-    greed20 ? `<span><strong>극단 탐욕 후 20일</strong>${esc(fmt.signedPct(greed20.mean))} · n=${esc(greed20.eventCount)}</span>` : "",
-    metrics ? `<span><strong>선택 전략 대 매수·보유</strong>${esc(fmt.signedPct(metrics.totalReturn))} vs ${esc(fmt.signedPct(metrics.buyAndHoldReturn))}</span>` : `<span><strong>전략 근거</strong>선택 결과 없음</span>`
-  ].filter(Boolean).join("");
+  const replicaEvidence = annotated.length ? `${replicaMatch == null ? `${annotated.length}개 주석 사건 공개` : `${replicaMatch}/${annotated.length} 방향 일치`} · 절대수급 원문 근사` : "주석 사건 파생값 미발행";
+  const eventEvidence = fear20 ? `20일 평균 ${fmt.signedPct(fear20.mean)} · 95% CI ${fmt.pct(fear20.meanCi95?.[0])}~${fmt.pct(fear20.meanCi95?.[1])} · n=${fear20.eventCount}${excess == null ? " · 벤치마크 초과수익 미발행" : ` · 초과 ${fmt.signedPct(excess)}`}` : "선택 표본 없음";
+  const strategyEvidence = metrics ? `${fmt.signedPct(metrics.totalReturn)} · Sharpe ${fmt.score(metrics.sharpe, 2)} · 노출도 ${fmt.pct(metrics.exposure, 1)} · 동일 타이밍 0bp ${fmt.signedPct(metrics.zeroCostTimingReturn ?? metrics.exposureMatchedReturn)} · 위험 일치 BH ${fmt.signedPct(metrics.riskMatchedBuyHoldReturn)}` : "선택 결과 없음";
+  const facts = `<span><strong>1 · PDF 날짜 재현</strong>${esc(replicaEvidence)}</span><span><strong>2 · 사건 일반화</strong>${esc(eventEvidence)}</span><span><strong>3 · 비용 후 전략</strong>${esc(strategyEvidence)}</span>`;
   $("#research-conclusion").className = `conclusion-card ${tone}`;
-  $("#research-conclusion").innerHTML = `<div class="conclusion-heading"><div><p class="eyebrow">EVIDENCE FIRST</p><h2 id="conclusion-title">현재 공개 결과가 말하는 것</h2></div><span class="badge neutral">${esc(store.eventAsset)} · ${esc(sampleLabel)} · ${esc(store.backtestProxy)} ${esc(variantLabel(key))}</span></div><p class="conclusion-lead">${esc(verdict)}</p><div class="conclusion-facts">${facts}</div><p class="conclusion-footnote">사전 정의된 결과를 그대로 읽은 것이며, 화면 선택으로 임계값이나 백테스트를 다시 계산하지 않습니다.</p>`;
+  $("#research-conclusion").innerHTML = `<div class="conclusion-heading"><div><p class="eyebrow">THREE SEPARATE QUESTIONS</p><h2 id="conclusion-title">현재 공개 결과가 말하는 것</h2></div><span class="badge neutral">사건: ${esc(store.eventAsset)} ${esc(compactModelName(eventModelKind()))} · ${esc(sampleLabel)} · 전략: ${esc(store.backtestProxy)} ${esc(variantLabel(key))}</span></div><p class="conclusion-lead">${esc(verdict)}</p><div class="conclusion-facts">${facts}</div><p class="conclusion-footnote">사건 평균이 양수인 것, 시장 대비 초과수익인 것, 비용 후 거래 가능한 것은 서로 동치가 아닙니다. 낮은 노출도 전략과 100% 매수·보유의 총수익률도 직접 우열 판정에 쓰지 않습니다.</p>`;
+}
+
+function pdfReplicaPayload() {
+  return store.dashboard?.pdfReplica || store.dashboard?.sourceReplica || store.dashboard?.pdfEraSnapshot || null;
+}
+
+function pdfReplicaEvents(payload = pdfReplicaPayload()) {
+  return payload?.annotatedEvents || payload?.events || payload?.observations || [];
+}
+
+function replicaField(row, model, field) {
+  const cap = `${field.charAt(0).toUpperCase()}${field.slice(1)}`;
+  return row?.models?.[model]?.[field] ?? row?.[`${model}${cap}`] ?? null;
+}
+
+function renderPdfSnapshot() {
+  const payload = pdfReplicaPayload();
+  const rows = pdfReplicaEvents(payload);
+  const container = $("#pdf-snapshot");
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty replica-empty"><strong>PDF 주석 사건 파생값이 아직 공개 계약에 없습니다.</strong><span>원문 이미지를 복제하지 않고, 독립 수집 데이터의 11개 날짜가 발행되면 이 영역에 표시합니다.</span></div>`;
+    return;
+  }
+  const matched = payload.directionMatchCount ?? payload.matchedCount ?? payload.summary?.directionMatchCount ?? rows.filter((row) => row.directionMatched === true).length;
+  const complete = rows.filter((row) => [row.forwardReturn20d, row.forwardReturns?.return20d, row.forwardReturns?.[20], row.forwardReturns?.["20"]].some((value) => value != null)).length;
+  const summary = `<div class="replica-summary"><span><strong>${esc(rows.length)}개</strong>원문 주석 사건</span><span><strong>${esc(matched == null ? "—" : `${matched}/${rows.length}`)}</strong>방향 일치</span><span><strong>${esc(complete)}</strong>20일 결과 완결</span><span><strong>원문 근사</strong>완전 복제 아님</span></div>`;
+  const tableRows = rows.map((row) => {
+    const rawPercentile = row.rawPercentile ?? replicaField(row, "raw", "percentile");
+    const practicalPercentile = row.robustPercentile ?? replicaField(row, "robust", "percentile") ?? row.scaledPercentile ?? replicaField(row, "scaled", "percentile");
+    const forward = (horizon) => row[`forwardReturn${horizon}d`] ?? row.forwardReturns?.[`return${horizon}d`] ?? row.forwardReturns?.[horizon] ?? row.forwardReturns?.[String(horizon)] ?? null;
+    const annotationState = row.pdfState || row.state || row.annotationState;
+    const annotationLabel = row.pdfLabel || labels[annotationState] || annotationState || "—";
+    return `<tr><td>${esc(row.date)}</td><td><span class="state-mark ${String(annotationState).includes("greed") ? "greed" : ""}">${esc(annotationLabel)}</span></td><td>${esc(fmt.signedPct(row.return1d))}</td><td>${esc(row.rawFlowTrillion == null ? "—" : `${fmt.score(row.rawFlowTrillion, 3)}조원`)}</td><td>${esc(fmt.score(rawPercentile, 1))}</td><td>${esc(fmt.score(practicalPercentile, 1))}</td><td>${esc(fmt.signedPct(forward(1)))}</td><td>${esc(fmt.signedPct(forward(5)))}</td><td>${esc(fmt.signedPct(forward(20)))}</td></tr>`;
+  }).join("");
+  container.innerHTML = `${summary}<div class="table-scroll"><table class="replica-table"><caption>PDF 원문 주석 날짜를 독립 수집 데이터로 대조</caption><thead><tr><th scope="col">날짜</th><th scope="col">원문 표시</th><th scope="col">당일 KOSPI</th><th scope="col">개인 순매수</th><th scope="col">raw 백분위</th><th scope="col">규모보정 백분위</th><th scope="col">+1일</th><th scope="col">+5일</th><th scope="col">+20일</th></tr></thead><tbody>${tableRows}</tbody></table></div><p class="chart-note">후행 수익률이 아직 완결되지 않은 사건은 —로 표시합니다. 미완결값을 0으로 대체하지 않습니다.</p>`;
 }
 
 function renderDiagnostics() {
@@ -676,6 +1069,32 @@ function renderDiagnostics() {
   $("#diagnostic-data-table").innerHTML = dataTable(["날짜", "MU/하이닉스 비율", "비율지수", "상대 스프레드"], tableRows, `최근 ${tableRows.length}개 상대 진단`);
 }
 
+function renderFlowChannels() {
+  const published = store.dashboard?.flowChannels?.channels;
+  const channels = Array.isArray(published) && published.length ? published : [
+    { channelId: "retail", participant: "individual", availability: "active", state: stateFromValue(modelPayload(primaryModelKind())), strategyUse: "primary", source: "pykrx" },
+    { channelId: "foreign", participant: "foreign", availability: "planned", state: "unavailable", strategyUse: "future_extension" },
+    { channelId: "institutional", participant: "institutional", availability: "planned", state: "unavailable", strategyUse: "future_extension" }
+  ];
+  const participantLabel = { individual: "개인", retail: "개인", foreign: "외국인", foreigner: "외국인", institutional: "기관", institution: "기관" };
+  const useLabel = { primary: "현재 1차 신호", diagnostic_only: "진단 전용", future_extension: "향후 확장" };
+  const qualityLabel = { ok: "정상", low_model_fit: "낮음 · 거래 미사용", unavailable: "산출 불가", not_activated: "미활성" };
+  $("#flow-channels").innerHTML = channels.map((channel) => {
+    const active = channel.availability === "active";
+    const collecting = channel.availability === "collecting";
+    const primary = channel.strategyUse === "primary";
+    const state = active ? channel.state || "unavailable" : "unavailable";
+    const availabilityLabel = active ? (primary ? "1차 신호" : "진단 가능") : collecting ? "수집 중" : "계획";
+    const stateLabel = active ? labels[state] || state : collecting ? "표본 부족" : "미활성";
+    const modelQuality = active ? qualityLabel[channel.quality] || channel.quality || "—" : collecting ? "표본 부족" : "미활성";
+    const coverage = collecting ? `<div><dt>수집 표본</dt><dd>${esc(channel.observationCount ?? 0)}일</dd></div>` : "";
+    return `<section class="flow-channel ${active ? "active" : "planned"}">
+      <div><span class="channel-status ${active ? "active" : "planned"}">${availabilityLabel}</span><strong>${esc(participantLabel[channel.participant] || participantLabel[channel.channelId] || channel.participant || channel.channelId)}</strong></div>
+      <dl><div><dt>역할</dt><dd>${esc(useLabel[channel.strategyUse] || channel.strategyUse || "—")}</dd></div><div><dt>상태</dt><dd>${esc(stateLabel)}</dd></div><div><dt>모형 품질</dt><dd>${esc(modelQuality)}</dd></div><div><dt>백분위</dt><dd>${esc(active ? fmt.score(channel.percentile, 1) : "—")}</dd></div>${coverage}<div><dt>출처</dt><dd>${esc(channel.source || "활성화 전")}</dd></div></dl>
+    </section>`;
+  }).join("");
+}
+
 function showEmpty(container, message) {
   container.innerHTML = `<div class="empty"><strong>${esc(message)}</strong></div>`;
   container.setAttribute("aria-label", message);
@@ -702,7 +1121,7 @@ function updateBacktestControls() {
   });
   $$('[data-backtest-variant]').forEach((button) => {
     const variant = button.dataset.backtestVariant;
-    const supported = [5, 10, 20].some((cost) => resultFor({ variant, cost }));
+    const supported = [0, 5, 10, 20].some((cost) => resultFor({ variant, cost }));
     button.disabled = !supported;
     button.setAttribute("aria-disabled", String(!supported));
   });
@@ -716,9 +1135,69 @@ function updateBacktestControls() {
   $("#backtest-selection-note").textContent = available ? "공개된 사전 계산 결과입니다. 비활성 선택지는 해당 조합이 발행되지 않았음을 뜻합니다." : "선택 조합의 사전 계산 결과가 없습니다.";
 }
 
+function initializeControlState() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("fearngreed-controls-v2") || "{}"); } catch (_) { saved = {}; }
+  const params = new URLSearchParams(location.search);
+  Object.entries(CONTROL_QUERY).forEach(([key, param]) => {
+    const candidate = params.has(param) ? params.get(param) : saved[key];
+    const normalized = key === "backtestVariant" && candidate === "base" ? "scaled_ols" : String(candidate ?? "");
+    if (CONTROL_ALLOWED[key].includes(normalized)) store[key] = key === "backtestCost" ? Number(normalized) : normalized;
+  });
+  if (!params.has("window") && saved.window == null && matchMedia("(max-width: 520px)").matches) store.window = "252";
+}
+
+function persistControlState({ replaceUrl = true } = {}) {
+  const values = Object.fromEntries(Object.keys(CONTROL_QUERY).map((key) => [key, store[key]]));
+  try { localStorage.setItem("fearngreed-controls-v2", JSON.stringify(values)); } catch (_) { /* URL remains shareable */ }
+  if (!replaceUrl) return;
+  const url = new URL(location.href);
+  Object.entries(CONTROL_QUERY).forEach(([key, param]) => url.searchParams.set(param, store[key]));
+  history.replaceState(null, "", url);
+}
+
+function scrollChartLatest(chartId) {
+  const chart = document.getElementById(chartId);
+  if (!chart) return;
+  chart.scrollTo({ left: Math.max(0, chart.scrollWidth - chart.clientWidth), behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  chart.focus({ preventScroll: true });
+}
+
+function announceViewAction(message) {
+  $("#view-action-status").textContent = message;
+}
+
+async function shareCurrentView() {
+  persistControlState();
+  const text = location.href;
+  try {
+    await navigator.clipboard.writeText(text);
+    announceViewAction("현재 화면 링크를 복사했습니다.");
+  } catch (_) {
+    const input = document.createElement("input");
+    input.value = text;
+    input.setAttribute("aria-hidden", "true");
+    document.body.append(input);
+    input.select();
+    const copied = document.execCommand?.("copy");
+    input.remove();
+    announceViewAction(copied ? "현재 화면 링크를 복사했습니다." : "주소창의 링크를 복사해 주세요.");
+  }
+}
+
+function resetControls() {
+  Object.assign(store, DEFAULT_CONTROLS);
+  if (!modelPayload("robust")) store.model = modelPayload("scaled") ? "scaled" : "raw";
+  ensureBacktestSelection();
+  persistControlState();
+  renderAll();
+  announceViewAction("모든 화면 설정을 기본값으로 복원했습니다.");
+}
+
 function bindControls() {
   $$('[data-window]').forEach((button) => button.addEventListener("click", () => {
     store.window = button.dataset.window;
+    persistControlState();
     updatePressed("[data-window]", store.window, "window");
     renderHistory();
     renderResidual();
@@ -726,18 +1205,23 @@ function bindControls() {
   $$('[data-model]').forEach((button) => button.addEventListener("click", () => {
     if (button.disabled) return;
     store.model = button.dataset.model;
+    persistControlState();
     updatePressed("[data-model]", store.model, "model");
     renderHeader();
     renderScatter();
+    renderEvents();
+    renderConclusion();
   }));
   $$('[data-event-asset]').forEach((button) => button.addEventListener("click", () => {
     store.eventAsset = button.dataset.eventAsset;
+    persistControlState();
     updatePressed("[data-event-asset]", store.eventAsset, "eventAsset");
     renderEvents();
     renderConclusion();
   }));
   $$('[data-event-sample]').forEach((button) => button.addEventListener("click", () => {
     store.eventSample = button.dataset.eventSample;
+    persistControlState();
     updatePressed("[data-event-sample]", store.eventSample, "eventSample");
     renderEvents();
     renderConclusion();
@@ -745,23 +1229,30 @@ function bindControls() {
   $$('[data-backtest-proxy]').forEach((button) => button.addEventListener("click", () => {
     store.backtestProxy = button.dataset.backtestProxy;
     ensureBacktestSelection();
+    persistControlState();
     renderBacktests();
   }));
   $$('[data-backtest-variant]').forEach((button) => button.addEventListener("click", () => {
     store.backtestVariant = button.dataset.backtestVariant;
     ensureBacktestSelection();
+    persistControlState();
     renderBacktests();
   }));
   $$('[data-backtest-cost]').forEach((button) => button.addEventListener("click", () => {
     store.backtestCost = Number(button.dataset.backtestCost);
     ensureBacktestSelection();
+    persistControlState();
     renderBacktests();
   }));
   $$('[data-backtest-period]').forEach((button) => button.addEventListener("click", () => {
     store.backtestPeriod = button.dataset.backtestPeriod;
     ensureBacktestSelection();
+    persistControlState();
     renderBacktests();
   }));
+  $$('[data-chart-latest]').forEach((button) => button.addEventListener("click", () => scrollChartLatest(button.dataset.chartLatest)));
+  $("#reset-controls").addEventListener("click", resetControls);
+  $("#share-view").addEventListener("click", shareCurrentView);
 }
 
 function setTheme(theme) {
@@ -790,10 +1281,13 @@ function initializeTheme() {
 }
 
 function renderAll() {
-  const rawAvailable = Boolean(modelPayload("raw"));
-  const rawButton = $('[data-model="raw"]');
-  rawButton.disabled = !rawAvailable;
-  rawButton.setAttribute("aria-disabled", String(!rawAvailable));
+  ["robust", "scaled", "raw"].forEach((kind) => {
+    const button = $(`[data-model="${kind}"]`);
+    const available = Boolean(modelPayload(kind));
+    button.disabled = !available;
+    button.setAttribute("aria-disabled", String(!available));
+  });
+  if (!modelPayload(store.model)) store.model = modelPayload(primaryModelKind()) ? primaryModelKind() : modelPayload("scaled") ? "scaled" : "raw";
   updatePressed("[data-model]", store.model, "model");
   updatePressed("[data-window]", store.window, "window");
   updatePressed("[data-event-asset]", store.eventAsset, "eventAsset");
@@ -804,13 +1298,16 @@ function renderAll() {
   renderResidual();
   renderEvents();
   renderBacktests();
+  renderPdfSnapshot();
   renderDiagnostics();
+  renderFlowChannels();
   renderConclusion();
   enhanceTables();
   applyTableFilter($("#trade-filter"));
 }
 
 initializeTheme();
+initializeControlState();
 bindControls();
 bindTableTools();
 initializeSectionNav();
@@ -818,12 +1315,17 @@ initializeSectionNav();
 Promise.all([loadJson("data/summary.json"), loadJson("data/dashboard.json"), loadJson("data/history.json")])
   .then(([summary, dashboard, history]) => {
     validateContracts(summary, dashboard, history);
-    store = { ...store, summary, dashboard, history };
+    store = { ...store, summary, dashboard, history: decodeHistory(history) };
+    if (!modelPayload(store.model)) store.model = modelPayload("robust") ? "robust" : "scaled";
+    ensureBacktestSelection();
+    persistControlState({ replaceUrl: false });
     renderAll();
   })
   .catch((error) => {
     $("#status-badge").textContent = "unavailable";
     $("#status-badge").className = "badge unavailable";
+    $("#signal-badge").textContent = "산출 불가";
+    $("#signal-badge").className = "state-badge unavailable";
     $("#state").textContent = "데이터를 불러올 수 없음";
     $("#status-note").textContent = error.message;
     $("#metrics").innerHTML = metric("공개 계약", "unavailable", "마지막 정상 시장 수치를 임의 값으로 대체하지 않습니다.");

@@ -7,16 +7,16 @@ const read=path=>readFile(new URL(`../${path}`,import.meta.url),'utf8');
 test('dashboard exposes all precomputed research selectors with pressed state',async()=>{
   const html=await read('index.html');
   for(const token of [
-    'data-model="scaled"','data-model="raw"',
+    'data-model="robust"','data-model="scaled"','data-model="raw"',
     'data-event-asset="KOSPI"','data-event-asset="226490"','data-event-asset="069500"',
     'data-event-sample="all"','data-event-sample="nonOverlapping20d"',
     'data-backtest-proxy="226490"','data-backtest-proxy="069500"',
-    'data-backtest-variant="base"','data-backtest-variant="disparity"',
-    'data-backtest-cost="5"','data-backtest-cost="10"','data-backtest-cost="20"',
+    'data-backtest-variant="scaled_huber"','data-backtest-variant="scaled_ols"','data-backtest-variant="raw_ols"','data-backtest-variant="disparity"',
+    'data-backtest-cost="0"','data-backtest-cost="5"','data-backtest-cost="10"','data-backtest-cost="20"',
     'data-backtest-period="full"','data-backtest-period="common"'
   ]) assert.match(html,new RegExp(token));
-  assert.ok((html.match(/aria-pressed=/g)||[]).length>=18);
-  assert.match(html,/브라우저에서 재계산하지 않습니다/);
+  assert.ok((html.match(/aria-pressed=/g)||[]).length>=21);
+  assert.match(html,/현재값·해석 브리지·산점도/);
 });
 
 test('first-party context and every public operational artifact are linked',async()=>{
@@ -45,15 +45,16 @@ test('evidence conclusion is computed from published confidence intervals and be
   assert.match(html,/id="research-conclusion"/);
   assert.match(app,/fear20\.meanCi95/);
   assert.match(app,/metrics\.totalReturn/);
-  assert.match(app,/metrics\.buyAndHoldReturn/);
+  assert.match(app,/metrics\.riskMatchedBuyHoldReturn/);
+  assert.match(app,/eventExcess\(fear20\)/);
   assert.doesNotMatch(html,/387\.25|4\.57|1\.61|0\.18/);
 });
 
 test('performance lookup includes return, win rate, turnover, holding time and benchmark risk',async()=>{
   const html=await read('index.html');
-  for(const label of ['총수익률','승률','회전율','평균 보유','BH MDD']) assert.match(html,new RegExp(label));
+  for(const label of ['총수익률','승률','회전율','평균 보유','BH MDD','동일 타이밍 0bp','위험 일치 BH']) assert.match(html,new RegExp(label));
   const app=await read('assets/app.js');
-  for(const field of ['totalReturn','winRate','turnover','averageHoldingSessions','buyAndHoldMaxDrawdown']) assert.match(app,new RegExp(field));
+  for(const field of ['totalReturn','winRate','turnover','averageHoldingSessions','buyAndHoldMaxDrawdown','exposureMatchedReturn','riskMatchedBuyHoldReturn','costBreakEvenBps']) assert.match(app,new RegExp(field));
 });
 
 test('mobile navigation remains available and chart encodings are not color-only',async()=>{
@@ -90,9 +91,10 @@ test('initial theme and every segmented control are synchronized through aria-pr
 
 test('frontend rejects mismatched methodology and data dates instead of rendering a proxy',async()=>{
   const app=await read('assets/app.js');
-  assert.match(app,/methodologyVersion !== "fear-flow-v1"/);
+  assert.match(app,/\^fear-flow-v\\d\+\$/);
+  assert.match(app,/dashboard\?\.methodologyVersion !== methodology/);
   assert.match(app,/dashboard\?\.dataAsOf !== summary\.dataAsOf/);
-  assert.match(app,/summary\.primaryEntities\[0\]\?\.models\?\.scaled/);
+  assert.match(app,/!models\.scaled \|\| !models\.raw/);
 });
 
 test('MU Hynix relative spread keeps its published index-point unit',async()=>{
@@ -100,4 +102,110 @@ test('MU Hynix relative spread keeps its published index-point unit',async()=>{
   assert.match(app,/상대 스프레드 \(지수포인트\)/);
   assert.match(app,/muHynixRelativeSpread == null \? "—" : `\$\{fmt\.score/);
   assert.doesNotMatch(app,/fmt\.pct\(latest\.muHynixRelativeSpread\)/);
+});
+
+test('source replica and practical signal are separate, scoped research tracks',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/실전 신호 · 강건 회귀/);
+  assert.match(html,/PDF 원문 근사 · 절대 수급/);
+  for(const id of ['history-model-scope','scatter-model-scope','residual-model-scope','event-model-scope','strategy-model-scope']) assert.match(html,new RegExp(`id="${id}"`));
+  assert.match(app,/function primaryModelKind/);
+  assert.match(app,/eventsByModel\?\.\[store\.model\]/);
+  assert.match(html,/SELECTED RESEARCH TRACK · EVENT STUDY/);
+  assert.match(html,/선택 연구 트랙의 사전 계산 사건 표본/);
+  assert.match(app,/사건: \$\{esc\(store\.eventAsset\)\} \$\{esc\(compactModelName\(eventModelKind\(\)\)\)\}/);
+});
+
+test('mobile jump buttons leave the fixed overlay layer and light muted text keeps contrast',async()=>{
+  const css=await read('assets/styles.css');
+  assert.match(css,/--muted:\s*#687482/);
+  assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.page-jump-nav\s*\{[^}]*position:\s*static/s);
+});
+
+test('signal bridge exposes actual expected residual percentile and state without hiding the formula',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/id="signal-bridge"/);
+  for(const label of ['실제 수급','회귀 예상','잔차','과거 백분위','연구 상태']) assert.match(app,new RegExp(label));
+  assert.match(app,/실제 − 예상/);
+});
+
+test('operational and research-signal badges cannot share the same label',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/id="status-badge"/);
+  assert.match(html,/id="signal-badge"/);
+  assert.match(app,/badge\.textContent = `데이터/);
+  assert.match(app,/signal-badge/);
+  assert.doesNotMatch(app,/summary\.status\.label \|\| qualityLabel/);
+});
+
+test('public operational reason codes are rendered as readable Korean guidance',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(app,/core_latest_common_date_alignment:\s*"공급자 최신일 차이로 공통 거래일까지 계산"/);
+  assert.match(app,/adjusted_history_gap_reconciled_/);
+  assert.match(app,/조정가격 누락일을 공식 KRX 세션으로 검증·보정/);
+  assert.match(app,/reasons\.map\(degradedReasonLabel\)/);
+  assert.doesNotMatch(html,/core_latest_common_date_alignment/);
+});
+
+test('ETF adjusted-history reconciliation is visible with provider provenance and counts',async()=>{
+  const app=await read('assets/app.js');
+  assert.match(app,/yfinance_adjusted_plus_scaled_krx_gap_rows/);
+  assert.match(app,/yfinance 조정가 \+ KRX 검증 보정행/);
+  assert.match(app,/historyReconciliation/);
+  assert.match(app,/report\.filledCount/);
+  assert.match(app,/report\.unresolvedCount/);
+});
+
+test('uncertainty chart, ETF common-period comparison and PDF snapshot fail closed on old payloads',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/id="event-ci-chart"/);
+  assert.match(html,/id="proxy-comparison"/);
+  assert.match(html,/id="pdf-snapshot"/);
+  assert.match(app,/eventBenchmark/);
+  assert.match(app,/renderProxyComparison/);
+  assert.match(app,/PDF 주석 사건 파생값이 아직 공개 계약에 없습니다/);
+});
+
+test('event excess confidence intervals disclose how benchmark uncertainty is treated',async()=>{
+  const app=await read('assets/app.js');
+  assert.match(app,/meanExcessReturnCi95BenchmarkTreatment/);
+  assert.match(app,/fixed_external_mean/);
+  assert.match(app,/벤치마크 평균의 추정오차는 포함하지 않습니다/);
+  assert.match(app,/paired_event_returns/);
+});
+
+test('controls persist to URL and localStorage and charts expose an explicit latest action',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/id="reset-controls"/);
+  assert.match(html,/id="share-view"/);
+  assert.ok((html.match(/data-chart-latest=/g)||[]).length>=4);
+  assert.match(app,/fearngreed-controls-v2/);
+  assert.match(app,/history\.replaceState/);
+  assert.match(app,/navigator\.clipboard\.writeText/);
+});
+
+test('frontend decodes compact columnar history and scatter pointer uses nearest XY distance',async()=>{
+  const app=await read('assets/app.js');
+  assert.match(app,/function decodeHistory/);
+  assert.match(app,/seriesColumns/);
+  assert.match(app,/seriesRows/);
+  assert.match(app,/function attachScatterNavigation/);
+  assert.match(app,/\(item\.plotX - pointerX\) \*\* 2 \+ \(item\.plotY - pointerY\) \*\* 2/);
+  assert.match(app,/scatterByModel\?\.\[store\.model\]/);
+});
+
+test('normalized benchmark equity and future flow channels remain explicit and fail closed',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/id="flow-channels"/);
+  assert.match(html,/외국인·기관 수급/);
+  assert.match(app,/commonBenchmarkEquity/);
+  assert.match(app,/function hydratedEquityRows/);
+  assert.match(app,/flowChannels\?\.channels/);
+  assert.match(app,/future_extension/);
+  assert.match(app,/primary \? "1차 신호" : "진단 가능"/);
+  assert.match(app,/낮음 · 거래 미사용/);
+  assert.match(app,/collecting \? "수집 중"/);
+  assert.match(app,/collecting \? "표본 부족"/);
+  assert.match(html,/외국인·기관 카드에 수치가 보여도 진단 결과/);
+  assert.match(app,/상세 행은 경량 공개 계약에서 생략했습니다/);
 });

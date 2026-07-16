@@ -12,18 +12,19 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
-  group: fearngreed-refresh
+  group: fearngreed-pages
   cancel-in-progress: false
 
 jobs:
   refresh:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    env:
-      KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
-      KRX_ID: ${{ secrets.KRX_ID }}
-      KRX_PW: ${{ secrets.KRX_PW }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -38,6 +39,9 @@ jobs:
         shell: bash
         env:
           BACKFILL_START_DATE: ${{ inputs.backfill_start_date }}
+          KRX_API_KEY: ${{ secrets.KRX_API_KEY }}
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
         run: |
           args=()
           if [[ -n "$BACKFILL_START_DATE" ]]; then
@@ -48,6 +52,9 @@ jobs:
           uv run --frozen python -m fearngreed.refresh "${args[@]}"
           refresh_status=$?
           set -e
+          # Run while exact credential values are still scoped to this step.
+          # The scanner reports paths only and never prints the values.
+          uv run --frozen python -c "from pathlib import Path; from fearngreed.security import scan_public_files; assert not scan_public_files(Path('.'))"
           if [[ $refresh_status -eq 0 ]]; then
             echo "outcome=success" >> "$GITHUB_OUTPUT"
           else
@@ -70,7 +77,9 @@ jobs:
           [[ $unexpected -eq 0 ]]
       - run: uv run --frozen pytest
       - run: uv run --frozen ruff check .
+      - run: uv run --frozen ruff format --check .
       - run: npm test
+      - run: uv run --frozen python -m fearngreed.verify
       - run: uv run --frozen python -m fearngreed.site --output dist
       - run: uv run --frozen python -c "from pathlib import Path; from fearngreed.security import scan_public_files; assert not scan_public_files(Path('.'))"
       - name: Commit validated derivatives
@@ -92,6 +101,28 @@ jobs:
           git diff --cached --check
           git commit -m "$commit_message"
           git push
+      # A push made with GITHUB_TOKEN does not trigger the separate Pages
+      # workflow. Deploy the validated working tree here so success and
+      # degraded status commits both reach the public contract.
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - name: Deploy validated derivatives
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Verify live public derivative hashes
+        shell: bash
+        run: |
+          for attempt in {1..12}; do
+            if uv run --frozen python -m fearngreed.verify --base-url "${{ steps.deployment.outputs.page_url }}"; then
+              exit 0
+            fi
+            if [[ $attempt -eq 12 ]]; then
+              exit 1
+            fi
+            sleep 5
+          done
       - name: Report provider refresh failure
         if: steps.refresh.outputs.outcome == 'failure'
         run: |

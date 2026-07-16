@@ -1,1 +1,1 @@
-{"schemaVersion":1,"state":"degraded","lastAttemptAt":"2026-07-16T12:58:45.807559Z","lastSuccessAt":"2026-07-16T07:37:50.361180Z","dataAsOf":"2026-07-15","degradedReasons":["krx_credentials_missing"],"sourceMode":"krx_open_api"}
+{"schemaVersion":1,"state":"degraded","lastAttemptAt":"2026-07-16T19:30:08.570214Z","lastSuccessAt":"2026-07-16T19:30:08.570214Z","dataAsOf":"2026-07-15","degradedReasons":["core_latest_common_date_alignment","adjusted_history_gap_reconciled_226490","adjusted_history_gap_reconciled_069500"],"sourceMode":"krx_open_api"}

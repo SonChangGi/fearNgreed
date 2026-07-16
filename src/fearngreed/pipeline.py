@@ -9,19 +9,46 @@ from typing import Any
 import pandas as pd
 
 from .analysis import (
+    INDIVIDUAL_SCALED,
+    OPTIONAL_FLOW_CHANNELS,
     align_us_before_krx,
     build_analysis_frame,
+    channel_signals,
     disparity_filtered_signals,
     drawdown,
 )
-from .backtest import BacktestResult, result_to_public, run_backtest
-from .events import event_returns, extreme_entries, non_overlapping, summarize_event_returns
+from .backtest import (
+    BacktestResult,
+    result_to_public,
+    run_backtest_safe,
+    run_cost_sensitivity,
+)
+from .events import (
+    event_returns,
+    extreme_entries,
+    non_overlapping,
+    summarize_event_returns,
+    unconditional_forward_return_benchmarks,
+)
 from .model import FlowSignal
-from .quality import compare_latest_close
+from .quality import compare_close_anchors, compare_latest_close
 
-METHODOLOGY_VERSION = "fear-flow-v1"
+METHODOLOGY_VERSION = "fear-flow-v2"
 PROXY_TICKERS = {"226490": "226490.KS", "069500": "069500.KS"}
 STOCK_TICKERS = {"000660": "000660.KS", "005930": "005930.KS"}
+PDF_ANNOTATED_EVENTS = {
+    "2026-03-04": ("extreme_fear", "공포"),
+    "2026-04-02": ("fear", "공포"),
+    "2026-06-08": ("extreme_fear", "공포"),
+    "2026-07-08": ("extreme_fear", "공포"),
+    "2026-07-13": ("fear", "공포"),
+    "2026-07-14": ("fear", "공포"),
+    "2026-03-05": ("extreme_greed", "탐욕"),
+    "2026-05-07": ("extreme_greed", "탐욕"),
+    "2026-05-11": ("extreme_greed", "탐욕"),
+    "2026-06-02": ("extreme_greed", "탐욕"),
+    "2026-06-09": ("extreme_greed", "탐욕"),
+}
 
 
 @dataclass(frozen=True)
@@ -34,6 +61,8 @@ class PipelineInputs:
     core_source: str
     degraded_reasons: tuple[str, ...] = ()
     krx_stocks: dict[str, pd.DataFrame] = field(default_factory=dict)
+    kospi_secondary_history_independent: bool = True
+    prior_etf_reconciliation: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -48,8 +77,37 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
     frame, scaled_signals, raw_signals, quality = build_analysis_frame(inputs.kospi, inputs.flow)
     if frame.empty or quality.state == "unavailable":
         raise ValueError(f"core input quality failed: {','.join(quality.issues)}")
+    robust_signals = channel_signals(frame, INDIVIDUAL_SCALED, fit_method="huber")
+    _attach_pipeline_signals(frame, robust_signals, "robust")
+    model_signals = {
+        "robust": robust_signals,
+        "scaled": scaled_signals,
+        "raw": raw_signals,
+    }
     degraded = list(dict.fromkeys([*inputs.degraded_reasons, *quality.issues]))
+    signal_cutoff = frame.index[-1]
+    adjusted = dict(inputs.adjusted)
     crosschecks = _crosschecks(inputs, frame)
+    for ticker, yahoo_ticker in PROXY_TICKERS.items():
+        reconciled, reconciliation = _reconcile_adjusted_etf_history(
+            inputs.krx_etfs.get(ticker),
+            adjusted.get(yahoo_ticker),
+            expected_date=signal_cutoff,
+        )
+        reconciliation = _inherit_reconciliation_provenance(
+            reconciliation,
+            inputs.prior_etf_reconciliation.get(ticker),
+        )
+        check = crosschecks["etf"][ticker]
+        check["historyReconciliation"] = reconciliation
+        if reconciliation["state"] != "ok":
+            check["latestPriceState"] = check.get("state", "unavailable")
+            check["state"] = "unavailable"
+            check["reason"] = "adjusted_history_session_gaps_unresolved"
+        elif reconciled is not None:
+            adjusted[yahoo_ticker] = reconciled
+            if reconciliation["filledCount"]:
+                degraded.append(f"adjusted_history_gap_reconciled_{ticker}")
     if crosschecks["kospi"]["state"] != "ok":
         degraded.append(f"price_crosscheck_kospi_{crosschecks['kospi']['state']}")
     for ticker, check in crosschecks["etf"].items():
@@ -60,20 +118,19 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
             degraded.append(f"price_crosscheck_{ticker}_{check['state']}")
 
     backtests: dict[str, dict[str, BacktestResult]] = {}
-    disparity_signals = disparity_filtered_signals(scaled_signals, frame)
+    disparity_signals = disparity_filtered_signals(robust_signals, frame)
     for ticker, yahoo_ticker in PROXY_TICKERS.items():
         if crosschecks["etf"][ticker]["state"] != "ok":
             continue
-        bars = inputs.adjusted[yahoo_ticker][["open", "close"]]
+        secondary = adjusted.get(yahoo_ticker)
+        if secondary is None:
+            continue
+        bars = _price_frame_as_of(secondary, signal_cutoff)[["open", "close"]]
         variants: dict[str, BacktestResult] = {}
-        for cost in (5.0, 10.0, 20.0):
-            variants[f"base_{int(cost)}bp"] = run_backtest(
-                scaled_signals,
-                bars,
-                ticker=ticker,
-                one_way_cost_bps=cost,
-            )
-        variants["disparity_10bp"] = run_backtest(
+        for model_name, signals in model_signals.items():
+            for result in run_cost_sensitivity(signals, bars, ticker=ticker):
+                variants[f"{model_name}_{int(result.cost_bps)}bp"] = result
+        variants["disparity_10bp"] = run_backtest_safe(
             disparity_signals,
             bars,
             ticker=ticker,
@@ -81,21 +138,43 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         )
         backtests[ticker] = variants
 
-    common_backtests = _common_period_backtests(backtests, inputs.adjusted, scaled_signals)
-    all_events = extreme_entries(scaled_signals)
-    clean_events = non_overlapping(all_events, horizon=20)
-    event_section = _event_section(frame, all_events, clean_events, inputs.adjusted, crosschecks)
-    diagnostics = _semiconductor_diagnostics(frame, inputs.adjusted, crosschecks["stock"])
+    common_backtests = _common_period_backtests(
+        adjusted, model_signals, disparity_signals, crosschecks
+    )
+    events_by_model = {
+        model_name: _event_section_for_signals(frame, signals, adjusted, crosschecks)
+        for model_name, signals in model_signals.items()
+    }
+    primary_all_events = extreme_entries(robust_signals)
+    primary_clean_events = non_overlapping(primary_all_events, horizon=20)
+    diagnostics = _semiconductor_diagnostics(frame, adjusted, crosschecks["stock"])
     latest = frame.iloc[-1]
-    latest_signal = scaled_signals[-1]
-    base_result = backtests.get("226490", {}).get("base_10bp")
-    position = "long" if base_result and base_result.open_position else "cash"
-    pending_action = base_result.pending_action if base_result else None
-    pending_reason = base_result.pending_reason if base_result else None
+    latest_signal = robust_signals[-1]
+    base_result = backtests.get("226490", {}).get("robust_10bp")
+    if base_result is None or base_result.status != "ok":
+        position = "unavailable"
+        position_quality = "unavailable"
+        position_unavailable_reason = (
+            base_result.unavailable_reason if base_result is not None else "proxy_validation_failed"
+        )
+        pending_action = None
+        pending_reason = None
+    else:
+        position = "long" if base_result.open_position else "cash"
+        position_quality = "ok"
+        position_unavailable_reason = None
+        pending_action = base_result.pending_action
+        pending_reason = base_result.pending_reason
     status_state = "degraded" if degraded else "ok"
     generated_at = inputs.generated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
     data_as_of = frame.index[-1].date().isoformat()
-    history_rows = _history_rows(frame, base_result, inputs.adjusted)
+    history_rows = _history_rows(frame, base_result, adjusted)
+    primary_reconciliation = crosschecks["etf"]["226490"].get("historyReconciliation", {})
+    adjusted_proxy_source = (
+        "yfinance_adjusted_plus_scaled_krx_gap_rows"
+        if primary_reconciliation.get("filledCount", 0) > 0
+        else "yfinance_adjusted"
+    )
     summary = _summary(
         frame=frame,
         latest=latest,
@@ -105,51 +184,60 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         status_state=status_state,
         degraded=degraded,
         quality_metrics=quality.metrics,
-        event_count=len(clean_events),
-        trade_count=len(base_result.trades) if base_result else 0,
+        event_count=len(primary_clean_events),
+        trade_count=len(base_result.trades) if base_result and base_result.status == "ok" else 0,
         position=position,
+        position_quality=position_quality,
+        position_unavailable_reason=position_unavailable_reason,
         pending_action=pending_action,
         pending_reason=pending_reason,
         core_source=inputs.core_source,
+        adjusted_proxy_source=adjusted_proxy_source,
     )
     dashboard = {
         "schemaVersion": 1,
         "methodologyVersion": METHODOLOGY_VERSION,
         "generatedAt": generated_at,
         "dataAsOf": data_as_of,
-        "status": {"state": status_state, "degradedReasons": degraded},
+        "status": {
+            "state": status_state,
+            "label": _operational_label(status_state),
+            "degradedReasons": degraded,
+        },
         "current": summary["primaryEntities"][0],
-        "scatter": _scatter(frame),
-        "scatterMeta": _scatter_meta(frame),
-        "models": {
-            "scaled": _model_snapshot(latest, "scaled"),
-            "raw": _model_snapshot(latest, "raw"),
+        "scatterByModel": {model_name: _scatter(frame, model_name) for model_name in model_signals},
+        "scatterMetaByModel": {
+            model_name: _scatter_meta(frame, model_name) for model_name in model_signals
         },
+        "models": {model_name: _model_snapshot(latest, model_name) for model_name in model_signals},
         "regression": {
-            "alpha": public_number(latest["scaled_alpha"]),
-            "beta": public_number(latest["scaled_beta"]),
+            "alpha": public_number(latest["robust_alpha"]),
+            "beta": public_number(latest["robust_beta"]),
             "window": 252,
-            "trainingCount": int(latest["scaled_training_count"]),
-            "scaled": _model_snapshot(latest, "scaled"),
-            "raw": _model_snapshot(latest, "raw"),
+            "trainingCount": int(latest["robust_training_count"]),
+            "primaryModel": "robust",
+            **{model_name: _model_snapshot(latest, model_name) for model_name in model_signals},
         },
-        "events": event_section,
+        "eventsByModel": events_by_model,
         "backtests": _public_backtests(backtests, common_backtests),
         "diagnostics": diagnostics,
+        "pdfReplica": _pdf_replica(frame),
+        "flowChannels": _flow_channel_section(frame),
         "quality": {"state": quality.state, "issues": quality.issues, **quality.metrics},
         "crosschecks": crosschecks,
     }
+    history_columns, history_values = _columnar_history(history_rows)
     history = {
         "schemaVersion": 1,
         "methodologyVersion": METHODOLOGY_VERSION,
         "generatedAt": generated_at,
         "dataAsOf": data_as_of,
         "fixture": False,
-        "models": {
-            "scaled": _model_snapshot(latest, "scaled"),
-            "raw": _model_snapshot(latest, "raw"),
-        },
-        "series": history_rows,
+        "models": {model_name: _model_snapshot(latest, model_name) for model_name in model_signals},
+        "flowChannelRoles": _history_flow_channel_roles(),
+        "seriesEncoding": "columnar-v1",
+        "seriesColumns": history_columns,
+        "seriesRows": history_values,
     }
     automation_status = {
         "schemaVersion": 1,
@@ -176,9 +264,12 @@ def _summary(
     event_count: int,
     trade_count: int,
     position: str,
+    position_quality: str,
+    position_unavailable_reason: str | None,
     pending_action: str | None,
     pending_reason: str | None,
     core_source: str,
+    adjusted_proxy_source: str,
 ) -> dict[str, Any]:
     state_labels = {
         "extreme_fear": "극단적 공포",
@@ -198,7 +289,7 @@ def _summary(
         "dataAsOf": data_as_of,
         "status": {
             "state": status_state,
-            "label": state_labels.get(latest_signal.state, latest_signal.state),
+            "label": _operational_label(status_state),
             "cadence": "weekdays-after-20:30-KST",
             "expectedFreshnessDays": 3,
             "degradedReasons": degraded,
@@ -209,7 +300,12 @@ def _summary(
             "observationCount": int(len(latest_complete)),
             "eventCount": event_count,
             "tradeCount": trade_count,
-            "sourceCompleteness": public_number(quality_metrics.get("sourceCompleteness")),
+            "dateOverlapRatio": public_number(
+                quality_metrics.get("dateOverlapRatio", quality_metrics.get("sourceCompleteness"))
+            ),
+            "sourceCompleteness": public_number(
+                quality_metrics.get("dateOverlapRatio", quality_metrics.get("sourceCompleteness"))
+            ),
         },
         "primaryEntities": [
             {
@@ -218,6 +314,7 @@ def _summary(
                 "region": "Korea",
                 "themes": ["Sentiment", "Flow"],
                 "signalState": latest_signal.state,
+                "signalLabel": state_labels.get(latest_signal.state, latest_signal.state),
                 "sentimentPercentile": public_number(latest_signal.percentile),
                 "residualZ": public_number(latest_signal.residual_z),
                 "rollingR2": public_number(latest_signal.rolling_r2),
@@ -227,13 +324,22 @@ def _summary(
                 "disparity50": public_number(latest["disparity50"]),
                 "mdd252": public_number(latest["mdd252"]),
                 "modelQuality": latest_signal.quality,
-                "modelConfidence": latest["model_confidence"],
+                "modelConfidence": _primary_model_confidence(latest),
                 "position": position,
+                "positionQuality": position_quality,
+                "positionUnavailableReason": position_unavailable_reason,
                 "pendingAction": pending_action,
                 "pendingReason": pending_reason,
                 "primaryProxy": "226490",
                 "sourceMode": core_source,
+                "strategyModel": "robust_huber_scaled",
+                "fieldSources": {
+                    "kospi": core_source,
+                    "retailFlow": "authenticated_pykrx",
+                    "adjustedProxy": adjusted_proxy_source,
+                },
                 "models": {
+                    "robust": _model_snapshot(latest, "robust"),
                     "scaled": _model_snapshot(latest, "scaled"),
                     "raw": _model_snapshot(latest, "raw"),
                 },
@@ -243,6 +349,7 @@ def _summary(
             "2026년 관측 후 제안된 사후적·탐색적 연구이며 예측력이나 인과관계를 증명하지 않는다.",
             "원문은 회귀창·수급 범위·임계값·전체 사건 수·거래비용을 공개하지 않았다.",
             "ETF 백테스트는 조정가격, 익일 시가 체결, 현금수익률 0%를 가정한다.",
+            "강건 회귀는 이상점 영향을 줄이기 위한 사전 정의 후보이며 수익 개선을 보장하지 않는다.",
         ],
         "sources": [
             {
@@ -278,18 +385,33 @@ def _summary(
 def _crosschecks(inputs: PipelineInputs, frame: pd.DataFrame) -> dict[str, Any]:
     kospi_yahoo = inputs.adjusted.get("^KS11")
     kospi_check = (
-        compare_latest_close(
+        _combined_price_crosscheck(
             frame["close"], kospi_yahoo["close"], expected_date=frame.index[-1]
         )
         if kospi_yahoo is not None
         else {"state": "unavailable", "date": None, "relativeDifference": None}
     )
+    if kospi_yahoo is not None and not inputs.kospi_secondary_history_independent:
+        kospi_check["historicalAnchors"] = {
+            "state": "unavailable",
+            "reason": "secondary_history_reconstructed",
+            "expectedDate": frame.index[-1].date().isoformat(),
+            "checkedCount": 0,
+            "commonCount": 0,
+            "mismatchCount": 0,
+            "maxRelativeDifference": None,
+            "tolerance": 0.005,
+            "anchors": [],
+        }
+        kospi_check["historicalAnchorBasis"] = (
+            "latest_independent_historical_secondary_reconstructed"
+        )
     etf_checks: dict[str, Any] = {}
     for ticker, yahoo_ticker in PROXY_TICKERS.items():
         official = inputs.krx_etfs.get(ticker)
         secondary = inputs.adjusted.get(yahoo_ticker)
         etf_checks[ticker] = (
-            compare_latest_close(
+            _combined_price_crosscheck(
                 official["close"], secondary["close"], expected_date=frame.index[-1]
             )
             if official is not None and secondary is not None
@@ -300,7 +422,7 @@ def _crosschecks(inputs: PipelineInputs, frame: pd.DataFrame) -> dict[str, Any]:
         official = inputs.krx_stocks.get(ticker)
         secondary = inputs.adjusted.get(yahoo_ticker)
         stock_checks[ticker] = (
-            compare_latest_close(
+            _combined_price_crosscheck(
                 official["close"], secondary["close"], expected_date=frame.index[-1]
             )
             if official is not None and secondary is not None
@@ -309,25 +431,270 @@ def _crosschecks(inputs: PipelineInputs, frame: pd.DataFrame) -> dict[str, Any]:
     return {"kospi": kospi_check, "etf": etf_checks, "stock": stock_checks}
 
 
+def _combined_price_crosscheck(
+    primary: pd.Series, secondary: pd.Series, *, expected_date: pd.Timestamp
+) -> dict[str, Any]:
+    cutoff = pd.Timestamp(expected_date)
+    if cutoff.tzinfo is not None:
+        cutoff = cutoff.tz_convert(None)
+    cutoff = cutoff.normalize()
+
+    def as_of(series: pd.Series) -> pd.Series:
+        values = series.copy()
+        index = pd.DatetimeIndex(pd.to_datetime(values.index))
+        if index.tz is not None:
+            index = index.tz_convert(None)
+        values.index = index.normalize()
+        return values.loc[values.index <= cutoff].sort_index()
+
+    primary_as_of = as_of(primary)
+    secondary_as_of = as_of(secondary)
+    latest = compare_latest_close(primary_as_of, secondary_as_of, expected_date=cutoff)
+    anchors = compare_close_anchors(
+        primary_as_of,
+        secondary_as_of,
+        expected_date=cutoff,
+        anchor_count=6,
+        minimum_anchor_count=3,
+    )
+    return {
+        **latest,
+        "historicalAnchors": anchors,
+        "historicalAnchorBasis": "official_unadjusted_vs_research_adjusted_diagnostic",
+        "historicalAnchorGatesPublication": False,
+    }
+
+
+def _reconcile_adjusted_etf_history(
+    official: pd.DataFrame | None,
+    research: pd.DataFrame | None,
+    *,
+    expected_date: pd.Timestamp,
+    factor_tolerance: float = 0.005,
+) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+    """Validate Yahoo sessions against KRX and cautiously repair isolated gaps.
+
+    A missing adjusted-price row is filled only when the nearest adjusted/raw
+    close factor on both sides of the gap agrees within ``factor_tolerance``.
+    This preserves the adjusted scale without silently treating raw KRX prices
+    as adjusted observations. Any unresolved session makes that proxy's event
+    study and backtest unavailable.
+    """
+
+    report: dict[str, Any] = {
+        "state": "unavailable",
+        "source": "yfinance_adjusted_checked_against_krx_calendar",
+        "method": "adjacent_close_factor_then_scaled_krx_ohlc",
+        "factorTolerance": factor_tolerance,
+        "officialSessionCount": 0,
+        "researchSessionCount": 0,
+        "missingCount": 0,
+        "filledCount": 0,
+        "unresolvedCount": 0,
+        "extraCount": 0,
+    }
+    if official is None or research is None or official.empty or research.empty:
+        report["reason"] = "official_or_adjusted_history_missing"
+        return research, report
+    if not {"open", "close"}.issubset(official.columns) or not {
+        "open",
+        "close",
+    }.issubset(research.columns):
+        report["reason"] = "required_ohlc_columns_missing"
+        return research, report
+
+    cutoff = pd.Timestamp(expected_date)
+    if cutoff.tzinfo is not None:
+        cutoff = cutoff.tz_convert(None)
+    cutoff = cutoff.normalize()
+    official_as_of = _price_frame_as_of(official, cutoff)
+    research_as_of = _price_frame_as_of(research, cutoff)
+    if official_as_of.index.duplicated().any() or research_as_of.index.duplicated().any():
+        report["reason"] = "duplicate_sessions"
+        return research_as_of, report
+    if official_as_of.empty or research_as_of.empty:
+        report["reason"] = "history_empty_as_of_cutoff"
+        return research_as_of, report
+
+    official_prices = official_as_of[["open", "close"]].apply(pd.to_numeric, errors="coerce")
+    research_prices = research_as_of[["open", "close"]].apply(pd.to_numeric, errors="coerce")
+    official_as_of = official_as_of.loc[
+        official_prices.notna().all(axis=1) & (official_prices > 0).all(axis=1)
+    ]
+    research_as_of = research_as_of.loc[
+        research_prices.notna().all(axis=1) & (research_prices > 0).all(axis=1)
+    ]
+    if official_as_of.empty or research_as_of.empty:
+        report["reason"] = "no_positive_ohlc_sessions"
+        return research_as_of, report
+
+    report["officialSessionCount"] = int(len(official_as_of))
+    report["researchSessionCount"] = int(len(research_as_of))
+    if official_as_of.index[0] > research_as_of.index[0]:
+        report["reason"] = "official_history_coverage_incomplete"
+        report["extraCount"] = int(len(research_as_of.index.difference(official_as_of.index)))
+        return research_as_of, report
+
+    extra = research_as_of.index.difference(official_as_of.index)
+    research_on_calendar = research_as_of.loc[
+        research_as_of.index.intersection(official_as_of.index)
+    ].copy()
+    missing = official_as_of.index.difference(research_on_calendar.index)
+    common = official_as_of.index.intersection(research_on_calendar.index)
+    report["extraCount"] = int(len(extra))
+    report["missingCount"] = int(len(missing))
+    if common.empty:
+        report["reason"] = "no_common_sessions"
+        report["unresolvedCount"] = int(len(missing))
+        return research_on_calendar, report
+
+    filled_rows: list[pd.Series] = []
+    filled_dates: list[pd.Timestamp] = []
+    unresolved = 0
+    for timestamp in missing.sort_values():
+        before = common[common < timestamp]
+        after = common[common > timestamp]
+        if before.empty or after.empty:
+            unresolved += 1
+            continue
+        left = before[-1]
+        right = after[0]
+        left_raw = float(official_as_of.at[left, "close"])
+        right_raw = float(official_as_of.at[right, "close"])
+        left_adjusted = float(research_on_calendar.at[left, "close"])
+        right_adjusted = float(research_on_calendar.at[right, "close"])
+        if min(left_raw, right_raw, left_adjusted, right_adjusted) <= 0:
+            unresolved += 1
+            continue
+        left_factor = left_adjusted / left_raw
+        right_factor = right_adjusted / right_raw
+        factor_difference = abs(left_factor - right_factor) / max(
+            abs(left_factor), abs(right_factor)
+        )
+        if not math.isfinite(factor_difference) or factor_difference > factor_tolerance:
+            unresolved += 1
+            continue
+        factor = (left_factor + right_factor) / 2
+        # Build the synthetic row on the research frame's numeric schema. KRX
+        # raw OHLC commonly arrives as unsigned integers; assigning adjusted
+        # floats into that Series emits a pandas dtype warning and will become
+        # an error in a future pandas release.
+        scaled = (
+            official_as_of.loc[timestamp].reindex(research_on_calendar.columns).astype(float).copy()
+        )
+        for column in ("open", "high", "low", "close"):
+            if column in scaled.index:
+                scaled[column] = float(scaled[column]) * factor
+        scaled.name = timestamp
+        filled_rows.append(scaled)
+        filled_dates.append(timestamp)
+
+    report["filledCount"] = len(filled_rows)
+    report["unresolvedCount"] = unresolved
+    if unresolved:
+        report["reason"] = "adjacent_adjustment_factor_disagreement"
+        return research_on_calendar, report
+
+    if filled_rows:
+        fills = pd.DataFrame(filled_rows)
+        reconciled = pd.concat([research_on_calendar, fills], axis=0).sort_index()
+        report["source"] = "yfinance_adjusted_plus_scaled_krx_gap_rows"
+        report["filledDateSample"] = [
+            timestamp.date().isoformat() for timestamp in filled_dates[:3]
+        ]
+    else:
+        reconciled = research_on_calendar.sort_index()
+    if not official_as_of.index.equals(reconciled.index):
+        report["reason"] = "session_calendar_not_fully_reconciled"
+        report["unresolvedCount"] = int(len(official_as_of.index.difference(reconciled.index)))
+        return reconciled, report
+    report["state"] = "ok"
+    return reconciled, report
+
+
+def _inherit_reconciliation_provenance(
+    current: dict[str, Any], prior: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Carry validated historical gap repairs into later incremental reports."""
+    if not isinstance(prior, dict) or prior.get("state") != "ok" or current.get("state") != "ok":
+        return current
+    prior_filled = int(prior.get("filledCount") or 0)
+    if prior_filled <= 0:
+        return current
+    current_filled = int(current.get("filledCount") or 0)
+    result = dict(current)
+    result["source"] = "yfinance_adjusted_plus_scaled_krx_gap_rows"
+    result["filledCount"] = prior_filled + current_filled
+    result["inheritedFilledCount"] = prior_filled
+    result["currentRunFilledCount"] = current_filled
+    result["provenance"] = "published_history_plus_current_reconciliation"
+    samples = [
+        value
+        for value in [
+            *(prior.get("filledDateSample") or []),
+            *(current.get("filledDateSample") or []),
+        ]
+        if isinstance(value, str)
+    ]
+    if samples:
+        result["filledDateSample"] = list(dict.fromkeys(samples))[:3]
+    return result
+
+
 def _common_period_backtests(
-    backtests: dict[str, dict[str, BacktestResult]],
     adjusted: dict[str, pd.DataFrame],
-    signals: list[FlowSignal],
-) -> dict[str, BacktestResult]:
-    if not all(ticker in backtests for ticker in PROXY_TICKERS):
+    model_signals: dict[str, list[FlowSignal]],
+    disparity_signals: list[FlowSignal],
+    crosschecks: dict[str, Any],
+) -> dict[str, dict[str, BacktestResult]]:
+    if not all(
+        PROXY_TICKERS[ticker] in adjusted
+        and crosschecks["etf"].get(ticker, {}).get("state") == "ok"
+        for ticker in PROXY_TICKERS
+    ):
         return {}
     left = adjusted[PROXY_TICKERS["226490"]]
     right = adjusted[PROXY_TICKERS["069500"]]
     common = left.index.intersection(right.index)
-    output: dict[str, BacktestResult] = {}
+    signal_cutoff = max(
+        pd.Timestamp(signal.date) for signals in model_signals.values() for signal in signals
+    )
+    common = common[common <= signal_cutoff]
+    output: dict[str, dict[str, BacktestResult]] = {}
     for ticker, yahoo_ticker in PROXY_TICKERS.items():
-        output[ticker] = run_backtest(
-            signals,
-            adjusted[yahoo_ticker].loc[common, ["open", "close"]],
-            ticker=ticker,
-            one_way_cost_bps=10,
+        bars = adjusted[yahoo_ticker].loc[common, ["open", "close"]]
+        variants: dict[str, BacktestResult] = {}
+        for model_name, signals in model_signals.items():
+            for result in run_cost_sensitivity(signals, bars, ticker=ticker):
+                variants[f"{model_name}_{int(result.cost_bps)}bp"] = result
+        variants["disparity_10bp"] = run_backtest_safe(
+            disparity_signals, bars, ticker=ticker, one_way_cost_bps=10
         )
+        output[ticker] = variants
     return output
+
+
+def _price_frame_as_of(frame: pd.DataFrame, cutoff: pd.Timestamp) -> pd.DataFrame:
+    values = frame.copy()
+    index = pd.DatetimeIndex(pd.to_datetime(values.index))
+    if index.tz is not None:
+        index = index.tz_convert(None)
+    values.index = index.normalize()
+    normalized_cutoff = pd.Timestamp(cutoff)
+    if normalized_cutoff.tzinfo is not None:
+        normalized_cutoff = normalized_cutoff.tz_convert(None)
+    return values.loc[values.index <= normalized_cutoff.normalize()].sort_index()
+
+
+def _event_section_for_signals(
+    frame: pd.DataFrame,
+    signals: list[FlowSignal],
+    adjusted: dict[str, pd.DataFrame],
+    crosschecks: dict[str, Any],
+) -> dict[str, Any]:
+    all_events = extreme_entries(signals)
+    clean_events = non_overlapping(all_events, horizon=20)
+    return _event_section(frame, all_events, clean_events, adjusted, crosschecks)
 
 
 def _event_section(
@@ -345,81 +712,190 @@ def _event_section(
     for asset, prices in assets.items():
         full_rows = event_returns(all_events, prices)
         clean_rows = event_returns(clean_events, prices)
+        benchmark = unconditional_forward_return_benchmarks(prices)
+        full_summary, full_treatment = _public_event_summary(
+            summarize_event_returns(
+                full_rows,
+                benchmark_returns=benchmark,
+                bootstrap_method="moving_block",
+            )
+        )
+        clean_summary, clean_treatment = _public_event_summary(
+            summarize_event_returns(
+                clean_rows,
+                benchmark_returns=benchmark,
+                bootstrap_method="moving_block",
+            )
+        )
         result[asset] = {
             "all": {
                 "eventCount": len(full_rows),
-                "summary": summarize_event_returns(full_rows),
+                "summary": full_summary,
+                "meanExcessReturnCi95BenchmarkTreatment": full_treatment,
             },
             "nonOverlapping20d": {
                 "eventCount": len(clean_rows),
-                "summary": summarize_event_returns(clean_rows),
-                "events": clean_rows,
+                "summary": clean_summary,
+                "meanExcessReturnCi95BenchmarkTreatment": clean_treatment,
+                "events": clean_rows[-12:],
+                "eventHistoryTruncated": len(clean_rows) > 12,
+            },
+            "benchmark": {
+                "type": "all_session_mean_forward_return",
+                "values": {f"return{horizon}d": value for horizon, value in benchmark.items()},
             },
         }
     return result
+
+
+def _public_event_summary(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    """Promote the repeated excess-CI treatment to the event section.
+
+    The pipeline always supplies one unconditional benchmark policy for a
+    section. Keeping the policy once avoids repeating a long contract key in
+    every state/horizon row while preserving a machine-readable disclosure.
+    """
+
+    field = "meanExcessReturnCi95BenchmarkTreatment"
+    treatments = {str(row.get(field, "unavailable")) for row in rows}
+    informative = treatments - {"unavailable"}
+    if len(informative) > 1:
+        raise ValueError("event summary mixes excess-CI benchmark treatments")
+    public_rows: list[dict[str, Any]] = []
+    for row in rows:
+        public_row = dict(row)
+        public_row.pop(field, None)
+        public_rows.append(public_row)
+    return public_rows, next(iter(informative), "unavailable")
 
 
 def _public_backtests(
-    backtests: dict[str, dict[str, BacktestResult]], common: dict[str, BacktestResult]
+    backtests: dict[str, dict[str, BacktestResult]],
+    common: dict[str, dict[str, BacktestResult]],
 ) -> dict[str, Any]:
     result: dict[str, Any] = {"status": "ok" if backtests else "unavailable", "proxies": {}}
     for ticker, variants in backtests.items():
+        common_variants = common.get(ticker, {})
+        benchmark_source = common_variants.get("robust_10bp")
+        if benchmark_source is None and common_variants:
+            benchmark_source = next(iter(common_variants.values()))
         result["proxies"][ticker] = {
             "fullPeriod": {
-                name: _compact_result(value, include_equity=False)
+                name: _compact_result(
+                    value,
+                    include_equity=True,
+                    include_trades=False,
+                    equity_step=252,
+                    include_benchmark=True,
+                )
                 for name, value in variants.items()
             },
-            "commonPeriod": _compact_result(common[ticker], include_equity=True)
-            if ticker in common
-            else None,
+            "commonPeriod": {
+                name: _compact_result(
+                    value,
+                    include_equity=True,
+                    include_trades=name.endswith("10bp"),
+                )
+                for name, value in common_variants.items()
+            }
+            or None,
+            "commonBenchmarkEquity": _benchmark_equity(benchmark_source),
+            "costBreakEvenBps": {
+                model: _cost_break_even_bps(variants, model)
+                for model in ("robust", "scaled", "raw")
+            },
         }
     return result
 
 
-def _compact_result(result: BacktestResult, *, include_equity: bool) -> dict[str, Any]:
+def _compact_result(
+    result: BacktestResult,
+    *,
+    include_equity: bool,
+    include_trades: bool = True,
+    equity_step: int = 60,
+    include_benchmark: bool = False,
+) -> dict[str, Any]:
     public = result_to_public(result)
     if include_equity:
-        public["equity"] = _sample_with_last(public["equity"], step=5)
+        public["equity"] = [
+            {
+                "date": row["date"],
+                "value": row["value"],
+                "drawdown": row["drawdown"],
+                **(
+                    {
+                        "buyHoldValue": row["buyHoldValue"],
+                        "buyHoldDrawdown": row["buyHoldDrawdown"],
+                    }
+                    if include_benchmark
+                    else {}
+                ),
+            }
+            for row in _sample_with_last(public["equity"], step=equity_step)
+        ]
     else:
         public.pop("equity", None)
+    trade_count = len(public.get("trades", []))
+    public["trades"] = public.get("trades", [])[-12:] if include_trades else []
+    public["tradeHistoryTruncated"] = trade_count > len(public["trades"])
     return public
 
 
-def _scatter(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    complete = frame.dropna(subset=["return_1d", "flow_share"])
+def _benchmark_equity(result: BacktestResult | None) -> list[dict[str, Any]]:
+    if result is None or result.status != "ok":
+        return []
+    public = result_to_public(result)
+    return [
+        {
+            "date": row["date"],
+            "value": row["buyHoldValue"],
+            "drawdown": row["buyHoldDrawdown"],
+        }
+        for row in _sample_with_last(public["equity"], step=60)
+    ]
+
+
+def _scatter(frame: pd.DataFrame, model: str = "scaled") -> list[dict[str, Any]]:
+    value_column = "raw_flow_trillion" if model == "raw" else "flow_share"
+    complete = frame.dropna(subset=["return_1d", value_column])
     recent = complete.tail(253)
     if recent.empty:
         return []
     current_date = recent.index[-1]
     latest = recent.iloc[-1]
-    alpha = latest["scaled_alpha"]
-    beta = latest["scaled_beta"]
+    alpha = latest[f"{model}_alpha"]
+    beta = latest[f"{model}_beta"]
     rows: list[dict[str, Any]] = []
     for timestamp, row in recent.iterrows():
-        if pd.isna(row["return_1d"]) or pd.isna(row["flow_share"]):
+        if pd.isna(row["return_1d"]) or pd.isna(row[value_column]):
             continue
-        rows.append(
-            {
-                "date": timestamp.date().isoformat(),
-                "return1d": public_number(row["return_1d"]),
-                "flowShare": public_number(row["flow_share"]),
-                "predicted": public_number(alpha + beta * row["return_1d"])
-                if pd.notna(alpha) and pd.notna(beta)
-                else None,
-                "percentile": public_number(row["scaled_percentile"]),
-                "state": row["scaled_state"],
-                "role": "current" if timestamp == current_date else "training",
-            }
+        point = {
+            "date": timestamp.date().isoformat(),
+            "return1d": public_number(row["return_1d"]),
+            "predicted": public_number(alpha + beta * row["return_1d"])
+            if pd.notna(alpha) and pd.notna(beta)
+            else None,
+            "percentile": public_number(row[f"{model}_percentile"]),
+            "state": row[f"{model}_state"],
+            "role": "current" if timestamp == current_date else "training",
+        }
+        point["rawFlowTrillion" if model == "raw" else "flowShare"] = public_number(
+            row[value_column]
         )
+        rows.append(point)
     return rows
 
 
-def _scatter_meta(frame: pd.DataFrame) -> dict[str, Any]:
-    points = _scatter(frame)
+def _scatter_meta(frame: pd.DataFrame, model: str = "scaled") -> dict[str, Any]:
+    points = _scatter(frame, model)
     training_count = sum(point["role"] == "training" for point in points)
     current_count = sum(point["role"] == "current" for point in points)
     return {
-        "model": "scaled",
+        "model": model,
+        "unit": "krw_trillion" if model == "raw" else "market_turnover_share",
         "window": 252,
         "trainingCount": training_count,
         "currentCount": current_count,
@@ -433,7 +909,11 @@ def _history_rows(
     base_result: BacktestResult | None,
     adjusted: dict[str, pd.DataFrame],
 ) -> list[dict[str, Any]]:
-    exposure = base_result.exposure if base_result is not None else pd.Series(dtype=float)
+    exposure = (
+        base_result.exposure
+        if base_result is not None and base_result.status == "ok"
+        else pd.Series(dtype=float)
+    )
     rows: list[dict[str, Any]] = []
     for timestamp, row in frame.iterrows():
         output = {
@@ -443,18 +923,38 @@ def _history_rows(
             "flowShare": public_number(row["flow_share"]),
             "rawFlowTrillion": public_number(row["raw_flow_trillion"]),
             "disparity50": public_number(row["disparity50"]),
-            "residual": public_number(row["scaled_residual"]),
-            "residualZ": public_number(row["scaled_residual_z"]),
-            "percentile": public_number(row["scaled_percentile"]),
-            "rollingR2": public_number(row["scaled_rolling_r2"]),
-            "state": row["scaled_state"],
-            "quality": row["scaled_quality"],
-            "tradeEligible": bool(row["scaled_trade_eligible"]),
+            "mdd252": public_number(row["mdd252"]),
+            "expected": public_number(row["robust_expected_flow"]),
+            "residual": public_number(row["robust_residual"]),
+            "residualZ": public_number(row["robust_residual_z"]),
+            "percentile": public_number(row["robust_percentile"]),
+            "rollingR2": public_number(row["robust_rolling_r2"]),
+            "fitScore": public_number(row["robust_fit_score"]),
+            "state": row["robust_state"],
+            "quality": row["robust_quality"],
+            "tradeEligible": bool(row["robust_trade_eligible"]),
+            "scaledPercentile": public_number(row["scaled_percentile"]),
+            "scaledState": row["scaled_state"],
+            "rawPercentile": public_number(row["raw_percentile"]),
+            "rawState": row["raw_state"],
+            "directionAgreement": row["model_direction_agreement"],
+            "triggerAgreement": row["model_trigger_agreement"],
             "sourceHash": row["source_hash"],
             "position": (
-                "long" if timestamp in exposure.index and exposure.loc[timestamp] else "cash"
+                "long"
+                if timestamp in exposure.index and exposure.loc[timestamp]
+                else "cash"
+                if base_result is not None and base_result.status == "ok"
+                else "unavailable"
             ),
         }
+        for participant in OPTIONAL_FLOW_CHANNELS:
+            if f"{participant}_percentile" in frame:
+                output[f"{participant}FlowShare"] = public_number(row[f"{participant}_flow_share"])
+                output[f"{participant}Percentile"] = public_number(row[f"{participant}_percentile"])
+                output[f"{participant}State"] = row[f"{participant}_state"]
+                source_column = OPTIONAL_FLOW_CHANNELS[participant][0]
+                output[f"{participant}NetPurchase"] = public_number(row[source_column])
         for public_ticker, yahoo_ticker in PROXY_TICKERS.items():
             prices = adjusted.get(yahoo_ticker)
             if prices is not None and timestamp in prices.index:
@@ -497,16 +997,39 @@ def _semiconductor_diagnostics(
     aligned["mu_hynix_ratio_indexed"] = (
         aligned["mu_hynix_ratio"] / aligned["mu_hynix_ratio"].iloc[0] * 100
     )
-    aligned["mu_hynix_relative_spread"] = (
-        aligned["mu_close_krw_indexed"] - aligned["hynix_indexed"]
-    )
+    aligned["mu_usd_mdd252"] = drawdown(aligned["mu_close_usd"])
+    aligned["mu_hynix_relative_spread"] = aligned["mu_close_krw_indexed"] - aligned["hynix_indexed"]
+    replica = aligned.loc[aligned.index >= pd.Timestamp("2025-01-01")].copy()
+    if not replica.empty:
+        replica["mu_usd_indexed_2025"] = (
+            replica["mu_close_usd"] / replica["mu_close_usd"].iloc[0] * 100
+        )
+        replica["hynix_indexed_2025"] = replica["hynix"] / replica["hynix"].iloc[0] * 100
+        replica["mu_hynix_ratio_indexed_2025"] = (
+            replica["mu_hynix_ratio"] / replica["mu_hynix_ratio"].iloc[0] * 100
+        )
+        replica["mu_hynix_log_relative_2025"] = replica["mu_hynix_ratio"].map(
+            lambda value: math.log(value / replica["mu_hynix_ratio"].iloc[0])
+        )
     sampled = _sample_frame_with_last(aligned, step=5)
+    replica_sampled = _sample_frame_with_last(replica, step=5)
     return {
         "status": "ok",
         "alignment": "last_us_and_fx_session_strictly_before_krx_date",
+        "definitions": {
+            "robustWindow": "latest_756_krx_sessions_first_observation_100",
+            "replicaWindow": "first_available_session_on_or_after_2025_01_01_equals_100",
+            "primaryRelativeMetric": "fx_and_session_adjusted_mu_hynix_ratio_index",
+            "nativeMddCurrency": "MU_USD_HYNIX_KRW_SAMSUNG_KRW",
+            "legacyDifferenceWarning": (
+                "Indexed-level subtraction is not scale invariant and is retained only for "
+                "backward compatibility."
+            ),
+        },
         "latest": {
             "date": aligned.index[-1].date().isoformat(),
             "muMdd252": public_number(aligned["mu_close_krw_mdd252"].iloc[-1], digits=6),
+            "muUsdMdd252": public_number(aligned["mu_usd_mdd252"].iloc[-1], digits=6),
             "hynixMdd252": public_number(aligned["hynix_mdd252"].iloc[-1], digits=6),
             "samsungMdd252": public_number(aligned["samsung_mdd252"].iloc[-1], digits=6),
             "muHynixRatio": public_number(aligned["mu_hynix_ratio"].iloc[-1], digits=6),
@@ -516,6 +1039,16 @@ def _semiconductor_diagnostics(
             "muHynixRelativeSpread": public_number(
                 aligned["mu_hynix_relative_spread"].iloc[-1], digits=2
             ),
+            "muHynixRatioIndexed2025": public_number(
+                replica["mu_hynix_ratio_indexed_2025"].iloc[-1], digits=2
+            )
+            if not replica.empty
+            else None,
+            "muHynixLogRelative2025": public_number(
+                replica["mu_hynix_log_relative_2025"].iloc[-1], digits=6
+            )
+            if not replica.empty
+            else None,
         },
         "series": [
             {
@@ -524,19 +1057,26 @@ def _semiconductor_diagnostics(
                 "hynixIndexed": public_number(row["hynix_indexed"], digits=1),
                 "samsungIndexed": public_number(row["samsung_indexed"], digits=1),
                 "muHynixRatio": public_number(row["mu_hynix_ratio"], digits=6),
-                "muHynixRatioIndexed": public_number(
-                    row["mu_hynix_ratio_indexed"], digits=2
-                ),
-                "muHynixRelativeSpread": public_number(
-                    row["mu_hynix_relative_spread"], digits=2
-                ),
+                "muHynixRatioIndexed": public_number(row["mu_hynix_ratio_indexed"], digits=2),
+                "muHynixRelativeSpread": public_number(row["mu_hynix_relative_spread"], digits=2),
             }
             for timestamp, row in sampled.iterrows()
+        ],
+        "replica2025Series": [
+            {
+                "date": timestamp.date().isoformat(),
+                "muUsdIndexed": public_number(row["mu_usd_indexed_2025"], digits=1),
+                "hynixKrwIndexed": public_number(row["hynix_indexed_2025"], digits=1),
+                "ratioIndexed": public_number(row["mu_hynix_ratio_indexed_2025"], digits=2),
+                "logRelative": public_number(row["mu_hynix_log_relative_2025"], digits=6),
+            }
+            for timestamp, row in replica_sampled.iterrows()
         ],
     }
 
 
 def _model_snapshot(row: pd.Series, prefix: str) -> dict[str, Any]:
+    observed_column = "raw_flow_trillion" if prefix == "raw" else "flow_share"
     return {
         "model": prefix,
         "state": row[f"{prefix}_state"],
@@ -549,7 +1089,276 @@ def _model_snapshot(row: pd.Series, prefix: str) -> dict[str, Any]:
         "trainingCount": int(row[f"{prefix}_training_count"]),
         "quality": row[f"{prefix}_quality"],
         "tradeEligible": bool(row[f"{prefix}_trade_eligible"]),
+        "expected": public_number(row[f"{prefix}_expected_flow"]),
+        "observed": public_number(row[observed_column]),
+        "fitMethod": row[f"{prefix}_fit_method"],
+        "fitScore": public_number(row[f"{prefix}_fit_score"]),
     }
+
+
+def _attach_pipeline_signals(frame: pd.DataFrame, signals: list[FlowSignal], prefix: str) -> None:
+    fields = (
+        "alpha",
+        "beta",
+        "rolling_r2",
+        "residual",
+        "residual_z",
+        "percentile",
+        "state",
+        "quality",
+        "training_count",
+        "trade_eligible",
+        "expected_flow",
+        "fit_method",
+        "fit_score",
+        "channel",
+    )
+    for field_name in fields:
+        frame[f"{prefix}_{field_name}"] = [getattr(signal, field_name) for signal in signals]
+
+
+def _flow_channel_section(frame: pd.DataFrame) -> dict[str, Any]:
+    latest = frame.iloc[-1]
+    channels: list[dict[str, Any]] = [
+        {
+            "channelId": "retail",
+            "participant": "individual",
+            "availability": "active",
+            "source": "authenticated_pykrx",
+            "normalization": "market_turnover_share",
+            "dataAsOf": frame.index[-1].date().isoformat(),
+            "state": latest["robust_state"],
+            "percentile": public_number(latest["robust_percentile"]),
+            "quality": latest["robust_quality"],
+            "strategyUse": "primary",
+        }
+    ]
+    for participant, (source_column, _) in OPTIONAL_FLOW_CHANNELS.items():
+        prefix = participant
+        observation_count = (
+            int(pd.to_numeric(frame[source_column], errors="coerce").notna().sum())
+            if source_column in frame
+            else 0
+        )
+        attached = source_column in frame and f"{prefix}_state" in frame
+        active = attached and observation_count >= 200
+        availability = "active" if active else "collecting" if attached else "planned"
+        channels.append(
+            {
+                "channelId": participant,
+                "participant": participant,
+                "availability": availability,
+                "source": "authenticated_pykrx" if attached else None,
+                "normalization": "market_turnover_share",
+                "dataAsOf": frame.index[-1].date().isoformat() if attached else None,
+                "coverageStart": frame.loc[frame[source_column].notna()].index[0].date().isoformat()
+                if attached and observation_count
+                else None,
+                "observationCount": observation_count,
+                "state": latest[f"{prefix}_state"] if attached else "unavailable",
+                "percentile": public_number(latest[f"{prefix}_percentile"]) if attached else None,
+                "quality": latest[f"{prefix}_quality"] if attached else "not_activated",
+                "strategyUse": "diagnostic_only" if active else "future_extension",
+                "activationRule": "requires_new_methodology_version_and_out_of_sample_plan",
+            }
+        )
+    return {
+        "primaryChannel": "retail",
+        "activeChannelCount": sum(item["availability"] == "active" for item in channels),
+        "strategyChannelCount": 1,
+        "ensembleState": "single_channel",
+        "channels": channels,
+    }
+
+
+def _history_flow_channel_roles() -> dict[str, Any]:
+    """Make per-row channel semantics self-contained for direct history consumers."""
+    activation_rule = "requires_new_methodology_version_and_out_of_sample_plan"
+    return {
+        "primaryChannel": "retail",
+        "strategyChannelCount": 1,
+        "channels": {
+            "retail": {
+                "participant": "individual",
+                "strategyUse": "primary",
+                "eligibleForTrading": True,
+                "stateField": "state",
+                "percentileField": "percentile",
+                "qualityField": "quality",
+                "tradeEligibleField": "tradeEligible",
+            },
+            "foreigner": {
+                "participant": "foreigner",
+                "strategyUse": "diagnostic_only",
+                "eligibleForTrading": False,
+                "stateField": "foreignerState",
+                "percentileField": "foreignerPercentile",
+                "activationRule": activation_rule,
+            },
+            "institutional": {
+                "participant": "institutional",
+                "strategyUse": "diagnostic_only",
+                "eligibleForTrading": False,
+                "stateField": "institutionalState",
+                "percentileField": "institutionalPercentile",
+                "activationRule": activation_rule,
+            },
+        },
+    }
+
+
+def _primary_model_confidence(row: pd.Series) -> str:
+    if row.get("robust_state") == "unavailable":
+        return "unavailable"
+    if row.get("robust_quality") != "ok":
+        return "low_model_fit"
+    available = [
+        prefix
+        for prefix in ("robust", "scaled", "raw")
+        if row.get(f"{prefix}_state") != "unavailable" and bool(row.get(f"{prefix}_trade_eligible"))
+    ]
+    if len(available) < 2:
+        return "scaled_only"
+    directions = {_state_direction(str(row[f"{prefix}_state"])) for prefix in available}
+    if len(directions) > 1:
+        return "mixed"
+    triggers = {
+        str(row[f"{prefix}_state"])
+        if str(row[f"{prefix}_state"]) in {"extreme_fear", "extreme_greed"}
+        else "none"
+        for prefix in available
+    }
+    return "mixed_trigger" if len(triggers) > 1 else "high"
+
+
+def _operational_label(state: str) -> str:
+    return {
+        "ok": "데이터 정상",
+        "degraded": "데이터 저하",
+        "stale": "데이터 지연",
+        "unavailable": "데이터 산출 불가",
+    }.get(state, "데이터 상태 미확인")
+
+
+def _cost_break_even_bps(variants: dict[str, BacktestResult], model: str) -> float | None:
+    points: list[tuple[float, float]] = []
+    for cost in (0.0, 5.0, 10.0, 20.0):
+        result = variants.get(f"{model}_{int(cost)}bp")
+        if result is None or result.status != "ok":
+            continue
+        total_return = result.metrics.get("totalReturn")
+        if total_return is not None:
+            points.append((cost, float(total_return)))
+    if not points:
+        return None
+    if points[0][1] <= 0:
+        return 0.0
+    for (left_cost, left_return), (right_cost, right_return) in zip(
+        points, points[1:], strict=False
+    ):
+        if right_return == 0:
+            return right_cost
+        if left_return > 0 > right_return:
+            weight = left_return / (left_return - right_return)
+            return public_number(left_cost + weight * (right_cost - left_cost), digits=2)
+    return None
+
+
+def _pdf_replica(frame: pd.DataFrame) -> dict[str, Any]:
+    """Reproduce the PDF's labelled 2026 observations without using them for trading."""
+    cutoff = pd.Timestamp("2026-07-14")
+    ytd = frame.loc[(frame.index >= pd.Timestamp("2026-01-01")) & (frame.index <= cutoff)].dropna(
+        subset=["return_1d", "raw_flow_trillion"]
+    )
+    annotated_dates = {pd.Timestamp(day) for day in PDF_ANNOTATED_EVENTS}
+    inliers = ytd.loc[~ytd.index.isin(annotated_dates)]
+    rows: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for day, (pdf_state, label) in PDF_ANNOTATED_EVENTS.items():
+        timestamp = pd.Timestamp(day)
+        if timestamp not in frame.index:
+            missing.append(day)
+            continue
+        position = frame.index.get_loc(timestamp)
+        row = frame.loc[timestamp]
+        forward: dict[str, float | None] = {}
+        for horizon in (1, 5, 10, 20):
+            if isinstance(position, int) and position + horizon < len(frame):
+                future = frame.iloc[position + horizon]["close"]
+                forward[f"return{horizon}d"] = public_number(future / row["close"] - 1)
+            else:
+                forward[f"return{horizon}d"] = None
+        scaled_state = str(row.get("scaled_state", "unavailable"))
+        raw_state = str(row.get("raw_state", "unavailable"))
+        rows.append(
+            {
+                "date": day,
+                "pdfLabel": label,
+                "pdfState": pdf_state,
+                "return1d": public_number(row["return_1d"]),
+                "rawFlowTrillion": public_number(row["raw_flow_trillion"]),
+                "flowShare": public_number(row["flow_share"]),
+                "scaledState": scaled_state,
+                "scaledPercentile": public_number(row.get("scaled_percentile")),
+                "rawState": raw_state,
+                "rawPercentile": public_number(row.get("raw_percentile")),
+                "directionMatched": _state_direction(pdf_state) == _state_direction(raw_state),
+                "forwardReturns": forward,
+            }
+        )
+    return {
+        "status": "ok" if rows and not missing else "partial",
+        "sourceCutoff": cutoff.date().isoformat(),
+        "publishedAt": "2026-07-15T08:38:00+09:00",
+        "purpose": "source_case_replication_only",
+        "signalUse": "excluded_from_threshold_selection_and_trading",
+        "regression": {
+            "allPoints": _simple_regression(ytd),
+            "annotatedExcluded": _simple_regression(inliers),
+            "interpretation": (
+                "The annotated-excluded fit is a diagnostic inference because the PDF did not "
+                "publish its fitting or outlier-selection algorithm."
+            ),
+        },
+        "annotatedEvents": rows,
+        "missingAnnotatedDates": missing,
+        "catalystContext": {
+            "cpi": "PDF narrative context only; excluded from the signal model.",
+            "semiconductor": "Rendered from independently collected prices in diagnostics.",
+        },
+    }
+
+
+def _simple_regression(frame: pd.DataFrame) -> dict[str, Any]:
+    if len(frame) < 3:
+        return {"observationCount": len(frame), "alpha": None, "beta": None, "r2": None}
+    xs = [float(value) for value in frame["return_1d"]]
+    ys = [float(value) for value in frame["raw_flow_trillion"]]
+    x_bar = sum(xs) / len(xs)
+    y_bar = sum(ys) / len(ys)
+    ss_x = sum((value - x_bar) ** 2 for value in xs)
+    if ss_x == 0:
+        return {"observationCount": len(frame), "alpha": None, "beta": None, "r2": None}
+    beta = sum((x - x_bar) * (y - y_bar) for x, y in zip(xs, ys, strict=True)) / ss_x
+    alpha = y_bar - beta * x_bar
+    residuals = [y - (alpha + beta * x) for x, y in zip(xs, ys, strict=True)]
+    ss_total = sum((value - y_bar) ** 2 for value in ys)
+    r2 = 0.0 if ss_total == 0 else 1 - sum(value**2 for value in residuals) / ss_total
+    return {
+        "observationCount": len(frame),
+        "alphaTrillion": public_number(alpha),
+        "betaTrillionPerReturnUnit": public_number(beta),
+        "betaTrillionPerPercentagePoint": public_number(beta * 0.01),
+        "r2": public_number(r2),
+    }
+
+
+def _state_direction(state: str) -> str:
+    if state in {"fear", "extreme_fear"}:
+        return "fear"
+    if state in {"greed", "extreme_greed"}:
+        return "greed"
+    return "neutral"
 
 
 def _sample_with_last(rows: list[dict[str, Any]], *, step: int) -> list[dict[str, Any]]:
@@ -559,6 +1368,40 @@ def _sample_with_last(rows: list[dict[str, Any]], *, step: int) -> list[dict[str
     if sampled[-1] != rows[-1]:
         sampled.append(rows[-1])
     return sampled
+
+
+def _columnar_history(
+    rows: list[dict[str, Any]],
+) -> tuple[list[str], list[list[Any]]]:
+    """Remove repeated JSON keys while preserving an explicit, inspectable column contract."""
+    if not rows:
+        return [], []
+    preferred = [
+        "date",
+        "kospiClose",
+        "return1d",
+        "flowShare",
+        "rawFlowTrillion",
+        "disparity50",
+        "mdd252",
+        "residual",
+        "residualZ",
+        "percentile",
+        "rollingR2",
+        "state",
+        "quality",
+        "tradeEligible",
+        "sourceHash",
+        "position",
+        "p226490Open",
+        "p226490Close",
+        "p069500Open",
+        "p069500Close",
+    ]
+    present = {key for row in rows for key in row}
+    columns = [key for key in preferred if key in present]
+    columns.extend(sorted(present.difference(columns)))
+    return columns, [[row.get(column) for column in columns] for row in rows]
 
 
 def _sample_frame_with_last(frame: pd.DataFrame, *, step: int) -> pd.DataFrame:

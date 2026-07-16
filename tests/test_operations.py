@@ -12,6 +12,15 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     workflow = (ROOT / ".github" / "workflows" / "refresh.yml").read_text(encoding="utf-8")
 
     assert "outcome=failure" in workflow
+    before_refresh = workflow.split("- name: Refresh derived data", 1)[0]
+    refresh_step = workflow.split("- name: Refresh derived data", 1)[1].split(
+        "- name: Enforce failed-refresh mutation boundary", 1
+    )[0]
+    assert "KRX_API_KEY" not in before_refresh
+    assert "KRX_API_KEY" in refresh_step
+    assert "KRX_ID" in refresh_step
+    assert "KRX_PW" in refresh_step
+    assert "scan_public_files" in refresh_step
     assert "Enforce failed-refresh mutation boundary" in workflow
     assert "data/summary.json|data/automation-status.json" in workflow
     assert "data: publish degraded refresh status" in workflow
@@ -19,8 +28,28 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert workflow.index("python -m fearngreed.site") < workflow.index(
         "Commit validated derivatives"
     )
+    assert "pages: write" in workflow
+    assert "id-token: write" in workflow
+    assert "actions/deploy-pages@v4" in workflow
+    assert "python -m fearngreed.verify --base-url" in workflow
     assert workflow.index("Commit validated derivatives") < workflow.index(
+        "Deploy validated derivatives"
+    )
+    assert workflow.index("Verify live public derivative hashes") < workflow.index(
         "Report provider refresh failure"
+    )
+
+
+def test_pages_workflow_runs_local_and_live_contract_verification() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
+
+    assert "uv run --frozen python -m fearngreed.verify\n" in workflow
+    assert "python -m fearngreed.verify --base-url" in workflow
+    assert workflow.index("python -m fearngreed.verify\n") < workflow.index(
+        "actions/upload-pages-artifact@v3"
+    )
+    assert workflow.index("actions/deploy-pages@v4") < workflow.index(
+        "Verify live public derivative hashes"
     )
 
 
@@ -57,12 +86,11 @@ def test_failed_refresh_preserves_market_outputs_and_last_success(tmp_path, monk
     refresh_module.mark_failed("provider_unavailable")
 
     updated_summary = json.loads((data / "summary.json").read_text(encoding="utf-8"))
-    updated_automation = json.loads(
-        (data / "automation-status.json").read_text(encoding="utf-8")
-    )
+    updated_automation = json.loads((data / "automation-status.json").read_text(encoding="utf-8"))
     assert updated_summary["dataAsOf"] == "2026-07-15"
     assert updated_summary["primaryEntities"] == summary["primaryEntities"]
     assert updated_summary["status"]["state"] == "degraded"
+    assert updated_summary["status"]["label"] == "데이터 저하"
     assert updated_summary["status"]["degradedReasons"] == ["provider_unavailable"]
     assert updated_summary["automation"]["lastSuccessAt"] == "2026-07-16T01:00:00Z"
     assert updated_automation["state"] == "degraded"

@@ -83,9 +83,7 @@ class KRXOpenAPIClient:
         # sessions used by the incremental refresh, including ordinary Korean
         # exchange holiday clusters.  Callers can pass the exact mutable
         # boundary when replaying a historical as-of date.
-        self._cache_revalidate_after = cache_revalidate_after or (
-            date.today() - timedelta(days=14)
-        )
+        self._cache_revalidate_after = cache_revalidate_after or (date.today() - timedelta(days=14))
         self._min_interval = max(0.0, min_interval_seconds)
         self._last_request_at = 0.0
 

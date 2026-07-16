@@ -51,6 +51,54 @@ def test_summary_schema_rejects_unknown_nested_properties(summary_contract) -> N
         Draft202012Validator(schema, format_checker=FormatChecker()).validate(candidate)
 
 
+def test_summary_separates_operational_and_signal_labels(summary_contract) -> None:
+    schema, committed = summary_contract
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+
+    assert committed["status"]["label"] in {
+        "데이터 정상",
+        "데이터 저하",
+        "데이터 지연",
+        "데이터 산출 불가",
+    }
+    assert committed["primaryEntities"][0]["signalLabel"] in {
+        "극단적 공포",
+        "공포",
+        "중립",
+        "탐욕",
+        "극단적 탐욕",
+        "산출 불가",
+    }
+    invalid = deepcopy(committed)
+    invalid["status"]["label"] = invalid["primaryEntities"][0]["signalLabel"]
+    with pytest.raises(ValidationError):
+        validator.validate(invalid)
+
+
+def test_summary_schema_requires_unavailable_position_reason(summary_contract) -> None:
+    schema, committed = summary_contract
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    candidate = deepcopy(committed)
+    entity = candidate["primaryEntities"][0]
+    entity["position"] = "unavailable"
+    entity["positionQuality"] = "unavailable"
+    entity["positionUnavailableReason"] = "official_proxy_crosscheck_failed"
+    validator.validate(candidate)
+
+    entity["positionUnavailableReason"] = None
+    with pytest.raises(ValidationError):
+        validator.validate(candidate)
+
+
+def test_date_overlap_is_named_explicitly_with_compatibility_alias(
+    summary_contract,
+) -> None:
+    _, committed = summary_contract
+    coverage = committed["coverage"]
+
+    assert coverage["dateOverlapRatio"] == coverage["sourceCompleteness"]
+
+
 def test_private_reference_is_ignored() -> None:
     gitignore = (ROOT / ".gitignore").read_text()
     assert "/references/private/" in gitignore

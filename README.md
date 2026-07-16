@@ -1,6 +1,6 @@
 # Fear & Greed Flow Lab
 
-KOSPI 수익률 대비 개인 순매수의 비정상성을 과거 정보만으로 측정하는 공개 퀀트 리서치다. 원문 사례를 그대로 복제하지 않고, 규모 보정 수급 회귀와 원문 충실 raw-flow 회귀를 분리한다.
+KOSPI 수익률 대비 개인 순매수의 비정상성을 과거 정보만으로 측정하는 공개 퀀트 리서치다. 원문 사례를 그대로 복제하지 않고, 실전 후보인 규모보정 강건 회귀, 감사 기준선인 규모보정 OLS, PDF 원문 근사인 절대수급 OLS를 분리한다.
 
 공개 수치는 공급자 품질 게이트를 통과한 파생값만 기록한다. `degraded`는 마지막 정상 수치를 유지하면서 Open API 권한, 교차검증 또는 갱신 문제가 남아 있다는 뜻이며, 임의 fallback 시장 수치를 뜻하지 않는다.
 
@@ -15,6 +15,7 @@ uv sync
 uv run --frozen pytest
 uv run --frozen ruff check .
 npm test
+uv run --frozen python -m fearngreed.verify
 with-krx-keychain --check
 with-krx-keychain uv run --frozen python -m fearngreed.refresh --probe
 with-krx-keychain uv run --frozen python -m fearngreed.refresh
@@ -36,7 +37,7 @@ python3 -m http.server 8000
 
 ## 자동화
 
-평일 20:30 KST에 갱신한다. 정상 이력이 있으면 최신 5거래일의 KRX 캐시를 다시 검증하고 그 이전 파생 이력은 고정한다. 같은 기준일과 파생값이면 `noOp`으로 끝나며, 더 오래된 구간을 고치려면 경계를 명시한 수동 백필이 필요하다. 공급자 실패 시 마지막 정상 시장 산출물을 보존하고 `summary`·`automation-status`만 원자적으로 degraded로 발행한 뒤 Actions 실행은 실패로 표시한다. GitHub Actions에는 사용자가 직접 `KRX_API_KEY`, `KRX_ID`, `KRX_PW` repository secrets를 등록해야 한다. 로컬 Keychain 값은 GitHub로 자동 복사하지 않는다.
+평일 20:30 KST에 갱신한다. 정상 이력이 있으면 최신 5거래일의 KRX 캐시를 다시 검증하고 그 이전 파생 이력은 고정한다. 수정 불가 구간과 겹치는 Yahoo 조정가격 앵커를 별도로 대조하고, 과거 가격 스케일 또는 공개 파생 행의 어느 값이라도 달라지면 새·옛 이력을 섞지 않고 `requires_backfill`로 실패한다. 공급자별 최신일이 다르면 더 늦은 행을 억지로 결합하지 않고 최신 공통 거래일까지 계산하며 `degraded` 사유를 남긴다. 같은 기준일과 파생값이면 `noOp`으로 끝나며, 더 오래된 구간을 고치려면 경계를 명시한 수동 백필이 필요하다. 공급자 실패 시 마지막 정상 시장 산출물을 보존하고 `summary`·`automation-status`만 원자적으로 degraded로 발행한 뒤 Actions 실행은 실패로 표시한다. GitHub Actions에는 사용자가 직접 `KRX_API_KEY`, `KRX_ID`, `KRX_PW` repository secrets를 등록해야 한다. 로컬 Keychain 값은 GitHub로 자동 복사하지 않는다.
 
 ```bash
 with-krx-keychain uv run --frozen python -m fearngreed.refresh --backfill-start-date 2010-01-04

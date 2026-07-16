@@ -4,12 +4,14 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import sys
 import tempfile
+import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -17,6 +19,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .pipeline import (
+    METHODOLOGY_VERSION,
     PipelineInputs,
     PipelineOutputs,
     build_outputs,
@@ -29,9 +32,11 @@ from .providers.pykrx_flow import (
     fetch_etf_prices,
     fetch_individual_flow,
     fetch_kospi_index,
+    fetch_market_participant_flows,
     fetch_stock_prices,
 )
 from .providers.yahoo import fetch_adjusted_prices
+from .quality import compare_latest_close
 
 PUBLIC_LIMITS = {
     "summary": 50_000,
@@ -40,12 +45,21 @@ PUBLIC_LIMITS = {
     "automation_status": 50_000,
 }
 CORE_YAHOO_TICKERS = ["^KS11", "226490.KS", "069500.KS"]
+CORE_YAHOO_HISTORY_STARTS = {
+    "^KS11": date(2010, 1, 4),
+    "226490.KS": date(2015, 8, 24),
+    "069500.KS": date(2010, 1, 4),
+}
 DIAGNOSTIC_YAHOO_TICKERS = ["MU", "000660.KS", "005930.KS", "KRW=X"]
+ADJUSTED_ANCHOR_LOOKBACK_DAYS = 45
+ADJUSTED_SCALE_TOLERANCE = 0.005
+PUBLIC_NUMERIC_DRIFT_TOLERANCE = 5e-8
 
 
 @dataclass(frozen=True)
 class IncrementalSeed:
     mutable_start: date
+    methodology_version: str
     data_as_of: str
     status_state: str
     existing_signature: str
@@ -53,6 +67,26 @@ class IncrementalSeed:
     kospi: pd.DataFrame
     flow: pd.DataFrame
     adjusted: dict[str, pd.DataFrame]
+    etf_reconciliation: dict[str, dict[str, object]] = field(default_factory=dict)
+
+
+class RefreshStageError(RuntimeError):
+    """A public-safe pipeline failure code with no provider response attached."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def _safe_stage_code(prefix: str, error: Exception) -> str:
+    """Describe the failing project function without serializing exception data."""
+    function_name = "pipeline"
+    for entry in reversed(traceback.extract_tb(error.__traceback__)):
+        if "/fearngreed/" in entry.filename.replace("\\", "/"):
+            function_name = entry.name
+            break
+    safe_name = re.sub(r"[^a-z0-9]+", "_", function_name.lower()).strip("_")
+    return f"{prefix}_{safe_name or 'pipeline'}_failed"
 
 
 def repository_root() -> Path:
@@ -98,17 +132,18 @@ def refresh(
     degraded: list[str] = []
     core_source = "krx_open_api"
     open_client: KRXOpenAPIClient | None = None
+    recent_open_etfs: dict[str, pd.DataFrame] = {}
 
     try:
         open_client = KRXOpenAPIClient.from_env(
             cache_dir=root / "var" / "cache" / "krx-open",
-            cache_revalidate_after=start,
+            cache_revalidate_after=max(start, end - timedelta(days=14)),
         )
         latest_open = _latest_open_row(open_client, end)
         if latest_open is None:
             raise ProviderError("KRX Open API returned no recent KOSPI row")
         recent_kospi = _fetch_open_kospi(open_client, start, end)
-        krx_etfs = _fetch_open_etfs(
+        recent_open_etfs = _fetch_open_etfs(
             open_client,
             max(start, end - timedelta(days=14), date(2015, 8, 24)),
             end,
@@ -118,12 +153,12 @@ def refresh(
         core_source = "authenticated_pykrx_fallback"
         degraded.append(_open_api_reason(error))
         recent_kospi = fetch_kospi_index(start, end)
-        krx_etfs = {
-            "226490": fetch_etf_prices(
-                "226490", max(start, end - timedelta(days=14), date(2015, 8, 24)), end
-            ),
-            "069500": fetch_etf_prices("069500", max(start, end - timedelta(days=14)), end),
-        }
+
+    krx_etfs = _fetch_authenticated_etf_histories(
+        end,
+        recent_open=recent_open_etfs,
+        degraded=degraded,
+    )
 
     stock_crosscheck_start = max(start, end - timedelta(days=14))
     if open_client is not None:
@@ -135,34 +170,76 @@ def refresh(
     else:
         krx_stocks = _fetch_authenticated_stocks(stock_crosscheck_start, end, degraded)
 
-    recent_flow = fetch_individual_flow(start, end)
-    recent_adjusted = fetch_adjusted_prices(CORE_YAHOO_TICKERS, start, end)
+    recent_flow = fetch_market_participant_flows(start, end)
+    adjusted_fetch_start = start - timedelta(days=ADJUSTED_ANCHOR_LOOKBACK_DAYS) if seed else start
+    recent_adjusted = _fetch_adjusted_partition(
+        CORE_YAHOO_TICKERS,
+        adjusted_fetch_start,
+        end,
+        degraded,
+        reason_prefix="adjusted_price",
+        start_overrides=CORE_YAHOO_HISTORY_STARTS if seed is None else None,
+    )
     diagnostic_start = max(date(2010, 1, 4), end - timedelta(days=1_500))
-    diagnostics = fetch_adjusted_prices(DIAGNOSTIC_YAHOO_TICKERS, diagnostic_start, end)
+    diagnostics = _fetch_adjusted_partition(
+        DIAGNOSTIC_YAHOO_TICKERS,
+        diagnostic_start,
+        end,
+        degraded,
+        reason_prefix="diagnostic_price",
+    )
     kospi = _merge_frames(seed.kospi, recent_kospi) if seed else recent_kospi
     flow = _merge_frames(seed.flow, recent_flow) if seed else recent_flow
-    adjusted = dict(diagnostics)
+    kospi, flow = _align_core_to_latest_common(kospi, flow, degraded)
+    adjusted = dict(seed.adjusted) if seed else {}
+    adjusted.update(diagnostics)
     for ticker, frame in recent_adjusted.items():
-        adjusted[ticker] = (
-            _merge_frames(seed.adjusted[ticker], frame)
-            if seed and ticker in seed.adjusted
-            else frame
+        if seed and ticker in adjusted:
+            # Old adjusted prices are part of the published research record.  A
+            # small immutable overlap is fetched only to detect a dividend or
+            # split scale change.  Such a change needs an explicit backfill;
+            # silently mixing newly rescaled prices with frozen rows would make
+            # the public history and backtest disagree.
+            _assert_adjusted_scale_stable(
+                ticker,
+                adjusted[ticker],
+                frame,
+                boundary=seed.mutable_start,
+            )
+            mutable = frame.loc[pd.to_datetime(frame.index) >= pd.Timestamp(seed.mutable_start)]
+            adjusted[ticker] = _merge_frames(adjusted[ticker], mutable)
+        else:
+            adjusted[ticker] = frame
+    try:
+        outputs = build_outputs(
+            PipelineInputs(
+                kospi=kospi,
+                flow=flow,
+                adjusted=adjusted,
+                krx_etfs=krx_etfs,
+                generated_at=generated_at,
+                core_source=core_source,
+                degraded_reasons=tuple(degraded),
+                krx_stocks=krx_stocks,
+                kospi_secondary_history_independent=seed is None,
+                prior_etf_reconciliation=seed.etf_reconciliation if seed else {},
+            )
         )
-    outputs = build_outputs(
-        PipelineInputs(
-            kospi=kospi,
-            flow=flow,
-            adjusted=adjusted,
-            krx_etfs=krx_etfs,
-            generated_at=generated_at,
-            core_source=core_source,
-            degraded_reasons=tuple(degraded),
-            krx_stocks=krx_stocks,
+    except Exception as error:
+        code = (
+            "refresh_core_input_quality_failed"
+            if str(error).startswith("core input quality failed:")
+            else _safe_stage_code("refresh_build", error)
         )
-    )
-    if seed:
-        _preserve_frozen_history(seed, outputs)
-    sizes = output_size_report(outputs)
+        raise RefreshStageError(code) from None
+    try:
+        if seed and seed.methodology_version == outputs.history.get("methodologyVersion"):
+            _preserve_frozen_history(seed, outputs)
+        sizes = output_size_report(outputs)
+    except RefreshStageError:
+        raise
+    except Exception as error:
+        raise RefreshStageError(_safe_stage_code("refresh_artifact", error)) from None
     oversized = [name for name, size in sizes.items() if size > PUBLIC_LIMITS[name]]
     if oversized:
         raise ValueError(f"public output size limit exceeded: {','.join(oversized)}")
@@ -193,11 +270,12 @@ def _load_incremental_seed(root: Path, end: date) -> IncrementalSeed | None:
         dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    rows = history.get("series") if isinstance(history, dict) else None
+    rows = _decode_history_rows(history) if isinstance(history, dict) else None
+    methodology_version = str(history.get("methodologyVersion", ""))
     if (
         not isinstance(rows, list)
         or history.get("fixture") is not False
-        or history.get("methodologyVersion") != "fear-flow-v1"
+        or methodology_version not in {"fear-flow-v1", METHODOLOGY_VERSION}
         or len(rows) < 252
     ):
         return None
@@ -225,8 +303,20 @@ def _load_incremental_seed(root: Path, end: date) -> IncrementalSeed | None:
     if len(frozen) < 247:
         return None
     kospi, flow, adjusted = _frames_from_history(frozen)
+    crosschecks = dashboard.get("crosschecks", {})
+    etf_crosschecks = crosschecks.get("etf", {}) if isinstance(crosschecks, dict) else {}
+    if not isinstance(etf_crosschecks, dict):
+        etf_crosschecks = {}
+    etf_reconciliation = {
+        ticker: dict(check.get("historyReconciliation", {}))
+        for ticker, check in etf_crosschecks.items()
+        if isinstance(ticker, str)
+        and isinstance(check, dict)
+        and isinstance(check.get("historyReconciliation"), dict)
+    }
     return IncrementalSeed(
         mutable_start=mutable_start,
+        methodology_version=methodology_version,
         data_as_of=str(history.get("dataAsOf", usable[-1]["date"])),
         status_state=str(summary.get("status", {}).get("state", "unavailable")),
         existing_signature=_output_signature(summary, dashboard, history),
@@ -234,6 +324,7 @@ def _load_incremental_seed(root: Path, end: date) -> IncrementalSeed | None:
         kospi=kospi,
         flow=flow,
         adjusted=adjusted,
+        etf_reconciliation=etf_reconciliation,
     )
 
 
@@ -261,15 +352,28 @@ def _frames_from_history(
                 "trading_value": 1.0,
             }
         )
-        flow_rows.append(
-            {
-                "date": timestamp,
-                "individual_net_purchase": float(row["flowShare"]),
-                "flow_share_override": float(row["flowShare"]),
-                "raw_flow_trillion_override": float(row["rawFlowTrillion"]),
-                "source_hash_override": str(row["sourceHash"]),
-            }
-        )
+        flow_row: dict[str, object] = {
+            "date": timestamp,
+            "individual_net_purchase": float(row["flowShare"]),
+            "flow_share_override": float(row["flowShare"]),
+            "raw_flow_trillion_override": float(row["rawFlowTrillion"]),
+            "source_hash_override": str(row["sourceHash"]),
+        }
+        optional_channels = {
+            "foreigner": ("foreignerNetPurchase", "foreigner_net_purchase"),
+            "institutional": (
+                "institutionalNetPurchase",
+                "institutional_net_purchase",
+            ),
+        }
+        for participant, (public_name, frame_name) in optional_channels.items():
+            share = row.get(f"{participant}FlowShare")
+            value = row.get(public_name)
+            if share is not None:
+                flow_row[f"{participant}_flow_share_override"] = float(share)
+                if value is not None:
+                    flow_row[frame_name] = float(value)
+        flow_rows.append(flow_row)
         adjusted_rows["^KS11"].append(_price_row(timestamp, close, close))
         for ticker in ("226490", "069500"):
             open_value = row.get(f"p{ticker}Open")
@@ -288,6 +392,42 @@ def _frames_from_history(
     return kospi, flow, adjusted
 
 
+def _decode_history_rows(history: dict[str, object]) -> list[dict[str, object]] | None:
+    """Decode legacy object rows and the compact columnar public-history shape."""
+    legacy = history.get("series")
+    if isinstance(legacy, list):
+        if not all(isinstance(row, dict) for row in legacy):
+            return None
+        return [dict(row) for row in legacy]
+    columns = history.get("seriesColumns")
+    encoded_rows = history.get("seriesRows")
+    if (
+        not isinstance(columns, list)
+        or not columns
+        or not all(isinstance(column, str) and column for column in columns)
+        or len(set(columns)) != len(columns)
+        or not isinstance(encoded_rows, list)
+    ):
+        return None
+    rows: list[dict[str, object]] = []
+    for values in encoded_rows:
+        if not isinstance(values, list) or len(values) != len(columns):
+            return None
+        rows.append(dict(zip(columns, values, strict=True)))
+    return rows
+
+
+def _replace_history_rows(history: dict[str, object], rows: list[dict[str, object]]) -> None:
+    """Write rows back without changing the output's selected representation."""
+    if isinstance(history.get("seriesColumns"), list) and "seriesRows" in history:
+        columns = history["seriesColumns"]
+        assert isinstance(columns, list)
+        history["seriesRows"] = [[row.get(str(column)) for column in columns] for row in rows]
+        history.pop("series", None)
+        return
+    history["series"] = rows
+
+
 def _price_row(timestamp: pd.Timestamp, open_value: float, close_value: float) -> dict[str, object]:
     return {
         "date": timestamp,
@@ -304,6 +444,22 @@ def _merge_frames(frozen: pd.DataFrame, recent: pd.DataFrame) -> pd.DataFrame:
     return combined[~combined.index.duplicated(keep="last")].sort_index()
 
 
+def _align_core_to_latest_common(
+    kospi: pd.DataFrame,
+    flow: pd.DataFrame,
+    degraded: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Use the latest common session without pairing a later flow row to stale prices."""
+    if kospi.empty or flow.empty:
+        return kospi, flow
+    latest_kospi = pd.Timestamp(kospi.index.max()).tz_localize(None).normalize()
+    latest_flow = pd.Timestamp(flow.index.max()).tz_localize(None).normalize()
+    latest_common = min(latest_kospi, latest_flow)
+    if latest_kospi != latest_flow:
+        degraded.append("core_latest_common_date_alignment")
+    return kospi.loc[:latest_common], flow.loc[:latest_common]
+
+
 def _is_unchanged(seed: IncrementalSeed, outputs: PipelineOutputs) -> bool:
     current_signature = _output_signature(outputs.summary, outputs.dashboard, outputs.history)
     return current_signature == seed.existing_signature
@@ -312,17 +468,81 @@ def _is_unchanged(seed: IncrementalSeed, outputs: PipelineOutputs) -> bool:
 def _preserve_frozen_history(seed: IncrementalSeed, outputs: PipelineOutputs) -> None:
     boundary = seed.mutable_start.isoformat()
     frozen = [row for row in seed.history_rows if str(row["date"]) < boundary]
-    mutable = [row for row in outputs.history.get("series", []) if str(row["date"]) >= boundary]
-    outputs.history["series"] = [*frozen, *mutable]
+    output_rows = _decode_history_rows(outputs.history)
+    if output_rows is None:
+        raise ValueError("public history rows cannot be decoded")
+    regenerated_frozen = [row for row in output_rows if str(row["date"]) < boundary]
+    if not _history_rows_equivalent(frozen, regenerated_frozen):
+        raise RefreshStageError("frozen_history_drift_requires_backfill")
+    mutable = [row for row in output_rows if str(row["date"]) >= boundary]
+    _replace_history_rows(outputs.history, [*frozen, *mutable])
+
+
+def _history_rows_equivalent(
+    frozen: list[dict[str, object]], regenerated: list[dict[str, object]]
+) -> bool:
+    """Compare every public frozen value, allowing only serialization-scale noise."""
+    if len(frozen) != len(regenerated):
+        return False
+    for previous, current in zip(frozen, regenerated, strict=True):
+        if previous.keys() != current.keys():
+            return False
+        for key in previous:
+            left = previous[key]
+            right = current[key]
+            if isinstance(left, bool) or isinstance(right, bool):
+                if left is not right:
+                    return False
+            elif isinstance(left, int | float) and isinstance(right, int | float):
+                if not math.isclose(
+                    float(left),
+                    float(right),
+                    rel_tol=1e-9,
+                    abs_tol=PUBLIC_NUMERIC_DRIFT_TOLERANCE,
+                ):
+                    return False
+            elif left != right:
+                return False
+    return True
+
+
+def _assert_adjusted_scale_stable(
+    ticker: str,
+    frozen: pd.DataFrame,
+    fetched: pd.DataFrame,
+    *,
+    boundary: date,
+    tolerance: float = ADJUSTED_SCALE_TOLERANCE,
+) -> None:
+    """Fail closed when fresh adjusted-price anchors no longer match frozen scale."""
+    public_ticker = {
+        "^KS11": "kospi",
+        "226490.KS": "226490",
+        "069500.KS": "069500",
+    }.get(ticker, "unknown")
+    left = frozen.copy()
+    right = fetched.copy()
+    left.index = pd.to_datetime(left.index).tz_localize(None).normalize()
+    right.index = pd.to_datetime(right.index).tz_localize(None).normalize()
+    immutable = left.index[left.index < pd.Timestamp(boundary)]
+    common = immutable.intersection(right.index)
+    if len(common) < 3:
+        raise RefreshStageError(f"adjusted_anchor_insufficient_requires_backfill_{public_ticker}")
+    anchors = common[-min(6, len(common)) :]
+    for timestamp in anchors:
+        previous = float(left.at[timestamp, "close"])
+        current = float(right.at[timestamp, "close"])
+        if min(previous, current) <= 0 or not math.isfinite(previous + current):
+            raise RefreshStageError(f"adjusted_anchor_invalid_requires_backfill_{public_ticker}")
+        if abs(current / previous - 1) > tolerance:
+            raise RefreshStageError(f"adjusted_scale_drift_requires_backfill_{public_ticker}")
 
 
 def _output_signature(
     summary: dict[str, object], dashboard: dict[str, object], history: dict[str, object]
 ) -> str:
     stable_summary = {
-        key: value
-        for key, value in summary.items()
-        if key not in {"generatedAt", "automation"}
+        key: value for key, value in summary.items() if key not in {"generatedAt", "automation"}
     }
     stable_dashboard = {key: value for key, value in dashboard.items() if key != "generatedAt"}
     stable_history = {key: value for key, value in history.items() if key != "generatedAt"}
@@ -414,18 +634,93 @@ def _fetch_open_stocks(client: KRXOpenAPIClient, start: date, end: date) -> dict
     return output
 
 
+def _fetch_authenticated_etf_histories(
+    end: date,
+    *,
+    recent_open: dict[str, pd.DataFrame],
+    degraded: list[str],
+) -> dict[str, pd.DataFrame]:
+    """Fetch official range histories for multi-anchor adjusted-price checks.
+
+    Open API daily calls remain the independent latest-price reference.  The
+    authenticated range adapter provides the historical anchors without a
+    decade of one-request-per-session Open API traffic.
+    """
+    listing_dates = {"226490": date(2015, 8, 24), "069500": date(2010, 1, 4)}
+    output: dict[str, pd.DataFrame] = {}
+    for ticker, listing_date in listing_dates.items():
+        try:
+            history = fetch_etf_prices(ticker, listing_date, end)
+        except ProviderError:
+            degraded.append(f"historical_etf_{ticker}_unavailable")
+            fallback = recent_open.get(ticker)
+            if fallback is not None and not fallback.empty:
+                output[ticker] = fallback
+            continue
+        if history.empty:
+            degraded.append(f"historical_etf_{ticker}_unavailable")
+            fallback = recent_open.get(ticker)
+            if fallback is not None and not fallback.empty:
+                output[ticker] = fallback
+            continue
+        independent = recent_open.get(ticker)
+        if independent is not None and not independent.empty:
+            check = compare_latest_close(
+                independent["close"],
+                history["close"],
+                expected_date=independent.index.max(),
+            )
+            if check["state"] != "ok":
+                degraded.append(f"official_etf_provider_disagreement_{ticker}")
+                output[ticker] = independent
+                continue
+        output[ticker] = history
+    return output
+
+
 def _fetch_authenticated_stocks(
     start: date, end: date, degraded: list[str]
 ) -> dict[str, pd.DataFrame]:
     try:
-        stocks = {
-            ticker: fetch_stock_prices(ticker, start, end) for ticker in ("000660", "005930")
-        }
+        stocks = {ticker: fetch_stock_prices(ticker, start, end) for ticker in ("000660", "005930")}
     except ProviderError:
         degraded.append("stock_crosscheck_provider_unavailable")
         return {}
     degraded.append("stock_crosscheck_authenticated_pykrx_fallback")
     return stocks
+
+
+def _fetch_adjusted_partition(
+    tickers: list[str],
+    start: date,
+    end: date,
+    degraded: list[str],
+    *,
+    reason_prefix: str,
+    start_overrides: dict[str, date] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Keep independent Yahoo instruments isolated from sibling failures."""
+    reason_ids = {
+        "^KS11": "kospi",
+        "226490.KS": "226490",
+        "069500.KS": "069500",
+        "MU": "mu",
+        "000660.KS": "000660",
+        "005930.KS": "005930",
+        "KRW=X": "usdkrw",
+    }
+    output: dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        try:
+            ticker_start = (start_overrides or {}).get(ticker, start)
+            fetched = fetch_adjusted_prices([ticker], ticker_start, end)
+            frame = fetched.get(ticker)
+            if frame is None or frame.empty:
+                raise ProviderError("adjusted-price response is empty")
+            output[ticker] = frame
+        except ProviderError:
+            degraded.append(f"{reason_prefix}_{reason_ids.get(ticker, 'unknown')}_unavailable")
+    return output
 
 
 def _open_api_reason(error: ProviderError) -> str:
@@ -469,7 +764,10 @@ def mark_failed(reason: str) -> None:
         try:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             previous = summary.get("status", {}).get("degradedReasons", [])
+            if not isinstance(previous, list):
+                previous = []
             summary.setdefault("status", {})["state"] = "degraded"
+            summary["status"]["label"] = "데이터 저하"
             summary["status"]["degradedReasons"] = list(dict.fromkeys([*previous, reason]))
             summary.setdefault("automation", {})["lastAttemptAt"] = attempted_at
             summary["automation"]["state"] = "degraded"
@@ -479,9 +777,7 @@ def mark_failed(reason: str) -> None:
             automation["dataAsOf"] = summary.get("dataAsOf", automation["dataAsOf"])
             entities = summary.get("primaryEntities", [])
             if isinstance(entities, list) and entities and isinstance(entities[0], dict):
-                automation["sourceMode"] = entities[0].get(
-                    "sourceMode", automation["sourceMode"]
-                )
+                automation["sourceMode"] = entities[0].get("sourceMode", automation["sourceMode"])
             _write_json_atomic(summary_path, summary)
         except (OSError, ValueError):
             pass
@@ -566,14 +862,22 @@ def main(argv: list[str] | None = None) -> int:
                 backfill_start_date=args.backfill_start_date,
                 dry_run=args.dry_run,
             )
+    except RefreshStageError as error:
+        reason = error.code
+        if not args.dry_run:
+            mark_failed(reason)
+        print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False))
+        return 1
     except ProviderError as error:
         reason = _public_failure_reason(str(error))
-        mark_failed(reason)
+        if not args.dry_run:
+            mark_failed(reason)
         print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False))
         return 1
     except Exception:
         reason = "refresh_pipeline_failed"
-        mark_failed(reason)
+        if not args.dry_run:
+            mark_failed(reason)
         print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False))
         return 1
     print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))

@@ -22,7 +22,13 @@ class QualityReport:
             self.state = "degraded"
 
 
-def validate_core_inputs(kospi: pd.DataFrame, flow: pd.DataFrame) -> QualityReport:
+def validate_core_inputs(
+    kospi: pd.DataFrame,
+    flow: pd.DataFrame,
+    *,
+    expected_as_of: date | str | pd.Timestamp | None = None,
+    max_freshness_days: int = 3,
+) -> QualityReport:
     report = QualityReport()
     report.metrics = {
         "kospiRows": int(len(kospi)),
@@ -66,10 +72,15 @@ def validate_core_inputs(kospi: pd.DataFrame, flow: pd.DataFrame) -> QualityRepo
     kospi_dates = _normalized_dates(kospi.index)
     flow_dates = _normalized_dates(flow.index)
     common = kospi_dates.intersection(flow_dates)
+    union = kospi_dates.union(flow_dates)
+    date_overlap_ratio = float(len(common) / max(1, len(union)))
     report.metrics["commonRows"] = int(len(common))
-    report.metrics["sourceCompleteness"] = float(
-        len(common) / max(1, len(kospi_dates.union(flow_dates)))
-    )
+    report.metrics["dateOverlapRatio"] = date_overlap_ratio
+    # Backward-compatible contract alias.  This value has always represented
+    # date-set overlap, not broad source completeness.
+    report.metrics["sourceCompleteness"] = date_overlap_ratio
+    report.metrics["flowSessionCoverageRatio"] = float(len(common) / max(1, len(kospi_dates)))
+    report.metrics["kospiSessionCoverageRatio"] = float(len(common) / max(1, len(flow_dates)))
     if len(kospi_dates) and len(flow_dates):
         latest_kospi = kospi_dates.max()
         latest_flow = flow_dates.max()
@@ -78,6 +89,7 @@ def validate_core_inputs(kospi: pd.DataFrame, flow: pd.DataFrame) -> QualityRepo
         report.metrics["earliestKospiDate"] = kospi_dates.min().date().isoformat()
         report.metrics["earliestFlowDate"] = flow_dates.min().date().isoformat()
         report.metrics["latestSourceDateMatches"] = bool(latest_kospi == latest_flow)
+        report.metrics["sourceFreshnessLagDays"] = abs(int((latest_kospi - latest_flow).days))
         if latest_kospi != latest_flow:
             report.add("latest_source_date_mismatch", critical=True)
 
@@ -88,10 +100,48 @@ def validate_core_inputs(kospi: pd.DataFrame, flow: pd.DataFrame) -> QualityRepo
         report.metrics["sourceGapCount"] = int(len(kospi_only) + len(flow_only))
         if len(kospi_only) or len(flow_only):
             report.add("source_date_gaps", critical=True)
+        if expected_as_of is not None:
+            expected = _normalized_expected_date(expected_as_of)
+            latest_common = min(latest_kospi, latest_flow)
+            freshness_lag = int((expected - latest_common).days)
+            report.metrics["expectedAsOf"] = expected.date().isoformat()
+            report.metrics["dataFreshnessLagDays"] = max(0, freshness_lag)
+            report.metrics["sourceDateAfterExpected"] = bool(freshness_lag < 0)
+            if freshness_lag < 0:
+                report.add("source_date_after_expected", critical=True)
+            elif freshness_lag > max_freshness_days:
+                report.add("stale_core_sources")
     if len(common) < 200:
         report.add("insufficient_common_history", critical=True)
-    elif report.metrics["sourceCompleteness"] < 0.9:
+    elif report.metrics["dateOverlapRatio"] < 0.9:
         report.add("low_source_date_overlap")
+    report.metrics["sourceContractPassed"] = not any(
+        issue
+        in {
+            "missing_krx_kospi",
+            "missing_pykrx_flow",
+            "duplicate_krx_dates",
+            "duplicate_flow_dates",
+            "krx_contract_missing_columns",
+            "flow_contract_missing_columns",
+            "invalid_krx_price",
+            "invalid_krx_trading_value",
+            "invalid_individual_flow",
+        }
+        for issue in report.issues
+    )
+    report.metrics["sourceSessionCoveragePassed"] = not any(
+        issue in {"latest_source_date_mismatch", "source_date_gaps"} for issue in report.issues
+    )
+    report.metrics["sourceFreshnessPassed"] = not any(
+        issue
+        in {
+            "latest_source_date_mismatch",
+            "stale_core_sources",
+            "source_date_after_expected",
+        }
+        for issue in report.issues
+    )
     return report
 
 
@@ -121,9 +171,7 @@ def compare_latest_close(
             tolerance=tolerance,
         )
     expected = (
-        _normalized_expected_date(expected_date)
-        if expected_date is not None
-        else left.index.max()
+        _normalized_expected_date(expected_date) if expected_date is not None else left.index.max()
     )
     common = left.index.intersection(right.index)
     primary_latest = left.index.max()
@@ -156,6 +204,90 @@ def compare_latest_close(
         "secondaryLatestDate": secondary_latest.date().isoformat(),
         "relativeDifference": difference,
         "tolerance": tolerance,
+    }
+
+
+def compare_close_anchors(
+    primary: pd.Series,
+    secondary: pd.Series,
+    *,
+    tolerance: float = 0.005,
+    expected_date: date | str | pd.Timestamp | None = None,
+    anchor_count: int = 4,
+    minimum_anchor_count: int = 3,
+) -> dict[str, Any]:
+    """Compare multiple common historical closes from providers on the same basis.
+
+    This is intended for raw-vs-raw or adjusted-vs-adjusted histories.  Callers
+    comparing an unadjusted official series with an adjusted research series
+    should treat mismatches as adjustment diagnostics rather than silently
+    accepting the latest close as validation of the whole history.
+    """
+    if anchor_count < 1 or minimum_anchor_count < 1:
+        raise ValueError("anchor counts must be positive")
+    left = _normalized_series(primary)
+    right = _normalized_series(secondary)
+    expected = (
+        _normalized_expected_date(expected_date)
+        if expected_date is not None
+        else _latest_date(left)
+    )
+    if left is None or right is None:
+        return _unavailable_anchor_crosscheck(
+            "duplicate_dates", expected=expected, tolerance=tolerance
+        )
+    if left.empty or right.empty or expected is None:
+        return _unavailable_anchor_crosscheck(
+            "missing_prices", expected=expected, tolerance=tolerance
+        )
+    common = left.index.intersection(right.index)
+    common = common[common <= expected]
+    if left.index.max() != expected or right.index.max() != expected or expected not in common:
+        return _unavailable_anchor_crosscheck(
+            "expected_date_not_common", expected=expected, tolerance=tolerance
+        )
+    required = min(max(1, minimum_anchor_count), anchor_count)
+    if len(common) < required:
+        return _unavailable_anchor_crosscheck(
+            "insufficient_common_anchors",
+            expected=expected,
+            tolerance=tolerance,
+            common_count=len(common),
+        )
+    sample_count = min(anchor_count, len(common))
+    if sample_count == 1:
+        positions = [len(common) - 1]
+    else:
+        positions = sorted(
+            {round(index * (len(common) - 1) / (sample_count - 1)) for index in range(sample_count)}
+        )
+    checks: list[dict[str, Any]] = []
+    for position in positions:
+        timestamp = common[position]
+        primary_close = float(left.loc[timestamp])
+        secondary_close = float(right.loc[timestamp])
+        if primary_close <= 0 or secondary_close <= 0:
+            return _unavailable_anchor_crosscheck(
+                "invalid_close", expected=expected, tolerance=tolerance
+            )
+        difference = abs(primary_close / secondary_close - 1)
+        checks.append(
+            {
+                "date": timestamp.date().isoformat(),
+                "relativeDifference": difference,
+                "state": "ok" if difference <= tolerance else "mismatch",
+            }
+        )
+    mismatch_count = sum(check["state"] == "mismatch" for check in checks)
+    return {
+        "state": "ok" if mismatch_count == 0 else "mismatch",
+        "reason": None if mismatch_count == 0 else "historical_anchor_difference_exceeded",
+        "expectedDate": expected.date().isoformat(),
+        "checkedCount": len(checks),
+        "mismatchCount": mismatch_count,
+        "maxRelativeDifference": max(float(check["relativeDifference"]) for check in checks),
+        "tolerance": tolerance,
+        "anchors": checks,
     }
 
 
@@ -209,6 +341,26 @@ def _unavailable_crosscheck(
         "secondaryLatestDate": _date_string(secondary_date),
         "relativeDifference": None,
         "tolerance": tolerance,
+    }
+
+
+def _unavailable_anchor_crosscheck(
+    reason: str,
+    *,
+    expected: pd.Timestamp | None,
+    tolerance: float,
+    common_count: int = 0,
+) -> dict[str, Any]:
+    return {
+        "state": "unavailable",
+        "reason": reason,
+        "expectedDate": _date_string(expected),
+        "checkedCount": 0,
+        "commonCount": int(common_count),
+        "mismatchCount": 0,
+        "maxRelativeDifference": None,
+        "tolerance": tolerance,
+        "anchors": [],
     }
 
 
