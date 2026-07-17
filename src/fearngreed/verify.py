@@ -33,6 +33,8 @@ BROWSER_SCENARIO_INPUTS = {
     "maxHolding": {"default": 20, "minimum": 1, "maximum": 60, "step": 1},
 }
 MINIMUM_TRAINING_OBSERVATIONS_FORMULA = "min(lookback,max(40,min(200,ceil(lookback*0.8))))"
+HISTORY_NUMERIC_PRECISION_DIGITS = 8
+ETF_PRICE_TICKERS = ("226490", "069500", "114800", "122630", "252670")
 
 
 def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[str, Any]:
@@ -85,6 +87,7 @@ def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[st
     _verify_history(history)
     _verify_history_channel_roles(history)
     _verify_scatter_state_boundaries(dashboard)
+    _verify_etf_price_contract(summary, dashboard, history)
     _verify_strategy_comparison(summary, dashboard, history, strategy)
     _verify_cross_artifact_consistency(summary, dashboard, history)
     findings = scan_public_files(root)
@@ -120,6 +123,8 @@ def verify_remote(root: Path, base_url: str) -> dict[str, Any]:
 
 
 def _verify_history(history: dict[str, Any]) -> None:
+    if history.get("numericPrecisionDigits") != HISTORY_NUMERIC_PRECISION_DIGITS:
+        raise ValueError("history numeric precision contract is invalid")
     rows = _decoded_history_rows(history)
     dates = [row.get("date") for row in rows]
     if not dates or any(not isinstance(value, str) for value in dates):
@@ -183,6 +188,42 @@ def _verify_history_channel_roles(history: dict[str, Any]) -> None:
             field = channel.get(field_key)
             if not isinstance(field, str) or field not in columns:
                 raise ValueError(f"history {channel_id} {field_key} is invalid")
+
+
+def _verify_etf_price_contract(
+    summary: dict[str, Any], dashboard: dict[str, Any], history: dict[str, Any]
+) -> None:
+    """Require every published actual-pair ETF to be independently validated."""
+    columns = set(history.get("seriesColumns", []))
+    rows = _decoded_history_rows(history)
+    latest = rows[-1]
+    crosschecks = dashboard.get("crosschecks", {}).get("etf", {})
+    reasons = summary.get("status", {}).get("degradedReasons", [])
+    if not isinstance(crosschecks, dict) or not isinstance(reasons, list):
+        raise ValueError("ETF price crosscheck contract is missing")
+    for ticker in ETF_PRICE_TICKERS:
+        required_fields = {f"p{ticker}Open", f"p{ticker}Close"}
+        if not required_fields.issubset(columns):
+            raise ValueError(f"{ticker} ETF history price fields are missing")
+        check = crosschecks.get(ticker)
+        if not isinstance(check, dict):
+            raise ValueError(f"{ticker} ETF price crosscheck is missing")
+        reconciliation = check.get("historyReconciliation")
+        if not isinstance(reconciliation, dict):
+            raise ValueError(f"{ticker} ETF history reconciliation is missing")
+        if check.get("state") == "ok":
+            if reconciliation.get("state") != "ok" or reconciliation.get("unresolvedCount") != 0:
+                raise ValueError(f"{ticker} ETF history reconciliation is incomplete")
+            prices = [latest.get(field) for field in required_fields]
+            if any(
+                not isinstance(value, int | float)
+                or not math.isfinite(float(value))
+                or float(value) <= 0
+                for value in prices
+            ):
+                raise ValueError(f"{ticker} latest ETF history prices are invalid")
+        elif f"price_crosscheck_{ticker}_{check.get('state')}" not in reasons:
+            raise ValueError(f"{ticker} ETF crosscheck degraded reason is missing")
 
 
 def _verify_scatter_state_boundaries(dashboard: dict[str, Any]) -> None:
@@ -323,7 +364,7 @@ def _verify_cross_artifact_consistency(
             raise ValueError(f"{ticker} history contains an invalid proxy price")
 
     try:
-        backtest = dashboard["backtests"]["proxies"]["226490"]["fullPeriod"]["robust_10bp"]
+        backtest = dashboard["backtests"]["proxies"]["069500"]["fullPeriod"]["robust_10bp"]
     except (KeyError, TypeError):
         raise ValueError("default proxy backtest contract is missing") from None
     if backtest.get("status") != "ok":
@@ -337,23 +378,23 @@ def _verify_cross_artifact_consistency(
         raise ValueError("default proxy backtest period is missing")
     pre_start_rows = [row for row in decoded if str(row.get("date")) < start]
     if any(row.get("position") != "unavailable" for row in pre_start_rows):
-        raise ValueError("226490 pre-backtest history position must be unavailable")
+        raise ValueError("069500 pre-backtest history position must be unavailable")
     rows = [
         row
         for row in decoded
         if start <= str(row.get("date")) <= end
-        and row.get("p226490Open") is not None
-        and row.get("p226490Close") is not None
+        and row.get("p069500Open") is not None
+        and row.get("p069500Close") is not None
     ]
     positions = [row.get("position") for row in rows]
     if any(position not in {"cash", "long"} for position in positions):
-        raise ValueError("226490 history contains an invalid strategy position")
+        raise ValueError("069500 history contains an invalid strategy position")
     exposure = positions.count("long") / len(positions)
     reported_exposure = metrics.get("exposure")
     if not isinstance(reported_exposure, int | float) or not math.isclose(
         exposure, float(reported_exposure), rel_tol=1e-9, abs_tol=1e-9
     ):
-        raise ValueError("226490 history exposure does not match the default backtest")
+        raise ValueError("069500 history exposure does not match the default backtest")
     runs = sum(
         position == "long" and (index == 0 or positions[index - 1] != "long")
         for index, position in enumerate(positions)
@@ -361,7 +402,7 @@ def _verify_cross_artifact_consistency(
     expected_closed_trades = runs - (1 if backtest.get("openPosition") else 0)
     trade_count = metrics.get("tradeCount")
     if trade_count != expected_closed_trades:
-        raise ValueError("226490 history trades do not match the default backtest")
+        raise ValueError("069500 history trades do not match the default backtest")
     if summary.get("coverage", {}).get("tradeCount") != trade_count:
         raise ValueError("summary trade count does not match the default backtest")
     entities = summary.get("primaryEntities")
@@ -369,12 +410,185 @@ def _verify_cross_artifact_consistency(
         raise ValueError("summary primary entity is missing")
     if entities[0].get("position") != positions[-1]:
         raise ValueError("summary position does not match public history")
+    if entities[0].get("primaryProxy") != "069500":
+        raise ValueError("summary primary proxy must be the actual KOSPI 200 ETF")
     if (
-        dashboard["crosschecks"]["etf"]["226490"]["historyReconciliation"].get("filledCount", 0)
+        dashboard["crosschecks"]["etf"]["069500"]["historyReconciliation"].get("filledCount", 0)
         and entities[0].get("fieldSources", {}).get("adjustedProxy")
         != "yfinance_adjusted_plus_scaled_krx_gap_rows"
     ):
         raise ValueError("summary adjusted-proxy provenance is missing")
+
+
+def _verify_actual_etf_pairs(strategy: dict[str, Any]) -> None:
+    section = strategy.get("actualEtfPairs")
+    if not isinstance(section, dict):
+        raise ValueError("actual ETF pair contract is missing")
+    if (
+        section.get("authority") != "canonical_server_verified_actual_etfs"
+        or section.get("canonical") is not True
+        or section.get("calculationSource") != "python_verified_actual_etfs"
+        or section.get("implementation") != "positive_units_in_listed_long_and_inverse_etfs"
+    ):
+        raise ValueError("actual ETF pair authority is invalid")
+    if section.get("oneWayCostBps") != 10:
+        raise ValueError("actual ETF pair cost assumption is invalid")
+    if section.get("longExitPercentile") != 80 or section.get("inverseExitPercentile") != 20:
+        raise ValueError("actual ETF pair exit thresholds are invalid")
+    expected_pairs = {
+        "1x": {"leverage": 1, "longTicker": "069500", "inverseTicker": "114800"},
+        "2x": {"leverage": 2, "longTicker": "122630", "inverseTicker": "252670"},
+    }
+    common = section.get("commonPeriod")
+    if not isinstance(common, dict) or common.get("basis") != (
+        "four_etf_common_adjusted_price_sessions"
+    ):
+        raise ValueError("actual ETF four-fund common period is missing")
+    if common.get("tickers") != ["069500", "114800", "122630", "252670"]:
+        raise ValueError("actual ETF common-period ticker set is invalid")
+    common_ok = common.get("status") == "ok"
+    if common_ok:
+        if not isinstance(common.get("start"), str) or not isinstance(common.get("end"), str):
+            raise ValueError("actual ETF common-period dates are missing")
+        if not isinstance(common.get("sessionCount"), int) or common["sessionCount"] < 2:
+            raise ValueError("actual ETF common-period session count is invalid")
+    elif common.get("reason") != "four_etf_common_period_unavailable":
+        raise ValueError("actual ETF common-period failure reason is missing")
+    pairs = section.get("pairs")
+    if not isinstance(pairs, dict) or set(pairs) != set(expected_pairs):
+        raise ValueError("actual ETF pair set is invalid")
+    for pair_id, expected in expected_pairs.items():
+        pair_section = pairs[pair_id]
+        if not isinstance(pair_section, dict):
+            raise ValueError(f"actual ETF {pair_id} contract is invalid")
+        metadata = pair_section.get("pair")
+        if not isinstance(metadata, dict) or any(
+            metadata.get(field) != value for field, value in expected.items()
+        ):
+            raise ValueError(f"actual ETF {pair_id} metadata is invalid")
+        if metadata.get("pairId") != pair_id or metadata.get("implementation") != (
+            "actual_listed_etfs"
+        ):
+            raise ValueError(f"actual ETF {pair_id} implementation is invalid")
+        policies = pair_section.get("policies")
+        if not isinstance(policies, dict) or set(policies) != {
+            "long_cash",
+            "long_inverse_cash",
+        }:
+            raise ValueError(f"actual ETF {pair_id} policy set is invalid")
+        for policy_id, result in policies.items():
+            _verify_actual_etf_policy(
+                result,
+                pair_id=pair_id,
+                policy_id=policy_id,
+                long_ticker=str(expected["longTicker"]),
+                inverse_ticker=str(expected["inverseTicker"]),
+                common=common,
+            )
+        statuses = {result.get("status") for result in policies.values()}
+        expected_status = "ok" if statuses == {"ok"} else "unavailable"
+        if pair_section.get("status") != expected_status:
+            raise ValueError(f"actual ETF {pair_id} aggregate status is inconsistent")
+        if expected_status == "unavailable" and not isinstance(pair_section.get("reason"), str):
+            raise ValueError(f"actual ETF {pair_id} failure reason is missing")
+        full_metrics = pair_section.get("fullPeriodMetrics")
+        if not isinstance(full_metrics, dict) or set(full_metrics) != set(policies):
+            raise ValueError(f"actual ETF {pair_id} full-period metrics are missing")
+
+
+def _verify_actual_etf_policy(
+    result: Any,
+    *,
+    pair_id: str,
+    policy_id: str,
+    long_ticker: str,
+    inverse_ticker: str,
+    common: dict[str, Any],
+) -> None:
+    if not isinstance(result, dict):
+        raise ValueError(f"actual ETF {pair_id} {policy_id} result is invalid")
+    metadata = result.get("pair")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("pairId") != pair_id
+        or metadata.get("longTicker") != long_ticker
+        or metadata.get("inverseTicker") != inverse_ticker
+        or metadata.get("implementation") != "actual_listed_etfs"
+    ):
+        raise ValueError(f"actual ETF {pair_id} {policy_id} metadata is invalid")
+    if result.get("policyId") != policy_id or result.get("calculationSource") != (
+        "python_verified_actual_etfs"
+    ):
+        raise ValueError(f"actual ETF {pair_id} {policy_id} authority is invalid")
+    if result.get("oneWayCostBps") != 10 or result.get("longExitPercentile") != 80:
+        raise ValueError(f"actual ETF {pair_id} {policy_id} assumptions are invalid")
+    if result.get("inverseExitPercentile") != 20:
+        raise ValueError(f"actual ETF {pair_id} {policy_id} inverse exit is invalid")
+    if result.get("status") == "unavailable":
+        if (
+            result.get("position") != "unavailable"
+            or not isinstance(result.get("unavailableReason"), str)
+            or result.get("metrics") is not None
+        ):
+            raise ValueError(f"actual ETF {pair_id} unavailable result is unsafe")
+        return
+    if result.get("status") != "ok":
+        raise ValueError(f"actual ETF {pair_id} {policy_id} status is invalid")
+    position = result.get("position")
+    if position not in {"cash", "long", "inverse"}:
+        raise ValueError(f"actual ETF {pair_id} position is invalid")
+    expected_latest = (
+        long_ticker if position == "long" else inverse_ticker if position == "inverse" else None
+    )
+    if result.get("latestInstrumentTicker") != expected_latest:
+        raise ValueError(f"actual ETF {pair_id} latest instrument is inconsistent")
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict) or metrics.get("implementation") != "actual_listed_etfs":
+        raise ValueError(f"actual ETF {pair_id} metrics implementation is invalid")
+    exposures = [
+        metrics.get("longExposure"),
+        metrics.get("inverseExposure"),
+        metrics.get("cashExposure"),
+    ]
+    if any(not isinstance(value, int | float) or float(value) < 0 for value in exposures):
+        raise ValueError(f"actual ETF {pair_id} exposure is invalid")
+    if not math.isclose(sum(map(float, exposures)), 1.0, rel_tol=0, abs_tol=1e-9):
+        raise ValueError(f"actual ETF {pair_id} exposure sum is invalid")
+    if metrics.get("shortExposure") != 0 or metrics.get("shortTradeCount") != 0:
+        raise ValueError(f"actual ETF {pair_id} cannot publish synthetic short exposure")
+    if policy_id == "long_cash" and (
+        metrics.get("inverseExposure") != 0 or metrics.get("inverseTradeCount") != 0
+    ):
+        raise ValueError(f"actual ETF {pair_id} long-cash policy used the inverse fund")
+    for trade in result.get("trades", []):
+        if not isinstance(trade, dict) or trade.get("side") not in {"long", "inverse"}:
+            raise ValueError(f"actual ETF {pair_id} trade side is invalid")
+        expected_ticker = long_ticker if trade["side"] == "long" else inverse_ticker
+        if trade.get("instrument_ticker") != expected_ticker:
+            raise ValueError(f"actual ETF {pair_id} trade ticker is inconsistent")
+    for row in result.get("equity", []):
+        if not isinstance(row, dict) or row.get("position") not in {
+            "cash",
+            "long",
+            "inverse",
+        }:
+            raise ValueError(f"actual ETF {pair_id} equity position is invalid")
+        expected_ticker = (
+            long_ticker
+            if row["position"] == "long"
+            else inverse_ticker
+            if row["position"] == "inverse"
+            else None
+        )
+        if row.get("instrumentTicker") != expected_ticker:
+            raise ValueError(f"actual ETF {pair_id} equity ticker is inconsistent")
+    range_meta = result.get("range")
+    if common.get("status") == "ok" and (
+        not isinstance(range_meta, dict)
+        or range_meta.get("appliedStartDate") != common.get("start")
+        or range_meta.get("appliedEndDate") != common.get("end")
+    ):
+        raise ValueError(f"actual ETF {pair_id} common-period range is inconsistent")
 
 
 def _verify_strategy_comparison(
@@ -396,6 +610,7 @@ def _verify_strategy_comparison(
         "maximum": 94,
         "step": 1,
         "shortExitFormula": "100-longExitPercentile",
+        "inverseExitFormula": "100-longExitPercentile",
         "calculationLocation": "browser_on_server_published_history_and_adjusted_prices",
         "regressionRefit": True,
         "signalEngineVersion": "browser-past-only-rolling-v1",
@@ -410,6 +625,16 @@ def _verify_strategy_comparison(
     definitions = strategy.get("policyDefinitions")
     if not isinstance(definitions, dict):
         raise ValueError("strategy policy definitions are missing")
+    actual = definitions.get("longInverseCash")
+    if not isinstance(actual, dict) or actual.get("policyId") != "long_inverse_cash":
+        raise ValueError("actual long-inverse policy definition is missing")
+    if (
+        actual.get("role") != "canonical_actual_listed_etf_research"
+        or actual.get("positionAccounting") != "positive_listed_etf_units_no_synthetic_short"
+        or actual.get("shortExposure") != 0
+        or actual.get("borrowRequired") is not False
+    ):
+        raise ValueError("actual long-inverse policy definition is unsafe")
     synthetic = definitions.get("longShortCash")
     if not isinstance(synthetic, dict) or synthetic.get("policyId") != "long_short_cash":
         raise ValueError("synthetic long-short policy definition is missing")
@@ -418,10 +643,27 @@ def _verify_strategy_comparison(
         or synthetic.get("shortabilityModeled") is not False
     ):
         raise ValueError("synthetic short exclusions are not explicit")
+    if synthetic.get("role") != "legacy_diagnostic_backward_compatibility":
+        raise ValueError("synthetic proxy role must remain legacy diagnostic")
+    legacy = strategy.get("legacyProxyContract")
+    if not isinstance(legacy, dict) or legacy != {
+        "canonical": False,
+        "role": "legacy_diagnostic_backward_compatibility",
+        "implementation": "synthetic_short_or_single_long_proxy",
+    }:
+        raise ValueError("legacy proxy contract is missing")
+    _verify_actual_etf_pairs(strategy)
     proxies = strategy.get("proxies")
     if not isinstance(proxies, dict):
         raise ValueError("strategy comparison proxies are missing")
-    for ticker in ("226490", "069500"):
+    if "069500" not in proxies:
+        raise ValueError("canonical 069500 compatibility proxy is missing")
+    unexpected_legacy = set(proxies).difference({"226490", "069500"})
+    if unexpected_legacy:
+        raise ValueError("strategy comparison contains an unknown legacy proxy")
+    # 226490 is now a diagnostic compatibility proxy.  Its provider failure
+    # must not block otherwise valid 069500/114800 and 122630/252670 results.
+    for ticker in proxies:
         synthetic_proxy = proxies.get(ticker)
         dashboard_proxy = dashboard.get("backtests", {}).get("proxies", {}).get(ticker)
         if not isinstance(synthetic_proxy, dict) or not isinstance(dashboard_proxy, dict):
@@ -489,13 +731,14 @@ def _verify_strategy_comparison(
 def _verify_history_strategy_scenario(history: dict[str, Any], control: dict[str, Any]) -> None:
     scenario = history.get("strategyScenario")
     expected = {
-        "engineVersion": "signed-fixed-quantity-v1",
+        "engineVersion": "actual-listed-etf-pairs-v1",
         "signalEngineVersion": "browser-past-only-rolling-v1",
         "defaultLongExitPercentile": 80,
         "customLongExitMinimum": 50,
         "customLongExitMaximum": 94,
         "customLongExitStep": 1,
         "shortExitFormula": "100-longExitPercentile",
+        "inverseExitFormula": "100-longExitPercentile",
         "signalInputsAreServerPublished": True,
         "browserMayRefitRegression": True,
         "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",

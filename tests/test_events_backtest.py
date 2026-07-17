@@ -5,7 +5,9 @@ import pytest
 
 from fearngreed.backtest import (
     ProxyBar,
+    actual_etf_pair_result_to_public,
     result_to_public,
+    run_actual_etf_pair_backtest,
     run_backtest,
     run_backtest_safe,
     run_cost_sensitivity,
@@ -35,6 +37,13 @@ def signal(index: int, state: str, percentile: float, eligible: bool = True) -> 
         "ok",
         252,
         eligible,
+    )
+
+
+def actual_bars(signals: list[FlowSignal], prices: list[float]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {"open": prices, "close": prices},
+        index=pd.to_datetime([item.date for item in signals]),
     )
 
 
@@ -471,3 +480,170 @@ def test_safe_backtest_is_explicitly_unavailable_and_publicable() -> None:
     assert result.metrics["state"] == "unavailable"
     assert public["status"] == "unavailable"
     assert public["equity"] == []
+
+
+def test_actual_inverse_etf_uses_its_own_positive_unit_path_not_synthetic_short() -> None:
+    signals = [
+        signal(0, "extreme_greed", 98),
+        signal(1, "greed", 90),
+        signal(2, "fear", 20),
+        signal(3, "fear", 15),
+    ]
+    long_bars = actual_bars(signals, [100.0, 100.0, 80.0, 70.0])
+    inverse_bars = actual_bars(signals, [50.0, 50.0, 52.0, 55.0])
+
+    actual = run_actual_etf_pair_backtest(
+        signals,
+        long_bars,
+        inverse_bars,
+        pair_id="1x",
+        one_way_cost_bps=0,
+    )
+    synthetic = run_backtest(
+        signals,
+        long_bars,
+        ticker="069500",
+        policy_id="long_short_cash",
+        one_way_cost_bps=0,
+    )
+
+    assert actual.trades[0].side == "inverse"
+    assert actual.trades[0].instrument_ticker == "114800"
+    assert actual.trades[0].gross_return == pytest.approx(0.10)
+    assert synthetic.trades[0].gross_return == pytest.approx(0.30)
+    assert actual.metrics["inverseExposure"] > 0
+    assert actual.metrics["shortExposure"] == 0
+    assert actual.exposure.min() == -1
+
+
+def test_actual_2x_pair_uses_separate_prices_and_public_metadata() -> None:
+    signals = [
+        signal(0, "extreme_fear", 2),
+        signal(1, "fear", 10),
+        signal(2, "greed", 80),
+        signal(3, "greed", 85),
+    ]
+    one_x = run_actual_etf_pair_backtest(
+        signals,
+        actual_bars(signals, [100.0, 100.0, 105.0, 110.0]),
+        actual_bars(signals, [100.0, 100.0, 95.0, 90.0]),
+        pair_id="1x",
+        policy_id="long_cash",
+        one_way_cost_bps=0,
+    )
+    two_x = run_actual_etf_pair_backtest(
+        signals,
+        actual_bars(signals, [100.0, 100.0, 120.0, 130.0]),
+        actual_bars(signals, [100.0, 100.0, 85.0, 75.0]),
+        pair_id="2x",
+        policy_id="long_cash",
+        one_way_cost_bps=0,
+    )
+    public = actual_etf_pair_result_to_public(two_x)
+
+    assert one_x.trades[0].instrument_ticker == "069500"
+    assert two_x.trades[0].instrument_ticker == "122630"
+    assert one_x.trades[0].gross_return == pytest.approx(0.10)
+    assert two_x.trades[0].gross_return == pytest.approx(0.30)
+    assert public["pair"]["leverage"] == 2
+    assert public["pair"]["longTicker"] == "122630"
+    assert public["pair"]["inverseTicker"] == "252670"
+    assert public["calculationSource"] == "python_verified_actual_etfs"
+    assert public["equity"][-1]["instrumentTicker"] is None
+
+
+def test_actual_pair_reversal_sells_and_buys_two_listed_etfs_at_distinct_opens() -> None:
+    signals = [
+        signal(0, "extreme_fear", 2),
+        signal(1, "neutral", 10),
+        signal(2, "extreme_greed", 98),
+        signal(3, "greed", 90),
+    ]
+    result = run_actual_etf_pair_backtest(
+        signals,
+        actual_bars(signals, [100.0, 100.0, 110.0, 108.0]),
+        actual_bars(signals, [50.0, 50.0, 48.0, 49.0]),
+        pair_id="1x",
+        one_way_cost_bps=10,
+    )
+    reversal = next(action for action in result.actions if action["type"] == "reverse")
+
+    assert reversal["fromTicker"] == "069500"
+    assert reversal["toTicker"] == "114800"
+    assert reversal["fromPrice"] == 108
+    assert reversal["toPrice"] == 49
+    assert reversal["transactionSides"] == 2
+    assert reversal["transactionCostAmount"] > 0
+    assert result.position == "inverse"
+
+
+def test_actual_long_cash_ignores_greed_and_never_buys_inverse() -> None:
+    signals = [
+        signal(0, "extreme_greed", 99),
+        signal(1, "greed", 90),
+        signal(2, "neutral", 50),
+    ]
+    result = run_actual_etf_pair_backtest(
+        signals,
+        actual_bars(signals, [100.0, 90.0, 80.0]),
+        actual_bars(signals, [100.0, 120.0, 140.0]),
+        pair_id="1x",
+        policy_id="long_cash",
+        one_way_cost_bps=0,
+    )
+
+    assert result.position == "cash"
+    assert result.actions == []
+    assert result.trades == []
+    assert result.metrics["inverseExposure"] == 0
+    assert result.metrics["totalReturn"] == 0
+
+
+def test_actual_pair_range_preserves_carry_in_and_excludes_future_prices() -> None:
+    signals = [
+        signal(0, "extreme_fear", 2),
+        signal(1, "fear", 10),
+        signal(2, "fear", 15),
+        signal(3, "fear", 10),
+    ]
+    base_long = actual_bars(signals[:3], [100.0, 100.0, 105.0])
+    base_inverse = actual_bars(signals[:3], [100.0, 100.0, 95.0])
+    kwargs = {
+        "pair_id": "1x",
+        "policy_id": "long_cash",
+        "one_way_cost_bps": 0,
+        "start_date": signals[1].date,
+        "end_date": signals[2].date,
+    }
+    baseline = run_actual_etf_pair_backtest(signals[:3], base_long, base_inverse, **kwargs)
+    future = run_actual_etf_pair_backtest(
+        signals,
+        actual_bars(signals, [100.0, 100.0, 105.0, 1.0]),
+        actual_bars(signals, [100.0, 100.0, 95.0, 300.0]),
+        **kwargs,
+    )
+
+    assert baseline.range["carryIn"] == {
+        "position": "cash",
+        "pendingAction": "enter_next_open",
+        "pendingReason": "extreme_fear_entry",
+        "pendingSide": "long",
+        "signalDate": signals[0].date.isoformat(),
+    }
+    pd.testing.assert_series_equal(future.equity, baseline.equity)
+    assert future.metrics == baseline.metrics
+    assert future.range["appliedEndDate"] == signals[2].date.isoformat()
+
+
+def test_actual_pair_rejects_missing_columns_and_public_exit_contract_violations() -> None:
+    signals = [signal(0, "neutral", 50), signal(1, "neutral", 50)]
+    malformed = pd.DataFrame(
+        {"close": [100.0, 101.0]},
+        index=pd.to_datetime([item.date for item in signals]),
+    )
+    valid = actual_bars(signals, [100.0, 101.0])
+
+    with pytest.raises(ValueError, match="both ETF bars require"):
+        run_actual_etf_pair_backtest(signals, valid, malformed)
+    with pytest.raises(ValueError, match="50 through 94"):
+        run_actual_etf_pair_backtest(signals, valid, valid, long_exit_percentile=95)

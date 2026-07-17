@@ -6,6 +6,7 @@ import {
   MAX_LONG_EXIT_PERCENTILE,
   MIN_LONG_EXIT_PERCENTILE,
   normalizeLongExitPercentile,
+  runActualEtfPairScenario,
   runStrategyScenario,
 } from '../assets/strategy-engine.js';
 
@@ -32,6 +33,25 @@ const row = ({
   p226490Close: close,
   p069500Open: open,
   p069500Close: close,
+});
+
+const actualRow = ({
+  date,
+  state = 'neutral',
+  percentile = 50,
+  eligible = true,
+  long1 = 100,
+  inverse1 = 100,
+  long2 = 100,
+  inverse2 = 100,
+}) => ({
+  ...row({date, state, percentile, eligible, open: long1, close: long1}),
+  p114800Open: inverse1,
+  p114800Close: inverse1,
+  p122630Open: long2,
+  p122630Close: long2,
+  p252670Open: inverse2,
+  p252670Close: inverse2,
 });
 
 test('exit threshold contract accepts only integer percentiles from 50 through 94', () => {
@@ -266,5 +286,120 @@ test('unsupported short disparity policy and malformed public inputs fail closed
   assert.throws(
     () => runStrategyScenario({historyRows, period: 'full', startDate: '2026-04-03', endDate: '2026-04-01'}),
     /시작일은 종료일보다 늦을 수 없습니다/,
+  );
+});
+
+test('listed inverse ETF return comes from its own positive-unit price path, not negative long units', () => {
+  const history = [
+    actualRow({date: '2026-07-01', state: 'extreme_greed', percentile: 98, long1: 100, inverse1: 50}),
+    actualRow({date: '2026-07-02', state: 'greed', percentile: 90, long1: 100, inverse1: 50}),
+    actualRow({date: '2026-07-03', state: 'fear', percentile: 20, long1: 80, inverse1: 52}),
+    actualRow({date: '2026-07-06', state: 'fear', percentile: 15, long1: 70, inverse1: 55}),
+  ];
+  const actual = runActualEtfPairScenario({history, pairId: '1x', policy: 'long_inverse_cash', costBps: 0});
+  const synthetic = runStrategyScenario({historyRows: history, proxy: '069500', period: 'full', policyId: 'long_short_cash', costBps: 0});
+
+  assert.equal(actual.trades[0].side, 'inverse');
+  assert.equal(actual.trades[0].instrumentTicker, '114800');
+  assert.ok(Math.abs(actual.trades[0].gross_return - 0.1) < 1e-12);
+  assert.ok(Math.abs(synthetic.trades[0].gross_return - 0.3) < 1e-12);
+  assert.notEqual(actual.trades[0].gross_return, synthetic.trades[0].gross_return);
+  assert.equal(actual.metrics.shortExposure, 0);
+  assert.ok(actual.metrics.inverseExposure > 0);
+});
+
+test('2X actual pair uses 122630 and 252670 price paths and supports four-fund common period', () => {
+  const history = [
+    actualRow({date: '2026-07-01', state: 'extreme_fear', percentile: 2, long1: 100, long2: 100}),
+    actualRow({date: '2026-07-02', state: 'fear', percentile: 10, long1: 100, long2: 100}),
+    actualRow({date: '2026-07-03', state: 'greed', percentile: 80, long1: 105, long2: 120}),
+    actualRow({date: '2026-07-06', state: 'greed', percentile: 85, long1: 110, long2: 130}),
+  ];
+  const oneX = runActualEtfPairScenario({history, pairId: '1x', policy: 'long_cash', costBps: 0, period: 'common'});
+  const twoX = runActualEtfPairScenario({history, pairId: '2x', policy: 'long_cash', costBps: 0, period: 'common'});
+
+  assert.equal(oneX.trades[0].instrumentTicker, '069500');
+  assert.equal(twoX.trades[0].instrumentTicker, '122630');
+  assert.ok(Math.abs(oneX.trades[0].gross_return - 0.1) < 1e-12);
+  assert.ok(Math.abs(twoX.trades[0].gross_return - 0.3) < 1e-12);
+  assert.equal(twoX.pair.leverage, 2);
+  assert.equal(twoX.period, 'common');
+  assert.ok(twoX.metrics.totalReturn > oneX.metrics.totalReturn);
+});
+
+test('opposite extreme atomically sells long ETF and buys inverse ETF at their own opens with two costs', () => {
+  const history = [
+    actualRow({date: '2026-07-01', state: 'extreme_fear', percentile: 2, long1: 100, inverse1: 50}),
+    actualRow({date: '2026-07-02', state: 'neutral', percentile: 10, long1: 100, inverse1: 50}),
+    actualRow({date: '2026-07-03', state: 'extreme_greed', percentile: 98, long1: 110, inverse1: 48}),
+    actualRow({date: '2026-07-06', state: 'greed', percentile: 90, long1: 108, inverse1: 49}),
+  ];
+  const result = runActualEtfPairScenario({history, pairId: '1x', policy: 'long_inverse_cash', costBps: 10});
+  const reversal = result.actions.find((action) => action.type === 'reverse');
+
+  assert.deepEqual(
+    {from: reversal.fromTicker, to: reversal.toTicker, fromPrice: reversal.fromPrice, toPrice: reversal.toPrice, sides: reversal.transactionSides},
+    {from: '069500', to: '114800', fromPrice: 108, toPrice: 49, sides: 2},
+  );
+  assert.equal(result.latestPosition, 'inverse');
+  assert.equal(result.latestInstrumentTicker, '114800');
+  assert.ok(reversal.transactionCostAmount > 0);
+  assert.equal(result.holdingSegments.at(-1).instrumentTicker, '114800');
+});
+
+test('actual long/cash policy ignores extreme greed and never buys the inverse ETF', () => {
+  const history = [
+    actualRow({date: '2026-07-01', state: 'extreme_greed', percentile: 99, inverse1: 100}),
+    actualRow({date: '2026-07-02', state: 'greed', percentile: 90, inverse1: 120}),
+    actualRow({date: '2026-07-03', state: 'neutral', percentile: 50, inverse1: 140}),
+  ];
+  const result = runActualEtfPairScenario({history, pairId: '1x', policy: 'long_cash', costBps: 0});
+
+  assert.equal(result.latestPosition, 'cash');
+  assert.equal(result.actions.length, 0);
+  assert.equal(result.trades.length, 0);
+  assert.equal(result.metrics.inverseExposure, 0);
+  assert.equal(result.metrics.totalReturn, 0);
+});
+
+test('actual pair custom range preserves carry-in and end date blocks destructive future prices', () => {
+  const throughCutoff = [
+    actualRow({date: '2026-07-01', state: 'extreme_fear', percentile: 2, long1: 100}),
+    actualRow({date: '2026-07-02', state: 'fear', percentile: 10, long1: 100}),
+    actualRow({date: '2026-07-03', state: 'fear', percentile: 15, long1: 105}),
+  ];
+  const options = {pairId: '1x', policy: 'long_cash', costBps: 0, dateStart: '2026-07-02', dateEnd: '2026-07-03'};
+  const baseline = runActualEtfPairScenario({history: throughCutoff, ...options});
+  const future = runActualEtfPairScenario({
+    history: [...throughCutoff, actualRow({date: '2026-07-06', state: 'fear', percentile: 10, long1: 1})],
+    ...options,
+  });
+
+  assert.deepEqual(baseline.range.carryIn, {
+    position: 'cash',
+    pendingAction: 'enter_next_open',
+    pendingReason: 'extreme_fear_entry',
+    pendingSide: 'long',
+    signalDate: '2026-07-01',
+  });
+  assert.equal(baseline.range.pathMode, 'full_history_then_window');
+  assert.equal(baseline.range.appliedEndDate, '2026-07-03');
+  assert.deepEqual(future.equity, baseline.equity);
+  assert.deepEqual(future.actions, baseline.actions);
+  assert.deepEqual(future.metrics, baseline.metrics);
+});
+
+test('actual pair engine explicitly rejects missing or malformed paired prices', () => {
+  const missingInverse = [
+    row({date: '2026-07-01'}),
+    row({date: '2026-07-02'}),
+  ];
+  assert.throws(
+    () => runActualEtfPairScenario({history: missingInverse, pairId: '1x'}),
+    /가격 이력이 부족합니다/,
+  );
+  assert.throws(
+    () => runActualEtfPairScenario({history: [actualRow({date: '2026-07-02'}), actualRow({date: '2026-07-01'})]}),
+    /오름차순 고유값/,
   );
 });

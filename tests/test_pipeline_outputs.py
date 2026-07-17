@@ -9,7 +9,10 @@ import pytest
 from fearngreed.backtest import run_backtest
 from fearngreed.model import FlowSignal
 from fearngreed.pipeline import (
+    ETF_PRICE_TICKERS,
+    HISTORY_NUMERIC_PRECISION_DIGITS,
     PipelineInputs,
+    _columnar_history,
     _combined_price_crosscheck,
     _compact_result,
     _inherit_reconciliation_provenance,
@@ -68,6 +71,9 @@ def _pipeline_inputs(periods: int = 320) -> PipelineInputs:
 
     p226490 = 25_000 * close / close[0]
     p069500 = 30_000 * close / close[0]
+    p114800 = 20_000 * close[0] / close
+    p122630 = 20_000 * (close / close[0]) ** 2
+    p252670 = 20_000 * (close[0] / close) ** 2
     hynix = 120_000 * np.cumprod(1 + rng.normal(0.0005, 0.015, periods))
     samsung = 70_000 * np.cumprod(1 + rng.normal(0.0003, 0.012, periods))
     mu = 100 * np.cumprod(1 + rng.normal(0.0005, 0.016, periods))
@@ -76,6 +82,9 @@ def _pipeline_inputs(periods: int = 320) -> PipelineInputs:
         "^KS11": prices(close),
         "226490.KS": prices(p226490),
         "069500.KS": prices(p069500),
+        "114800.KS": prices(p114800),
+        "122630.KS": prices(p122630),
+        "252670.KS": prices(p252670),
         "000660.KS": prices(hynix),
         "005930.KS": prices(samsung),
         "MU": prices(mu),
@@ -85,7 +94,13 @@ def _pipeline_inputs(periods: int = 320) -> PipelineInputs:
         kospi=kospi,
         flow=flow,
         adjusted=adjusted,
-        krx_etfs={"226490": prices(p226490), "069500": prices(p069500)},
+        krx_etfs={
+            "226490": prices(p226490),
+            "069500": prices(p069500),
+            "114800": prices(p114800),
+            "122630": prices(p122630),
+            "252670": prices(p252670),
+        },
         generated_at=datetime(2026, 7, 16, tzinfo=UTC),
         core_source="test",
         krx_stocks={"000660": prices(hynix), "005930": prices(samsung)},
@@ -116,6 +131,11 @@ def test_public_outputs_expose_three_models_with_compact_daily_history() -> None
             }.issubset(model)
             assert model["trainingCount"] == 252
     assert outputs.history["seriesEncoding"] == "columnar-v1"
+    assert outputs.history["numericPrecisionDigits"] == HISTORY_NUMERIC_PRECISION_DIGITS
+    for ticker in ETF_PRICE_TICKERS:
+        assert f"p{ticker}Open" in outputs.history["seriesColumns"]
+        assert f"p{ticker}Close" in outputs.history["seriesColumns"]
+        assert outputs.dashboard["crosschecks"]["etf"][ticker]["state"] == "ok"
     assert "rawState" in outputs.history["seriesColumns"]
     assert {
         "tradeEligible",
@@ -125,13 +145,14 @@ def test_public_outputs_expose_three_models_with_compact_daily_history() -> None
     }.issubset(outputs.history["seriesColumns"])
     assert len(outputs.history["seriesRows"][-1]) == len(outputs.history["seriesColumns"])
     assert outputs.history["strategyScenario"] == {
-        "engineVersion": "signed-fixed-quantity-v1",
+        "engineVersion": "actual-listed-etf-pairs-v1",
         "signalEngineVersion": "browser-past-only-rolling-v1",
         "defaultLongExitPercentile": 80,
         "customLongExitMinimum": 50,
         "customLongExitMaximum": 94,
         "customLongExitStep": 1,
         "shortExitFormula": "100-longExitPercentile",
+        "inverseExitFormula": "100-longExitPercentile",
         "signalInputsAreServerPublished": True,
         "browserMayRefitRegression": True,
         "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
@@ -159,6 +180,27 @@ def test_public_outputs_expose_three_models_with_compact_daily_history() -> None
         assert roles["channels"][channel]["eligibleForTrading"] is False
     assert output_size_report(outputs)["history"] < 2_000_000
     assert output_size_report(outputs)["strategy_comparison"] < 500_000
+
+
+def test_columnar_history_rounds_only_numeric_float_values() -> None:
+    source_hash = "0123456789abcdef"
+    columns, rows = _columnar_history(
+        [
+            {
+                "date": "2026-07-16",
+                "residual": 0.123456789123,
+                "observationCount": 252,
+                "tradeEligible": True,
+                "sourceHash": source_hash,
+            }
+        ]
+    )
+    decoded = dict(zip(columns, rows[0], strict=True))
+
+    assert decoded["residual"] == 0.12345679
+    assert decoded["observationCount"] == 252
+    assert decoded["tradeEligible"] is True
+    assert decoded["sourceHash"] == source_hash
 
 
 def test_scatter_contains_exact_training_window_and_one_current_observation() -> None:
@@ -375,7 +417,7 @@ def test_missing_adjusted_signal_session_is_reconciled_before_backtest(monkeypat
     inputs = _pipeline_inputs()
     signal_date = inputs.kospi.index[270]
     adjusted = dict(inputs.adjusted)
-    for yahoo_ticker in ("226490.KS", "069500.KS"):
+    for yahoo_ticker in ETF_PRICE_TICKERS.values():
         adjusted[yahoo_ticker] = adjusted[yahoo_ticker].drop(index=signal_date)
 
     def signals(frame, _channel, *, fit_method):
@@ -402,14 +444,15 @@ def test_missing_adjusted_signal_session_is_reconciled_before_backtest(monkeypat
         )
     )
 
-    for ticker in ("226490", "069500"):
+    for ticker in ETF_PRICE_TICKERS:
         reconciliation = outputs.dashboard["crosschecks"]["etf"][ticker]["historyReconciliation"]
         assert reconciliation["state"] == "ok"
         assert reconciliation["missingCount"] == 1
         assert reconciliation["filledCount"] == 1
-        result = outputs.dashboard["backtests"]["proxies"][ticker]["fullPeriod"]["robust_10bp"]
-        assert result["status"] == "ok"
-        assert result["metrics"]["tradeCount"] == 1
+        if ticker in {"226490", "069500"}:
+            result = outputs.dashboard["backtests"]["proxies"][ticker]["fullPeriod"]["robust_10bp"]
+            assert result["status"] == "ok"
+            assert result["metrics"]["tradeCount"] == 1
     assert (
         outputs.summary["primaryEntities"][0]["fieldSources"]["adjustedProxy"]
         == "yfinance_adjusted_plus_scaled_krx_gap_rows"
@@ -496,7 +539,8 @@ def test_unresolved_adjustment_break_excludes_proxy_from_public_backtests() -> N
     assert check["reason"] == "adjusted_history_session_gaps_unresolved"
     assert check["historyReconciliation"]["unresolvedCount"] == 1
     assert "226490" not in outputs.dashboard["backtests"]["proxies"]
-    assert outputs.summary["primaryEntities"][0]["position"] == "unavailable"
+    assert outputs.summary["primaryEntities"][0]["position"] == "cash"
+    assert outputs.summary["primaryEntities"][0]["primaryProxy"] == "069500"
 
 
 def test_scatter_helpers_are_empty_safe() -> None:
@@ -505,11 +549,11 @@ def test_scatter_helpers_are_empty_safe() -> None:
     assert _scatter_meta(frame)["pointCount"] == 0
 
 
-def test_v4_outputs_separate_operations_signal_and_publish_strategy_comparison() -> None:
+def test_v5_outputs_separate_operations_signal_and_publish_strategy_comparison() -> None:
     outputs = build_outputs(_pipeline_inputs())
     entity = outputs.summary["primaryEntities"][0]
 
-    assert outputs.summary["methodologyVersion"] == "fear-flow-v4"
+    assert outputs.summary["methodologyVersion"] == "fear-flow-v5"
     assert outputs.summary["status"]["label"] in {"데이터 정상", "데이터 저하"}
     assert entity["signalLabel"] in {
         "극단적 공포",
@@ -519,7 +563,7 @@ def test_v4_outputs_separate_operations_signal_and_publish_strategy_comparison()
         "극단적 탐욕",
         "산출 불가",
     }
-    assert entity["strategyModel"] == "robust_huber_scaled_exit80"
+    assert entity["strategyModel"] == "robust_huber_069500_actual_long_cash_exit80"
     assert outputs.summary["payload"]["strategyComparisonUrl"] == ("./strategy-comparison.json")
     assert entity["fieldSources"]["retailFlow"] == "authenticated_pykrx"
     assert outputs.dashboard["regression"]["primaryModel"] == "robust"
@@ -578,13 +622,14 @@ def test_v4_outputs_separate_operations_signal_and_publish_strategy_comparison()
 
     comparison = outputs.strategy_comparison
     assert comparison["contract"] == "fearngreed-strategy-comparison"
-    assert comparison["methodologyVersion"] == "fear-flow-v4"
+    assert comparison["methodologyVersion"] == "fear-flow-v5"
     assert comparison["dynamicExitControl"] == {
         "defaultLongExitPercentile": 80,
         "minimum": 50,
         "maximum": 94,
         "step": 1,
         "shortExitFormula": "100-longExitPercentile",
+        "inverseExitFormula": "100-longExitPercentile",
         "calculationLocation": "browser_on_server_published_history_and_adjusted_prices",
         "regressionRefit": True,
         "signalEngineVersion": "browser-past-only-rolling-v1",
@@ -604,6 +649,12 @@ def test_v4_outputs_separate_operations_signal_and_publish_strategy_comparison()
         "pastOnly": True,
         "evaluationRangeSeparate": True,
     }
+    actual = comparison["policyDefinitions"]["longInverseCash"]
+    assert actual["policyId"] == "long_inverse_cash"
+    assert actual["role"] == "canonical_actual_listed_etf_research"
+    assert actual["positionAccounting"] == "positive_listed_etf_units_no_synthetic_short"
+    assert actual["shortExposure"] == 0
+    assert actual["borrowRequired"] is False
     synthetic = comparison["policyDefinitions"]["longShortCash"]
     assert synthetic["policyId"] == "long_short_cash"
     assert synthetic["sameOpenReversal"] is True

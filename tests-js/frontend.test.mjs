@@ -10,8 +10,8 @@ test('dashboard exposes one unified scenario control surface with pressed state'
     'data-model="robust"','data-model="scaled"','data-model="raw"',
     'data-event-asset="KOSPI"','data-event-asset="226490"','data-event-asset="069500"',
     'data-event-sample="all"','data-event-sample="nonOverlapping20d"',
-    'data-backtest-policy="compare"','data-backtest-policy="long_cash"','data-backtest-policy="long_short_cash"',
-    'data-backtest-proxy="226490"','data-backtest-proxy="069500"',
+    'data-backtest-policy="compare"','data-backtest-policy="long_cash"','data-backtest-policy="long_inverse_cash"',
+    'data-backtest-pair="1x"','data-backtest-pair="2x"',
     'data-backtest-cost="0"','data-backtest-cost="5"','data-backtest-cost="10"','data-backtest-cost="20"',
     'data-backtest-period="full"','data-backtest-period="common"'
   ]) assert.match(html,new RegExp(token));
@@ -33,30 +33,36 @@ test('first-party context and every public operational artifact are linked',asyn
   for(const path of ['data/summary.json','data/dashboard.json','data/history.json','data/strategy-comparison.json','data/automation-status.json']) assert.match(html,new RegExp(path.replace('.','\\.')));
 });
 
-test('strategy controls expose a bounded dynamic exit input and a symmetric short threshold',async()=>{
+test('strategy controls expose a bounded dynamic exit input and a symmetric inverse threshold',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   assert.match(html,/id="exit-threshold-form"/);
   assert.match(html,/id="exit-threshold-input"[^>]+type="number"[^>]+min="50"[^>]+max="94"[^>]+step="1"[^>]+value="80"/);
   assert.match(html,/id="exit-threshold-status"[^>]+aria-live="polite"/);
-  assert.match(html,/롱은 입력값 이상, 숏은 대칭값 이하/);
+  assert.match(html,/롱은 입력값 이상, 인버스는 대칭값 이하/);
+  assert.match(html,/50 미만은 공포에서 중립 이상으로 회복했다는 의미가 사라지고/);
+  assert.match(html,/95 이상은 사전 정의한 극단 탐욕·ETF 교체 구간과 겹칩니다/);
   assert.match(app,/DEFAULT_LONG_EXIT_PERCENTILE/);
   assert.match(app,/normalizeLongExitPercentile/);
-  assert.match(app,/short-exit-threshold-value/);
+  assert.match(app,/inverse-exit-threshold-value/);
   assert.match(app,/100 - store\.longExitPercentile/);
-  assert.match(app,/runStrategyScenario/);
-  assert.match(app,/browser_user_scenario/);
+  assert.match(app,/runActualEtfPairScenario/);
+  assert.match(app,/pairId: proxy/);
 });
 
-test('position policy comparison discloses short-model limitations and side-aware output',async()=>{
+test('position policy comparison discloses actual inverse execution and side-aware output',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   assert.match(html,/id="policy-comparison-card"/);
   assert.match(html,/id="strategy-exposure"/);
   assert.match(html,/id="exit-sensitivity"/);
-  assert.match(html,/id="short-method-warning"/);
-  assert.match(html,/대차 가능 수량·대차료·리콜·증거금/);
-  assert.match(html,/롱 \/ 숏 \/ 현금/);
+  assert.match(html,/id="actual-etf-method-note"/);
+  assert.match(html,/인버스도 현물 ETF 매수이므로 공매도 대차·증거금을 가정하지 않습니다/);
+  assert.match(html,/롱 \/ 인버스 \/ 현금/);
+  assert.match(html,/2X는 일간 목표 배율입니다/);
+  for(const ticker of ['069500','114800','122630','252670']) assert.match(html,new RegExp(ticker));
+  assert.match(app,/ACTUAL_ETF_PAIRS/);
+  assert.match(app,/function heldInstrument/);
   assert.match(app,/longExposure/);
-  assert.match(app,/shortExposure/);
+  assert.match(app,/inverseExposure/);
   assert.match(app,/cashExposure/);
   assert.match(app,/trade\.side/);
   assert.match(app,/entry_signal_date/);
@@ -66,13 +72,13 @@ test('position policy comparison discloses short-model limitations and side-awar
 
 test('compare mode names both policy results in the key cards and conclusion',async()=>{
   const app=await read('assets/app.js');
-  assert.match(app,/store\.backtestPolicy === "compare" && longCash\?\.metrics && longShort\?\.metrics/);
+  assert.match(app,/store\.backtestPolicy === "compare" && longCash\?\.metrics && longInverse\?\.metrics/);
   assert.match(app,/metric\("롱 \/ 현금 총수익률", fmt\.pct\(longCash\.metrics\.totalReturn\)/);
-  assert.match(app,/metric\("롱 \/ 숏 \/ 현금 총수익률", fmt\.pct\(longShort\.metrics\.totalReturn\)/);
+  assert.match(app,/metric\("롱 \/ 인버스 \/ 현금 총수익률", fmt\.pct\(longInverse\.metrics\.totalReturn\)/);
   assert.match(app,/const conclusionLongCash = store\.backtestPolicy === "compare" \? longCashResultFor\(\) : null/);
-  assert.match(app,/const conclusionLongShort = store\.backtestPolicy === "compare" \? longShortResultFor\(\) : null/);
+  assert.match(app,/const conclusionLongInverse = store\.backtestPolicy === "compare" \? longInverseResultFor\(\) : null/);
   assert.match(app,/롱\/현금 \$\{fmt\.signedPct\(conclusionLongCash\.metrics\.totalReturn\)\}/);
-  assert.match(app,/롱\/숏\/현금 \$\{fmt\.signedPct\(conclusionLongShort\.metrics\.totalReturn\)\}/);
+  assert.match(app,/롱\/인버스\/현금 \$\{fmt\.signedPct\(conclusionLongInverse\.metrics\.totalReturn\)\}/);
 });
 
 test('dynamic exit submit validates loaded data and scenario success before announcing apply',async()=>{
@@ -94,9 +100,9 @@ test('dynamic exit submit validates loaded data and scenario success before anno
 test('single-policy equity legend has stable ids and policy-aware visibility toggles',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   assert.match(html,/id="equity-legend-long-cash"/);
-  assert.match(html,/id="equity-legend-long-short"/);
-  assert.match(app,/\$\("#equity-legend-long-cash"\)\.hidden = store\.backtestPolicy === "long_short_cash"/);
-  assert.match(app,/\$\("#equity-legend-long-short"\)\.hidden = store\.backtestPolicy === "long_cash"/);
+  assert.match(html,/id="equity-legend-long-inverse"/);
+  assert.match(app,/\$\("#equity-legend-long-cash"\)\.hidden = store\.backtestPolicy === "long_inverse_cash"/);
+  assert.match(app,/\$\("#equity-legend-long-inverse"\)\.hidden = store\.backtestPolicy === "long_cash"/);
 });
 
 test('stylesheet and module cache versions advance together',async()=>{
@@ -134,7 +140,7 @@ test('performance lookup includes return, win rate, annualized position changes,
   const html=await read('index.html');
   for(const label of ['총수익률','승률','연환산 매매측수','평균 보유','BH MDD','동일 타이밍 0bp','위험 일치 BH']) assert.match(html,new RegExp(label));
   const app=await read('assets/app.js');
-  for(const field of ['totalReturn','winRate','turnover','averageHoldingSessions','buyAndHoldMaxDrawdown','exposureMatchedReturn','riskMatchedBuyHoldReturn','costBreakEvenBps']) assert.match(app,new RegExp(field));
+  for(const field of ['totalReturn','winRate','turnover','averageHoldingSessions','buyAndHoldMaxDrawdown','exposureMatchedReturn','riskMatchedBuyHoldReturn','inverseExposure']) assert.match(app,new RegExp(field));
 });
 
 test('mobile navigation remains available and chart encodings are not color-only',async()=>{
@@ -260,11 +266,12 @@ test('controls persist to URL and localStorage and charts expose an explicit lat
   assert.match(html,/id="reset-controls"/);
   assert.match(html,/id="share-view"/);
   assert.ok((html.match(/data-chart-latest=/g)||[]).length>=4);
-  assert.match(app,/localStorage\.setItem\("fearngreed-controls-v5"/);
-  assert.match(app,/getItem\("fearngreed-controls-v5"\) \|\| localStorage\.getItem\("fearngreed-controls-v4"\)/);
+  assert.match(app,/localStorage\.setItem\("fearngreed-controls-v6"/);
+  assert.match(app,/getItem\("fearngreed-controls-v6"\) \|\| localStorage\.getItem\("fearngreed-controls-v5"\)/);
   assert.match(app,/history\.replaceState/);
   assert.match(app,/navigator\.clipboard\.writeText/);
   assert.match(app,/longExitPercentile:\s*"exit"/);
+  assert.match(app,/backtestProxy:\s*"pair"/);
   assert.match(app,/backtestPolicy:\s*"policy"/);
   assert.match(app,/url\.searchParams\.set\(param, store\[key\]\)/);
 });
@@ -296,10 +303,10 @@ test('KOSPI history supports calendar presets and validated shareable custom dat
   assert.match(css,/\.history-range-status\[data-state="error"\]/);
 });
 
-test('integrated history separates close signals from next-open atomic actions and uses scenario exposure',async()=>{
+test('integrated history separates close signals from next-open actual ETF actions and uses scenario exposure',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
   assert.match(html,/공포 원은 상태 관측이지 모두 매수 주문은 아닙니다/);
-  assert.match(html,/같은 시가의 청산과 반대 포지션 진입은 하나의 반전 실행입니다/);
+  assert.match(html,/같은 시가의 청산과 반대 ETF 매수는 하나의 교체 실행입니다/);
   assert.match(app,/function extremeSignalMap/);
   assert.match(app,/function scenarioActions/);
   assert.match(app,/class="execution-action (entry|exit|reversal)/);
@@ -307,7 +314,7 @@ test('integrated history separates close signals from next-open atomic actions a
   assert.match(app,/m\.grossExposure/);
   assert.match(app,/excludedCarryInClosedTrades/);
   assert.match(css,/\.execution-action path/);
-  assert.match(css,/\.holding-zone\.short/);
+  assert.match(css,/\.holding-zone\.short, \.holding-zone\.inverse/);
 });
 
 test('scatter refits the selected historical session and renders exact empirical state boundaries',async()=>{
@@ -347,7 +354,7 @@ test('signal settings atomically refit signals, events and strategy with bounded
   assert.match(app,/function recomputeDynamicResearch/);
   assert.match(app,/computeDynamicSignals/);
   assert.match(app,/recomputeDynamicResearch\(\);[\s\S]*?resultsForPolicySelection/);
-  assert.match(app,/maxHolding: store\.signalMaxHolding/);
+  assert.match(app,/maxHoldDays: store\.signalMaxHolding/);
   assert.match(app,/runDynamicEventStudy/);
   assert.match(app,/information cutoff|정보만으로 전체 신호/);
 });

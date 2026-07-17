@@ -45,16 +45,29 @@ PUBLIC_LIMITS = {
     "automation_status": 50_000,
     "strategy_comparison": 500_000,
 }
-CORE_YAHOO_TICKERS = ["^KS11", "226490.KS", "069500.KS"]
-CORE_YAHOO_HISTORY_STARTS = {
-    "^KS11": date(2010, 1, 4),
-    "226490.KS": date(2015, 8, 24),
-    "069500.KS": date(2010, 1, 4),
-}
 DIAGNOSTIC_YAHOO_TICKERS = ["MU", "000660.KS", "005930.KS", "KRW=X"]
 ADJUSTED_ANCHOR_LOOKBACK_DAYS = 45
 ADJUSTED_SCALE_TOLERANCE = 0.005
 PUBLIC_NUMERIC_DRIFT_TOLERANCE = 5e-8
+ETF_LISTING_DATES = {
+    "069500": date(2010, 1, 4),
+    "114800": date(2010, 1, 4),
+    "122630": date(2010, 2, 22),
+    "226490": date(2015, 8, 24),
+    "252670": date(2016, 9, 22),
+}
+ETF_YAHOO_TICKERS = {ticker: f"{ticker}.KS" for ticker in ETF_LISTING_DATES}
+ETF_PUBLIC_TICKERS_BY_YAHOO = {
+    yahoo_ticker: ticker for ticker, yahoo_ticker in ETF_YAHOO_TICKERS.items()
+}
+CORE_YAHOO_TICKERS = ["^KS11", *ETF_YAHOO_TICKERS.values()]
+CORE_YAHOO_HISTORY_STARTS = {
+    "^KS11": date(2010, 1, 4),
+    **{
+        yahoo_ticker: ETF_LISTING_DATES[ticker]
+        for ticker, yahoo_ticker in ETF_YAHOO_TICKERS.items()
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -101,7 +114,7 @@ def probe(day: date) -> int:
             cache_dir=repository_root() / "var" / "cache" / "krx-probe"
         )
         result["krxKospi"] = client.get_kospi(day) is not None
-        result["krxEtfCount"] = len(client.get_etfs(day, ["226490", "069500"]))
+        result["krxEtfCount"] = len(client.get_etfs(day, ETF_LISTING_DATES))
         result["krxStockCount"] = len(client.get_stocks(day, ["000660", "005930"]))
     except ProviderError as error:
         result["krxOpenApi"] = {"ok": False, "reason": str(error)}
@@ -109,7 +122,7 @@ def probe(day: date) -> int:
         result["pykrxFlowRows"] = len(fetch_individual_flow(day, day))
         result["pykrxKospiRows"] = len(fetch_kospi_index(day, day))
         result["pykrxEtfRows"] = {
-            ticker: len(fetch_etf_prices(ticker, day, day)) for ticker in ("226490", "069500")
+            ticker: len(fetch_etf_prices(ticker, day, day)) for ticker in ETF_LISTING_DATES
         }
         result["pykrxStockRows"] = {
             ticker: len(fetch_stock_prices(ticker, day, day)) for ticker in ("000660", "005930")
@@ -146,7 +159,7 @@ def refresh(
         recent_kospi = _fetch_open_kospi(open_client, start, end)
         recent_open_etfs = _fetch_open_etfs(
             open_client,
-            max(start, end - timedelta(days=14), date(2015, 8, 24)),
+            max(start, end - timedelta(days=14), min(ETF_LISTING_DATES.values())),
             end,
         )
     except ProviderError as error:
@@ -288,7 +301,7 @@ def _load_incremental_seed(root: Path, end: date) -> IncrementalSeed | None:
     if (
         not isinstance(rows, list)
         or history.get("fixture") is not False
-        or methodology_version not in {"fear-flow-v1", METHODOLOGY_VERSION}
+        or methodology_version != METHODOLOGY_VERSION
         or len(rows) < 252
     ):
         return None
@@ -305,8 +318,7 @@ def _load_incremental_seed(root: Path, end: date) -> IncrementalSeed | None:
         "flowShare",
         "rawFlowTrillion",
         "sourceHash",
-        "p069500Open",
-        "p069500Close",
+        *{field for ticker in ETF_LISTING_DATES for field in (f"p{ticker}Open", f"p{ticker}Close")},
     }
     if len(usable) < 252 or any(not required.issubset(row) for row in usable[-5:]):
         return None
@@ -353,8 +365,7 @@ def _frames_from_history(
     flow_rows: list[dict[str, object]] = []
     adjusted_rows: dict[str, list[dict[str, object]]] = {
         "^KS11": [],
-        "226490.KS": [],
-        "069500.KS": [],
+        **{yahoo_ticker: [] for yahoo_ticker in ETF_YAHOO_TICKERS.values()},
     }
     for row in rows:
         timestamp = pd.Timestamp(str(row["date"]))
@@ -393,11 +404,11 @@ def _frames_from_history(
                     flow_row[frame_name] = float(value)
         flow_rows.append(flow_row)
         adjusted_rows["^KS11"].append(_price_row(timestamp, close, close))
-        for ticker in ("226490", "069500"):
+        for ticker, yahoo_ticker in ETF_YAHOO_TICKERS.items():
             open_value = row.get(f"p{ticker}Open")
             close_value = row.get(f"p{ticker}Close")
             if open_value is not None and close_value is not None:
-                adjusted_rows[f"{ticker}.KS"].append(
+                adjusted_rows[yahoo_ticker].append(
                     _price_row(timestamp, float(open_value), float(close_value))
                 )
     kospi = pd.DataFrame.from_records(kospi_rows).set_index("date")
@@ -538,11 +549,9 @@ def _assert_adjusted_scale_stable(
     tolerance: float = ADJUSTED_SCALE_TOLERANCE,
 ) -> None:
     """Fail closed when fresh adjusted-price anchors no longer match frozen scale."""
-    public_ticker = {
-        "^KS11": "kospi",
-        "226490.KS": "226490",
-        "069500.KS": "069500",
-    }.get(ticker, "unknown")
+    public_ticker = (
+        "kospi" if ticker == "^KS11" else ETF_PUBLIC_TICKERS_BY_YAHOO.get(ticker, "unknown")
+    )
     left = frozen.copy()
     right = fetched.copy()
     left.index = pd.to_datetime(left.index).tz_localize(None).normalize()
@@ -619,7 +628,7 @@ def _fetch_open_kospi(client: KRXOpenAPIClient, start: date, end: date) -> pd.Da
 
 
 def _fetch_open_etfs(client: KRXOpenAPIClient, start: date, end: date) -> dict[str, pd.DataFrame]:
-    records: dict[str, list[dict[str, object]]] = {"226490": [], "069500": []}
+    records: dict[str, list[dict[str, object]]] = {ticker: [] for ticker in ETF_LISTING_DATES}
     for timestamp in pd.bdate_range(start, end):
         for ticker, row in client.get_etfs(timestamp.date(), records).items():
             records[ticker].append(
@@ -677,9 +686,8 @@ def _fetch_authenticated_etf_histories(
     authenticated range adapter provides the historical anchors without a
     decade of one-request-per-session Open API traffic.
     """
-    listing_dates = {"226490": date(2015, 8, 24), "069500": date(2010, 1, 4)}
     output: dict[str, pd.DataFrame] = {}
-    for ticker, listing_date in listing_dates.items():
+    for ticker, listing_date in ETF_LISTING_DATES.items():
         try:
             history = fetch_etf_prices(ticker, listing_date, end)
         except ProviderError:
@@ -733,8 +741,7 @@ def _fetch_adjusted_partition(
     """Keep independent Yahoo instruments isolated from sibling failures."""
     reason_ids = {
         "^KS11": "kospi",
-        "226490.KS": "226490",
-        "069500.KS": "069500",
+        **ETF_PUBLIC_TICKERS_BY_YAHOO,
         "MU": "mu",
         "000660.KS": "000660",
         "005930.KS": "005930",

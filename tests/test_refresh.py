@@ -9,6 +9,8 @@ import pytest
 from fearngreed.pipeline import PipelineOutputs
 from fearngreed.providers.common import ProviderError
 from fearngreed.refresh import (
+    ETF_LISTING_DATES,
+    ETF_YAHOO_TICKERS,
     IncrementalSeed,
     RefreshStageError,
     _align_core_to_latest_common,
@@ -23,6 +25,19 @@ from fearngreed.refresh import (
     _preserve_frozen_history,
     _replace_history_rows,
 )
+
+ETF_TICKERS = tuple(ETF_LISTING_DATES)
+
+
+def _etf_history_prices(value: float) -> dict[str, float]:
+    return {
+        field: price
+        for offset, ticker in enumerate(ETF_TICKERS, start=1)
+        for field, price in (
+            (f"p{ticker}Open", value * offset),
+            (f"p{ticker}Close", value * offset * 1.01),
+        )
+    }
 
 
 class FakeStockRow:
@@ -57,14 +72,11 @@ def test_incremental_seed_freezes_everything_before_latest_five_sessions(tmp_pat
                 "flowShare": -0.01 + index / 100_000,
                 "rawFlowTrillion": -0.2 + index / 10_000,
                 "sourceHash": f"hash-{index}",
-                "p069500Open": value * 2,
-                "p069500Close": value * 2.01,
-                "p226490Open": value,
-                "p226490Close": value * 1.01,
+                **_etf_history_prices(value),
             }
         )
     history = {
-        "methodologyVersion": "fear-flow-v1",
+        "methodologyVersion": "fear-flow-v5",
         "dataAsOf": rows[-1]["date"],
         "fixture": False,
         "series": rows,
@@ -79,20 +91,24 @@ def test_incremental_seed_freezes_everything_before_latest_five_sessions(tmp_pat
     (data_dir / "history.json").write_text(json.dumps(history), encoding="utf-8")
     (data_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
     (data_dir / "dashboard.json").write_text(json.dumps(dashboard), encoding="utf-8")
+    (data_dir / "strategy-comparison.json").write_text(
+        json.dumps({"methodologyVersion": "fear-flow-v5"}), encoding="utf-8"
+    )
 
     seed = _load_incremental_seed(tmp_path, date.fromisoformat(rows[-1]["date"]))
 
     assert seed is not None
-    assert seed.methodology_version == "fear-flow-v1"
+    assert seed.methodology_version == "fear-flow-v5"
     assert seed.mutable_start == dates[-5].date()
     assert len(seed.kospi) == 255
     assert len(seed.flow) == 255
     assert len(seed.adjusted["226490.KS"]) == 255
+    assert set(seed.adjusted) == {"^KS11", *ETF_YAHOO_TICKERS.values()}
     assert seed.flow.iloc[-1]["source_hash_override"] == "hash-254"
     assert seed.etf_reconciliation["226490"]["filledCount"] == 29
 
 
-def test_v4_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
+def test_v5_incremental_seed_requires_complete_price_contract_and_strategy_artifact(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     dates = pd.bdate_range("2025-01-02", periods=260)
@@ -102,10 +118,7 @@ def test_v4_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
         "flowShare",
         "rawFlowTrillion",
         "sourceHash",
-        "p069500Open",
-        "p069500Close",
-        "p226490Open",
-        "p226490Close",
+        *[field for ticker in ETF_TICKERS for field in (f"p{ticker}Open", f"p{ticker}Close")],
     ]
     rows = [
         [
@@ -114,15 +127,12 @@ def test_v4_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
             -0.01 + index / 100_000,
             -0.20 + index / 10_000,
             f"hash-{index}",
-            200.0 + index,
-            201.0 + index,
-            100.0 + index,
-            101.0 + index,
+            *[value for value in _etf_history_prices(100.0 + index).values()],
         ]
         for index, timestamp in enumerate(dates)
     ]
     history = {
-        "methodologyVersion": "fear-flow-v4",
+        "methodologyVersion": "fear-flow-v5",
         "dataAsOf": rows[-1][0],
         "fixture": False,
         "seriesEncoding": "columnar-v1",
@@ -142,7 +152,7 @@ def test_v4_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
     (data_dir / "strategy-comparison.json").write_text(
         json.dumps(
             {
-                "methodologyVersion": "fear-flow-v4",
+                "methodologyVersion": "fear-flow-v5",
                 "dataAsOf": rows[-1][0],
                 "contract": "fearngreed-strategy-comparison",
             }
@@ -152,8 +162,12 @@ def test_v4_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
     seed = _load_incremental_seed(tmp_path, dates[-1].date())
 
     assert seed is not None
-    assert seed.methodology_version == "fear-flow-v4"
+    assert seed.methodology_version == "fear-flow-v5"
     assert len(seed.history_rows) == 260
+
+    history["methodologyVersion"] = "fear-flow-v4"
+    (data_dir / "history.json").write_text(json.dumps(history), encoding="utf-8")
+    assert _load_incremental_seed(tmp_path, dates[-1].date()) is None
 
 
 def test_merge_frames_replaces_mutable_dates_without_touching_older_rows():
@@ -299,7 +313,7 @@ def test_open_api_stock_crosscheck_frames_cover_both_approved_tickers():
     assert result["005930"].loc["2026-07-15", "close"] == 101.0
 
 
-def test_incremental_seed_decodes_compact_v1_history_for_v3_recomputation(tmp_path):
+def test_incremental_seed_reconstructs_all_etfs_and_optional_flow_channels(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     columns = [
@@ -312,10 +326,7 @@ def test_incremental_seed_decodes_compact_v1_history_for_v3_recomputation(tmp_pa
         "institutionalNetPurchase",
         "institutionalFlowShare",
         "sourceHash",
-        "p069500Open",
-        "p069500Close",
-        "p226490Open",
-        "p226490Close",
+        *[field for ticker in ETF_TICKERS for field in (f"p{ticker}Open", f"p{ticker}Close")],
     ]
     dates = pd.bdate_range("2025-01-02", periods=260)
     rows = [
@@ -329,15 +340,12 @@ def test_incremental_seed_decodes_compact_v1_history_for_v3_recomputation(tmp_pa
             500_000.0 + index,
             0.005 + index / 1_000_000,
             f"hash-{index}",
-            200.0 + index,
-            201.0 + index,
-            100.0 + index,
-            101.0 + index,
+            *list(_etf_history_prices(100.0 + index).values()),
         ]
         for index, timestamp in enumerate(dates)
     ]
     history = {
-        "methodologyVersion": "fear-flow-v1",
+        "methodologyVersion": "fear-flow-v5",
         "dataAsOf": rows[-1][0],
         "fixture": False,
         "seriesEncoding": "columnar-v1",
@@ -349,17 +357,21 @@ def test_incremental_seed_decodes_compact_v1_history_for_v3_recomputation(tmp_pa
         json.dumps({"status": {"state": "ok"}}), encoding="utf-8"
     )
     (data_dir / "dashboard.json").write_text("{}", encoding="utf-8")
+    (data_dir / "strategy-comparison.json").write_text(
+        json.dumps({"methodologyVersion": "fear-flow-v5"}), encoding="utf-8"
+    )
 
     seed = _load_incremental_seed(tmp_path, dates[-1].date())
 
     assert seed is not None
-    assert seed.methodology_version == "fear-flow-v1"
+    assert seed.methodology_version == "fear-flow-v5"
     assert len(seed.history_rows) == 260
     assert seed.history_rows[-1]["sourceHash"] == "hash-259"
     assert len(seed.kospi) == 255
     assert seed.flow.iloc[-1]["foreigner_net_purchase"] == -1_000_254.0
     assert seed.flow.iloc[-1]["foreigner_flow_share_override"] == pytest.approx(-0.010254)
     assert seed.flow.iloc[-1]["institutional_net_purchase"] == 500_254.0
+    assert set(seed.adjusted) == {"^KS11", *ETF_YAHOO_TICKERS.values()}
 
 
 def test_compact_history_round_trip_preserves_selected_encoding():
@@ -462,7 +474,7 @@ def test_authenticated_etf_histories_cover_long_multi_anchor_ranges(monkeypatch)
     monkeypatch.setattr("fearngreed.refresh.fetch_etf_prices", fetch)
     recent = {
         ticker: pd.DataFrame({"close": [110.0]}, index=pd.to_datetime([end.isoformat()]))
-        for ticker in ("226490", "069500")
+        for ticker in ETF_TICKERS
     }
     degraded: list[str] = []
 
@@ -472,9 +484,10 @@ def test_authenticated_etf_histories_cover_long_multi_anchor_ranges(monkeypatch)
         degraded=degraded,
     )
 
-    assert set(result) == {"226490", "069500"}
-    assert ("226490", date(2015, 8, 24), end) in calls
-    assert ("069500", date(2010, 1, 4), end) in calls
+    assert set(result) == set(ETF_TICKERS)
+    assert set(calls) == {
+        (ticker, listing_date, end) for ticker, listing_date in ETF_LISTING_DATES.items()
+    }
     assert degraded == []
 
 
@@ -490,7 +503,7 @@ def test_adjusted_price_partition_keeps_sibling_tickers_when_one_fails(monkeypat
     monkeypatch.setattr("fearngreed.refresh.fetch_adjusted_prices", fetch)
     degraded: list[str] = []
     core = _fetch_adjusted_partition(
-        ["^KS11", "226490.KS", "069500.KS"],
+        ["^KS11", *ETF_YAHOO_TICKERS.values()],
         date(2026, 7, 14),
         date(2026, 7, 15),
         degraded,
@@ -504,7 +517,7 @@ def test_adjusted_price_partition_keeps_sibling_tickers_when_one_fails(monkeypat
         reason_prefix="diagnostic_price",
     )
 
-    assert set(core) == {"^KS11", "069500.KS"}
+    assert set(core) == {"^KS11", *ETF_YAHOO_TICKERS.values()} - {"226490.KS"}
     assert set(diagnostics) == {"KRW=X"}
     assert degraded == [
         "adjusted_price_226490_unavailable",
@@ -531,21 +544,21 @@ def test_adjusted_price_partition_retries_core_ticker_from_fixed_history_start(
     degraded: list[str] = []
     end = date(2026, 7, 15)
     output = _fetch_adjusted_partition(
-        ["226490.KS", "069500.KS"],
+        list(ETF_YAHOO_TICKERS.values()),
         date(2026, 7, 9),
         end,
         degraded,
         reason_prefix="adjusted_price",
         start_overrides={
-            "226490.KS": date(2015, 8, 24),
-            "069500.KS": date(2010, 1, 4),
+            yahoo_ticker: ETF_LISTING_DATES[ticker]
+            for ticker, yahoo_ticker in ETF_YAHOO_TICKERS.items()
         },
     )
 
-    assert set(output) == {"226490.KS", "069500.KS"}
+    assert set(output) == set(ETF_YAHOO_TICKERS.values())
     assert calls == [
-        ("226490.KS", date(2015, 8, 24), end),
-        ("069500.KS", date(2010, 1, 4), end),
+        (yahoo_ticker, ETF_LISTING_DATES[ticker], end)
+        for ticker, yahoo_ticker in ETF_YAHOO_TICKERS.items()
     ]
     assert degraded == []
 
@@ -593,7 +606,7 @@ def test_official_etf_provider_disagreement_discards_untrusted_history(monkeypat
     monkeypatch.setattr("fearngreed.refresh.fetch_etf_prices", fetch)
     recent = {
         ticker: pd.DataFrame({"close": [110.0]}, index=pd.to_datetime([end.isoformat()]))
-        for ticker in ("226490", "069500")
+        for ticker in ETF_TICKERS
     }
     degraded: list[str] = []
 
@@ -603,7 +616,6 @@ def test_official_etf_provider_disagreement_discards_untrusted_history(monkeypat
         degraded=degraded,
     )
 
-    assert result["226490"].equals(recent["226490"])
-    assert result["069500"].equals(recent["069500"])
-    assert "official_etf_provider_disagreement_226490" in degraded
-    assert "official_etf_provider_disagreement_069500" in degraded
+    for ticker in ETF_TICKERS:
+        assert result[ticker].equals(recent[ticker])
+        assert f"official_etf_provider_disagreement_{ticker}" in degraded

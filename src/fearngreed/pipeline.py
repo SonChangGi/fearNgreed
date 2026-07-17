@@ -18,8 +18,11 @@ from .analysis import (
     drawdown,
 )
 from .backtest import (
+    ACTUAL_ETF_PAIRS,
     BacktestResult,
+    actual_etf_pair_result_to_public,
     result_to_public,
+    run_actual_etf_pair_backtest,
     run_backtest_safe,
     run_cost_sensitivity,
 )
@@ -33,7 +36,7 @@ from .events import (
 from .model import FlowSignal
 from .quality import compare_close_anchors, compare_latest_close
 
-METHODOLOGY_VERSION = "fear-flow-v4"
+METHODOLOGY_VERSION = "fear-flow-v5"
 BROWSER_SCENARIO_INPUTS = {
     "lookback": {"default": 252, "minimum": 60, "maximum": 756, "step": 1},
     "minimumR2": {"default": 0.2, "minimum": 0, "maximum": 0.8, "step": 0.05},
@@ -41,7 +44,19 @@ BROWSER_SCENARIO_INPUTS = {
     "maxHolding": {"default": 20, "minimum": 1, "maximum": 60, "step": 1},
 }
 MINIMUM_TRAINING_OBSERVATIONS_FORMULA = "min(lookback,max(40,min(200,ceil(lookback*0.8))))"
+HISTORY_NUMERIC_PRECISION_DIGITS = 8
+# ``PROXY_TICKERS`` remains the legacy long/cash comparison set.  The wider
+# ETF universe is a price-data contract used by the actual long/inverse pairs
+# and by the browser scenario engine.  Keeping the two concepts separate
+# avoids silently treating an inverse ETF as an ordinary long-only proxy.
 PROXY_TICKERS = {"226490": "226490.KS", "069500": "069500.KS"}
+ETF_PRICE_TICKERS = {
+    "226490": "226490.KS",  # KODEX KOSPI compatibility proxy
+    "069500": "069500.KS",  # KODEX 200 (+1x)
+    "114800": "114800.KS",  # KODEX Inverse (-1x)
+    "122630": "122630.KS",  # KODEX Leverage (+2x)
+    "252670": "252670.KS",  # KODEX 200 Futures Inverse 2X (-2x)
+}
 STOCK_TICKERS = {"000660": "000660.KS", "005930": "005930.KS"}
 PDF_ANNOTATED_EVENTS = {
     "2026-03-04": ("extreme_fear", "공포"),
@@ -96,7 +111,7 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
     signal_cutoff = frame.index[-1]
     adjusted = dict(inputs.adjusted)
     crosschecks = _crosschecks(inputs, frame)
-    for ticker, yahoo_ticker in PROXY_TICKERS.items():
+    for ticker, yahoo_ticker in ETF_PRICE_TICKERS.items():
         reconciled, reconciliation = _reconcile_adjusted_etf_history(
             inputs.krx_etfs.get(ticker),
             adjusted.get(yahoo_ticker),
@@ -189,7 +204,13 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
     diagnostics = _semiconductor_diagnostics(frame, adjusted, crosschecks["stock"])
     latest = frame.iloc[-1]
     latest_signal = robust_signals[-1]
-    base_result = backtests.get("226490", {}).get("robust_10bp")
+    actual_etf_pairs = _actual_etf_pair_section(
+        adjusted,
+        robust_signals,
+        crosschecks,
+        signal_cutoff=signal_cutoff,
+    )
+    base_result = backtests.get("069500", {}).get("robust_10bp")
     if base_result is None or base_result.status != "ok":
         position = "unavailable"
         position_quality = "unavailable"
@@ -208,7 +229,7 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
     generated_at = inputs.generated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
     data_as_of = frame.index[-1].date().isoformat()
     history_rows = _history_rows(frame, base_result, adjusted, disparity_signals)
-    primary_reconciliation = crosschecks["etf"]["226490"].get("historyReconciliation", {})
+    primary_reconciliation = crosschecks["etf"]["069500"].get("historyReconciliation", {})
     adjusted_proxy_source = (
         "yfinance_adjusted_plus_scaled_krx_gap_rows"
         if primary_reconciliation.get("filledCount", 0) > 0
@@ -275,13 +296,14 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         "models": {model_name: _model_snapshot(latest, model_name) for model_name in model_signals},
         "flowChannelRoles": _history_flow_channel_roles(),
         "strategyScenario": {
-            "engineVersion": "signed-fixed-quantity-v1",
+            "engineVersion": "actual-listed-etf-pairs-v1",
             "signalEngineVersion": "browser-past-only-rolling-v1",
             "defaultLongExitPercentile": 80,
             "customLongExitMinimum": 50,
             "customLongExitMaximum": 94,
             "customLongExitStep": 1,
             "shortExitFormula": "100-longExitPercentile",
+            "inverseExitFormula": "100-longExitPercentile",
             "signalInputsAreServerPublished": True,
             "browserMayRefitRegression": True,
             "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
@@ -292,6 +314,7 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
             "pastOnly": True,
             "evaluationRangeSeparate": True,
         },
+        "numericPrecisionDigits": HISTORY_NUMERIC_PRECISION_DIGITS,
         "seriesEncoding": "columnar-v1",
         "seriesColumns": history_columns,
         "seriesRows": history_values,
@@ -316,6 +339,7 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         common_exit50=common_exit50_backtests,
         long_cash=backtests,
         common_long_cash=common_backtests,
+        actual_etf_pairs=actual_etf_pairs,
     )
     return PipelineOutputs(
         summary=summary,
@@ -405,9 +429,9 @@ def _summary(
                 "positionUnavailableReason": position_unavailable_reason,
                 "pendingAction": pending_action,
                 "pendingReason": pending_reason,
-                "primaryProxy": "226490",
+                "primaryProxy": "069500",
                 "sourceMode": core_source,
-                "strategyModel": "robust_huber_scaled_exit80",
+                "strategyModel": "robust_huber_069500_actual_long_cash_exit80",
                 "fieldSources": {
                     "kospi": core_source,
                     "retailFlow": "authenticated_pykrx",
@@ -428,8 +452,12 @@ def _summary(
                 "현금수익률 0%를 가정한다."
             ),
             (
-                "합성 롱/숏 비교는 조정 총수익 가격의 배당 경제효과를 반영하지만 "
-                "대차료·리콜·증거금·강제청산·공매도 가능 수량을 모델링하지 않는다."
+                "실제 인버스 ETF 경로는 기초지수의 단순 음수 수익률과 다르며 보수·선물 롤·"
+                "추적오차·일간 재설정 효과가 조정가격에 포함된다."
+            ),
+            (
+                "2X ETF는 일간 목표 배율 상품이므로 장기 누적성과가 KOSPI 200 누적수익률의 "
+                "단순 ±2배가 아니며 변동성 경로에 크게 의존한다."
             ),
             (
                 "웹 사용자 청산값은 공개된 신호와 가격만으로 브라우저에서 재계산하는 "
@@ -494,7 +522,7 @@ def _crosschecks(inputs: PipelineInputs, frame: pd.DataFrame) -> dict[str, Any]:
             "latest_independent_historical_secondary_reconstructed"
         )
     etf_checks: dict[str, Any] = {}
-    for ticker, yahoo_ticker in PROXY_TICKERS.items():
+    for ticker, yahoo_ticker in ETF_PRICE_TICKERS.items():
         official = inputs.krx_etfs.get(ticker)
         secondary = inputs.adjusted.get(yahoo_ticker)
         etf_checks[ticker] = (
@@ -940,6 +968,187 @@ def _public_backtests(
     return result
 
 
+def _actual_etf_pair_section(
+    adjusted: dict[str, pd.DataFrame],
+    signals: list[FlowSignal],
+    crosschecks: dict[str, Any],
+    *,
+    signal_cutoff: pd.Timestamp,
+) -> dict[str, Any]:
+    """Publish listed long/inverse ETF policies on one comparable period."""
+    canonical_tickers = tuple(
+        dict.fromkeys(
+            str(pair[field])
+            for pair in ACTUAL_ETF_PAIRS.values()
+            for field in ("longTicker", "inverseTicker")
+        )
+    )
+    frames: dict[str, pd.DataFrame] = {}
+    for ticker in canonical_tickers:
+        frame = adjusted.get(ETF_PRICE_TICKERS[ticker])
+        if frame is not None and not frame.empty:
+            frames[ticker] = _price_frame_as_of(frame, signal_cutoff)
+    common = pd.DatetimeIndex([])
+    if len(frames) == len(canonical_tickers):
+        common = frames[canonical_tickers[0]].index
+        for ticker in canonical_tickers[1:]:
+            common = common.intersection(frames[ticker].index)
+        common = common.sort_values()
+    common_available = len(common) >= 2
+    common_period = {
+        "basis": "four_etf_common_adjusted_price_sessions",
+        "tickers": list(canonical_tickers),
+        "status": "ok" if common_available else "unavailable",
+        "reason": None if common_available else "four_etf_common_period_unavailable",
+        "start": common[0].date().isoformat() if common_available else None,
+        "end": common[-1].date().isoformat() if common_available else None,
+        "sessionCount": int(len(common)),
+    }
+    pairs: dict[str, Any] = {}
+    for pair_id, pair in ACTUAL_ETF_PAIRS.items():
+        long_ticker = str(pair["longTicker"])
+        inverse_ticker = str(pair["inverseTicker"])
+        failed = [
+            ticker
+            for ticker in (long_ticker, inverse_ticker)
+            if crosschecks.get("etf", {}).get(ticker, {}).get("state") != "ok"
+        ]
+        reason = (
+            "four_etf_common_period_unavailable"
+            if not common_available
+            else f"official_crosscheck_failed_{'_'.join(failed)}"
+            if failed
+            else None
+        )
+        policies: dict[str, Any] = {}
+        full_period_metrics: dict[str, Any] = {}
+        for policy_id in ("long_cash", "long_inverse_cash"):
+            if reason is not None:
+                policies[policy_id] = _unavailable_actual_etf_policy(pair_id, policy_id, reason)
+                full_period_metrics[policy_id] = {
+                    "status": "unavailable",
+                    "unavailableReason": reason,
+                    "position": "unavailable",
+                    "latestInstrumentTicker": None,
+                    "metrics": None,
+                    "range": None,
+                }
+                continue
+            common_result = _run_actual_etf_policy(
+                signals,
+                frames[long_ticker].loc[common, ["open", "close"]],
+                frames[inverse_ticker].loc[common, ["open", "close"]],
+                pair_id=pair_id,
+                policy_id=policy_id,
+            )
+            policies[policy_id] = common_result
+            pair_common = frames[long_ticker].index.intersection(frames[inverse_ticker].index)
+            full_result = _run_actual_etf_policy(
+                signals,
+                frames[long_ticker].loc[pair_common, ["open", "close"]],
+                frames[inverse_ticker].loc[pair_common, ["open", "close"]],
+                pair_id=pair_id,
+                policy_id=policy_id,
+            )
+            full_period_metrics[policy_id] = {
+                field: full_result.get(field)
+                for field in (
+                    "status",
+                    "unavailableReason",
+                    "position",
+                    "latestInstrumentTicker",
+                    "metrics",
+                    "range",
+                )
+            }
+        failed_policy = next(
+            (value for value in policies.values() if value.get("status") != "ok"),
+            None,
+        )
+        pairs[pair_id] = {
+            "pair": {**pair, "implementation": "actual_listed_etfs"},
+            "status": "unavailable" if failed_policy is not None else "ok",
+            "reason": (
+                failed_policy.get("unavailableReason") if failed_policy is not None else None
+            ),
+            "policies": policies,
+            "fullPeriodMetrics": full_period_metrics,
+        }
+    return {
+        "authority": "canonical_server_verified_actual_etfs",
+        "canonical": True,
+        "calculationSource": "python_verified_actual_etfs",
+        "implementation": "positive_units_in_listed_long_and_inverse_etfs",
+        "oneWayCostBps": 10,
+        "longExitPercentile": 80,
+        "inverseExitPercentile": 20,
+        "commonPeriod": common_period,
+        "pairs": pairs,
+    }
+
+
+def _run_actual_etf_policy(
+    signals: list[FlowSignal],
+    long_bars: pd.DataFrame,
+    inverse_bars: pd.DataFrame,
+    *,
+    pair_id: str,
+    policy_id: str,
+) -> dict[str, Any]:
+    try:
+        result = run_actual_etf_pair_backtest(
+            signals,
+            long_bars,
+            inverse_bars,
+            pair_id=pair_id,
+            policy_id=policy_id,
+            one_way_cost_bps=10,
+            long_exit_percentile=80,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return _unavailable_actual_etf_policy(pair_id, policy_id, "actual_pair_calculation_failed")
+    public = actual_etf_pair_result_to_public(result)
+    equity_count = len(public.get("equity", []))
+    trade_count = len(public.get("trades", []))
+    action_count = len(public.get("actions", []))
+    public["equity"] = _sample_with_last(public.get("equity", []), step=21)
+    public["equityHistoryTruncated"] = equity_count > len(public["equity"])
+    public["trades"] = public.get("trades", [])[-12:]
+    public["tradeHistoryTruncated"] = trade_count > len(public["trades"])
+    public["actions"] = public.get("actions", [])[-12:]
+    public["actionHistoryTruncated"] = action_count > len(public["actions"])
+    return public
+
+
+def _unavailable_actual_etf_policy(pair_id: str, policy_id: str, reason: str) -> dict[str, Any]:
+    pair = ACTUAL_ETF_PAIRS[pair_id]
+    return {
+        "pair": {**pair, "implementation": "actual_listed_etfs"},
+        "oneWayCostBps": 10,
+        "policyId": policy_id,
+        "position": "unavailable",
+        "latestPosition": "unavailable",
+        "latestInstrumentTicker": None,
+        "openPosition": False,
+        "pendingAction": None,
+        "pendingReason": None,
+        "pendingSide": None,
+        "pendingSignalDate": None,
+        "openTrade": None,
+        "longExitPercentile": 80,
+        "inverseExitPercentile": 20,
+        "status": "unavailable",
+        "unavailableReason": reason,
+        "metrics": None,
+        "trades": [],
+        "actions": [],
+        "equity": [],
+        "holdingSegments": [],
+        "range": None,
+        "calculationSource": "python_verified_actual_etfs",
+    }
+
+
 def _strategy_comparison(
     *,
     generated_at: str,
@@ -952,6 +1161,7 @@ def _strategy_comparison(
     common_exit50: dict[str, BacktestResult],
     long_cash: dict[str, dict[str, BacktestResult]],
     common_long_cash: dict[str, dict[str, BacktestResult]],
+    actual_etf_pairs: dict[str, Any],
 ) -> dict[str, Any]:
     proxies: dict[str, Any] = {}
     sensitivity: dict[str, Any] = {}
@@ -1014,9 +1224,29 @@ def _strategy_comparison(
                 "shortEntry": None,
                 "shortExit": None,
             },
+            "longInverseCash": {
+                "policyId": "long_inverse_cash",
+                "role": "canonical_actual_listed_etf_research",
+                "longEntry": "first_trade_eligible_extreme_fear_at_or_below_5",
+                "longExit": (
+                    "next_open_after_percentile_at_or_above_80_or_opposite_extreme_"
+                    "or_max_20_sessions"
+                ),
+                "inverseEntry": "first_trade_eligible_extreme_greed_at_or_above_95",
+                "inverseExit": (
+                    "next_open_after_percentile_at_or_below_20_or_opposite_extreme_"
+                    "or_max_20_sessions"
+                ),
+                "instrumentSelection": "pair_specific_actual_listed_etfs",
+                "positionAccounting": "positive_listed_etf_units_no_synthetic_short",
+                "sameOpenReversal": True,
+                "reversalTransactionSides": 2,
+                "shortExposure": 0,
+                "borrowRequired": False,
+            },
             "longShortCash": {
                 "policyId": "long_short_cash",
-                "role": "exploratory_synthetic_comparison",
+                "role": "legacy_diagnostic_backward_compatibility",
                 "longEntry": "first_trade_eligible_extreme_fear_at_or_below_5",
                 "longExit": "next_open_after_percentile_at_or_above_80_or_max_20_sessions",
                 "shortEntry": "first_trade_eligible_extreme_greed_at_or_above_95",
@@ -1049,6 +1279,7 @@ def _strategy_comparison(
             "maximum": 94,
             "step": 1,
             "shortExitFormula": "100-longExitPercentile",
+            "inverseExitFormula": "100-longExitPercentile",
             "calculationLocation": ("browser_on_server_published_history_and_adjusted_prices"),
             "regressionRefit": True,
             "signalEngineVersion": "browser-past-only-rolling-v1",
@@ -1066,6 +1297,12 @@ def _strategy_comparison(
             "oneWayCostBps": 10,
             "selectionUse": "diagnostic_only_not_threshold_optimization",
             "proxies": sensitivity,
+        },
+        "actualEtfPairs": actual_etf_pairs,
+        "legacyProxyContract": {
+            "canonical": False,
+            "role": "legacy_diagnostic_backward_compatibility",
+            "implementation": "synthetic_short_or_single_long_proxy",
         },
         "proxies": proxies,
     }
@@ -1336,7 +1573,7 @@ def _history_rows(
                 output[f"{participant}State"] = row[f"{participant}_state"]
                 source_column = OPTIONAL_FLOW_CHANNELS[participant][0]
                 output[f"{participant}NetPurchase"] = public_number(row[source_column])
-        for public_ticker, yahoo_ticker in PROXY_TICKERS.items():
+        for public_ticker, yahoo_ticker in ETF_PRICE_TICKERS.items():
             prices = adjusted.get(yahoo_ticker)
             if prices is not None and timestamp in prices.index:
                 output[f"p{public_ticker}Open"] = public_number(prices.loc[timestamp, "open"])
@@ -1781,11 +2018,24 @@ def _columnar_history(
         "p226490Close",
         "p069500Open",
         "p069500Close",
+        "p114800Open",
+        "p114800Close",
+        "p122630Open",
+        "p122630Close",
+        "p252670Open",
+        "p252670Close",
     ]
     present = {key for row in rows for key in row}
     columns = [key for key in preferred if key in present]
     columns.extend(sorted(present.difference(columns)))
-    return columns, [[row.get(column) for column in columns] for row in rows]
+    return columns, [[_history_value(row.get(column)) for column in columns] for row in rows]
+
+
+def _history_value(value: Any) -> Any:
+    """Compact numeric history without changing identifiers or categorical values."""
+    if isinstance(value, float):
+        return round(value, HISTORY_NUMERIC_PRECISION_DIGITS)
+    return value
 
 
 def _sample_frame_with_last(frame: pd.DataFrame, *, step: int) -> pd.DataFrame:

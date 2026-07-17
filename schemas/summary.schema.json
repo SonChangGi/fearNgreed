@@ -23,7 +23,7 @@
     "schemaVersion": {"const": 1},
     "contract": {"const": "quant-research-summary"},
     "projectId": {"const": "fearngreed"},
-    "methodologyVersion": {"const": "fear-flow-v4"},
+    "methodologyVersion": {"const": "fear-flow-v5"},
     "generatedAt": {"type": "string", "format": "date-time"},
     "dataAsOf": {"type": "string", "format": "date"},
     "status": {
@@ -267,7 +267,7 @@
             {"type": "null"}
           ]
         },
-        "primaryProxy": {"enum": ["226490"]},
+        "primaryProxy": {"const": "069500"},
         "sourceMode": {"enum": ["krx_open_api", "authenticated_pykrx_fallback"]},
         "strategyModel": {"type": "string", "minLength": 1},
         "fieldSources": {

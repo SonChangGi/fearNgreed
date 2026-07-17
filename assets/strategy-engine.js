@@ -1,4 +1,26 @@
 const POLICY_IDS = new Set(["long_cash", "long_short_cash"]);
+const ACTUAL_POLICY_IDS = new Set(["long_cash", "long_inverse_cash"]);
+
+export const ACTUAL_ETF_PAIRS = Object.freeze({
+  "1x": Object.freeze({
+    pairId: "1x",
+    leverage: 1,
+    longTicker: "069500",
+    inverseTicker: "114800",
+    longName: "KODEX 200",
+    inverseName: "KODEX 인버스",
+    implementation: "actual_listed_etfs"
+  }),
+  "2x": Object.freeze({
+    pairId: "2x",
+    leverage: 2,
+    longTicker: "122630",
+    inverseTicker: "252670",
+    longName: "KODEX 레버리지",
+    inverseName: "KODEX 200선물인버스2X",
+    implementation: "actual_listed_etfs"
+  })
+});
 
 export const DEFAULT_LONG_EXIT_PERCENTILE = 80;
 export const MIN_LONG_EXIT_PERCENTILE = 50;
@@ -61,6 +83,56 @@ function selectedBars(rows, proxy, period) {
     open: Number(row[`p${proxy}Open`]),
     close: Number(row[`p${proxy}Close`])
   }));
+}
+
+function validActualPairBar(row, pair) {
+  return [pair.longTicker, pair.inverseTicker].every((ticker) => validBar(row, ticker));
+}
+
+function selectedActualPairBars(rows, pair, period) {
+  const requireAllFour = period === "common";
+  if (!["pair", "full", "common"].includes(period)) throw new Error("지원하지 않는 실제 ETF 표본기간입니다.");
+  return rows.filter((row) => {
+    if (!validActualPairBar(row, pair)) return false;
+    return !requireAllFour || Object.values(ACTUAL_ETF_PAIRS).every((candidate) => validActualPairBar(row, candidate));
+  }).map((row) => ({
+    row,
+    date: row.date,
+    longOpen: Number(row[`p${pair.longTicker}Open`]),
+    longClose: Number(row[`p${pair.longTicker}Close`]),
+    inverseOpen: Number(row[`p${pair.inverseTicker}Open`]),
+    inverseClose: Number(row[`p${pair.inverseTicker}Close`])
+  }));
+}
+
+function actualPrice(bar, side, phase) {
+  if (!['long', 'inverse'].includes(side) || !['Open', 'Close'].includes(phase)) throw new Error("실제 ETF 가격 선택이 올바르지 않습니다.");
+  return bar[`${side}${phase}`];
+}
+
+function actualPairZeroCostEquity(bars, positions) {
+  let cash = 1;
+  let units = 0;
+  let previous = "cash";
+  return bars.map((bar, index) => {
+    const side = positions[index];
+    if (!["long", "inverse", "cash"].includes(side)) throw new Error("실제 ETF 포지션이 올바르지 않습니다.");
+    if (side !== previous) {
+      if (previous !== "cash") {
+        cash += units * actualPrice(bar, previous, "Open");
+        units = 0;
+      }
+      if (side !== "cash") {
+        const open = actualPrice(bar, side, "Open");
+        units = cash / open;
+        cash -= units * open;
+      }
+    }
+    const marked = side === "cash" ? cash : cash + units * actualPrice(bar, side, "Close");
+    if (!(marked > 0)) throw new Error("실제 ETF 전략 자산이 0 이하입니다.");
+    previous = side;
+    return marked;
+  });
 }
 
 function exposureMatchedEquity(bars, exposures) {
@@ -622,5 +694,437 @@ export function runStrategyScenario({
       metricTradeInclusion: hasCustomRange ? "entry_after_start_close_and_exit_on_or_before_end" : "all_closed_trades"
     },
     calculationSource: "browser_user_scenario"
+  };
+}
+
+export function runActualEtfPairScenario(options = {}) {
+  const historyRows = options.history ?? options.historyRows;
+  const pairId = options.pairId ?? "1x";
+  const policyId = options.policy ?? options.policyId ?? "long_inverse_cash";
+  const longExitInput = options.exitPercentile ?? options.longExitPercentile ?? DEFAULT_LONG_EXIT_PERCENTILE;
+  const costBps = options.costBps ?? 10;
+  const requestedStartInput = options.dateStart ?? options.startDate ?? null;
+  const requestedEndInput = options.dateEnd ?? options.endDate ?? null;
+  const maxHolding = options.maxHoldDays ?? options.maxHolding ?? 20;
+  const variant = options.variant ?? "scaled_huber";
+  const period = options.period ?? "pair";
+  const pair = ACTUAL_ETF_PAIRS[pairId];
+  if (!pair) throw new Error("지원하지 않는 실제 ETF 쌍입니다.");
+  if (!ACTUAL_POLICY_IDS.has(policyId)) throw new Error("지원하지 않는 실제 ETF 포지션 정책입니다.");
+  if (policyId === "long_inverse_cash" && variant === "disparity") throw new Error("이격도 변형은 인버스 진입 규칙이 정의되지 않았습니다.");
+  const fields = VARIANT_FIELDS[variant];
+  if (!fields) throw new Error("지원하지 않는 신호 변형입니다.");
+  const exitPercentile = normalizeLongExitPercentile(longExitInput);
+  const inverseExitPercentile = 100 - exitPercentile;
+  const requestedStartDate = normalizeOptionalDate(requestedStartInput, "시작일");
+  const requestedEndDate = normalizeOptionalDate(requestedEndInput, "종료일");
+  if (requestedStartDate && requestedEndDate && requestedStartDate > requestedEndDate) throw new Error("시작일은 종료일보다 늦을 수 없습니다.");
+  if (!Array.isArray(historyRows) || historyRows.length < 2) throw new Error("공개 전략 입력 이력이 부족합니다.");
+  if (!Number.isFinite(Number(costBps)) || Number(costBps) < 0) throw new Error("거래비용이 올바르지 않습니다.");
+  if (!Number.isInteger(maxHolding) || maxHolding <= 0) throw new Error("최대 보유기간이 올바르지 않습니다.");
+  const dates = historyRows.map((row) => row.date);
+  if (dates.some((date, index) => typeof date !== "string" || (index && date <= dates[index - 1]))) throw new Error("공개 전략 입력 날짜가 오름차순 고유값이 아닙니다.");
+
+  const simulationRows = requestedEndDate ? historyRows.filter((row) => row.date <= requestedEndDate) : historyRows;
+  const bars = selectedActualPairBars(simulationRows, pair, period);
+  if (bars.length < 2) throw new Error("선택한 실제 ETF 쌍·기간의 가격 이력이 부족합니다.");
+  const longEntryDates = extremeEntryDates(simulationRows, fields, "extreme_fear");
+  const inverseEntryDates = policyId === "long_inverse_cash" ? extremeEntryDates(simulationRows, fields, "extreme_greed") : new Set();
+  const cost = Number(costBps) / 10_000;
+  let cash = 1;
+  let units = 0;
+  let positionSide = null;
+  let entryIndex = null;
+  let entryPrice = 0;
+  let entryEquity = 0;
+  let entryCostAmount = 0;
+  let entrySignalDate = null;
+  let entryReason = null;
+  let pendingEntrySide = null;
+  let pendingEntryReason = null;
+  let pendingEntrySignalDate = null;
+  let pendingExitReason = null;
+  let pendingExitSignalDate = null;
+  let pendingReversalSide = null;
+  let transactionCostTotal = 0;
+  let actionSequence = 0;
+  const trades = [];
+  const actions = [];
+  const equityValues = [];
+  const positions = [];
+  const exposures = [];
+  const signals = [];
+  const ledger = [];
+  const tickerFor = (side) => side === "long" ? pair.longTicker : pair.inverseTicker;
+  const entryReasonFor = (side) => side === "long" ? "extreme_fear_entry" : "extreme_greed_entry";
+
+  const enter = (side, index, bar, signalDate) => {
+    assertPriorSignal(signalDate, bar.date);
+    if (positionSide) throw new Error("실제 ETF 진입에는 빈 포지션이 필요합니다.");
+    const open = actualPrice(bar, side, "Open");
+    entryEquity = cash;
+    const tradingCapital = cash * (1 - cost);
+    entryCostAmount = cash - tradingCapital;
+    units = tradingCapital / open;
+    cash = tradingCapital - units * open;
+    positionSide = side;
+    entryIndex = index;
+    entryPrice = open;
+    entrySignalDate = signalDate;
+    entryReason = entryReasonFor(side);
+    transactionCostTotal += entryCostAmount;
+    return entryCostAmount;
+  };
+
+  const exitPosition = (index, bar, reason, signalDate) => {
+    assertPriorSignal(signalDate, bar.date);
+    if (!positionSide || entryIndex == null) throw new Error("청산할 실제 ETF 포지션이 없습니다.");
+    const exitedSide = positionSide;
+    const open = actualPrice(bar, exitedSide, "Open");
+    const proceeds = units * open;
+    const exitCostAmount = proceeds * cost;
+    const endingEquity = cash + proceeds - exitCostAmount;
+    if (!(endingEquity > 0)) throw new Error("실제 ETF 전략 자산이 0 이하입니다.");
+    trades.push({
+      side: exitedSide,
+      instrumentTicker: tickerFor(exitedSide),
+      entry_date: bars[entryIndex].date,
+      exit_date: bar.date,
+      entry_signal_date: entrySignalDate,
+      entry_reason: entryReason,
+      exit_signal_date: signalDate,
+      exit_reason: reason,
+      entry_price: entryPrice,
+      exit_price: open,
+      holding_sessions: index - entryIndex,
+      reason,
+      gross_return: open / entryPrice - 1,
+      transaction_cost: (entryCostAmount + exitCostAmount) / entryEquity,
+      borrow_cost: 0,
+      net_return: endingEquity / entryEquity - 1
+    });
+    transactionCostTotal += exitCostAmount;
+    cash = endingEquity;
+    units = 0;
+    positionSide = null;
+    entryIndex = null;
+    entryPrice = 0;
+    entryEquity = 0;
+    entryCostAmount = 0;
+    entrySignalDate = null;
+    entryReason = null;
+    return {exitCostAmount, exitedSide, exitPrice: open};
+  };
+
+  bars.forEach((bar, index) => {
+    const openingPosition = positionSide || "cash";
+    const openingPending = pendingSnapshot({
+      pendingEntrySide,
+      pendingEntryReason,
+      pendingEntrySignalDate,
+      pendingExitReason,
+      pendingExitSignalDate,
+      pendingReversalSide
+    });
+    const actionIds = [];
+    if (pendingExitReason && positionSide) {
+      const fromPosition = positionSide;
+      const reversalSide = pendingReversalSide;
+      const reason = pendingExitReason;
+      const signalDate = pendingExitSignalDate;
+      const {exitCostAmount, exitPrice} = exitPosition(index, bar, reason, signalDate);
+      pendingExitReason = null;
+      pendingExitSignalDate = null;
+      pendingReversalSide = null;
+      let entryCost = 0;
+      let entryOpen = null;
+      if (reversalSide) {
+        entryCost = enter(reversalSide, index, bar, signalDate);
+        entryOpen = actualPrice(bar, reversalSide, "Open");
+      }
+      const type = reversalSide ? "reverse" : "exit";
+      const actionId = `${policyId}:${pairId}:${bar.date}:${String(++actionSequence).padStart(4, "0")}:${type}`;
+      actions.push({
+        actionId,
+        date: bar.date,
+        executionDate: bar.date,
+        executionPhase: "open",
+        signalDate,
+        signalPhase: "after_close",
+        type,
+        fromPosition,
+        toPosition: reversalSide || "cash",
+        fromTicker: tickerFor(fromPosition),
+        toTicker: reversalSide ? tickerFor(reversalSide) : null,
+        fromPrice: exitPrice,
+        toPrice: entryOpen,
+        reason,
+        transactionCostAmount: exitCostAmount + entryCost,
+        transactionSides: reversalSide ? 2 : 1,
+        oneWayCostBps: Number(costBps)
+      });
+      actionIds.push(actionId);
+    }
+    if (pendingEntrySide && !positionSide) {
+      const side = pendingEntrySide;
+      const signalDate = pendingEntrySignalDate;
+      const reason = pendingEntryReason;
+      const entryCost = enter(side, index, bar, signalDate);
+      const actionId = `${policyId}:${pairId}:${bar.date}:${String(++actionSequence).padStart(4, "0")}:enter`;
+      actions.push({
+        actionId,
+        date: bar.date,
+        executionDate: bar.date,
+        executionPhase: "open",
+        signalDate,
+        signalPhase: "after_close",
+        type: "enter",
+        fromPosition: "cash",
+        toPosition: side,
+        fromTicker: null,
+        toTicker: tickerFor(side),
+        fromPrice: null,
+        toPrice: actualPrice(bar, side, "Open"),
+        reason,
+        transactionCostAmount: entryCost,
+        transactionSides: 1,
+        oneWayCostBps: Number(costBps)
+      });
+      actionIds.push(actionId);
+      pendingEntrySide = null;
+      pendingEntryReason = null;
+      pendingEntrySignalDate = null;
+    }
+
+    const row = bar.row;
+    const percentile = finite(row[fields.percentile]) ? Number(row[fields.percentile]) : null;
+    if (positionSide && entryIndex != null) {
+      const heldSessions = index - entryIndex + 1;
+      const oppositeSide = positionSide === "long" && inverseEntryDates.has(bar.date) ? "inverse" : positionSide === "inverse" && longEntryDates.has(bar.date) ? "long" : null;
+      if (oppositeSide) {
+        pendingExitReason = "opposite_extreme";
+        pendingExitSignalDate = bar.date;
+        pendingReversalSide = oppositeSide;
+      } else if ((positionSide === "long" && percentile != null && percentile >= exitPercentile) || (positionSide === "inverse" && percentile != null && percentile <= inverseExitPercentile)) {
+        pendingExitReason = "recovery";
+        pendingExitSignalDate = bar.date;
+      } else if (heldSessions >= maxHolding) {
+        pendingExitReason = "max_holding";
+        pendingExitSignalDate = bar.date;
+      }
+    } else if (longEntryDates.has(bar.date)) {
+      pendingEntrySide = "long";
+      pendingEntryReason = "extreme_fear_entry";
+      pendingEntrySignalDate = bar.date;
+    } else if (inverseEntryDates.has(bar.date)) {
+      pendingEntrySide = "inverse";
+      pendingEntryReason = "extreme_greed_entry";
+      pendingEntrySignalDate = bar.date;
+    }
+
+    const marked = positionSide ? cash + units * actualPrice(bar, positionSide, "Close") : cash;
+    if (!(marked > 0)) throw new Error("실제 ETF 전략 자산이 0 이하입니다.");
+    equityValues.push(marked);
+    positions.push(positionSide || "cash");
+    exposures.push(positionSide === "long" ? 1 : positionSide === "inverse" ? -1 : 0);
+    const pending = pendingSnapshot({
+      pendingEntrySide,
+      pendingEntryReason,
+      pendingEntrySignalDate,
+      pendingExitReason,
+      pendingExitSignalDate,
+      pendingReversalSide
+    });
+    const openTrade = positionSide && entryIndex != null ? {
+      side: positionSide,
+      instrumentTicker: tickerFor(positionSide),
+      entryDate: bars[entryIndex].date,
+      entryPrice,
+      entrySignalDate,
+      entryReason,
+      holdingSessions: index - entryIndex + 1,
+      unrealizedReturn: marked / entryEquity - 1
+    } : null;
+    const signal = {
+      date: bar.date,
+      phase: "after_close",
+      state: row[fields.state] ?? "unavailable",
+      percentile,
+      tradeEligible: row[fields.eligible] === true,
+      extremeEntrySide: longEntryDates.has(bar.date) ? "long" : inverseEntryDates.has(bar.date) ? "inverse" : null,
+      scheduledAction: pending.action,
+      scheduledReason: pending.reason,
+      scheduledSide: pending.side
+    };
+    signals.push(signal);
+    ledger.push({
+      date: bar.date,
+      marketTimezone: "Asia/Seoul",
+      openingPosition,
+      openingPendingAction: openingPending.action,
+      openingPendingReason: openingPending.reason,
+      openingPendingSide: openingPending.side,
+      openingPendingSignalDate: openingPending.signalDate,
+      position: positionSide || "cash",
+      instrumentTicker: positionSide ? tickerFor(positionSide) : null,
+      exposure: exposures.at(-1),
+      value: marked,
+      actionIds,
+      signal,
+      pendingAction: pending.action,
+      pendingReason: pending.reason,
+      pendingSide: pending.side,
+      pendingSignalDate: pending.signalDate,
+      openTrade
+    });
+  });
+
+  let appliedStartIndex = 0;
+  if (requestedStartDate) appliedStartIndex = bars.findIndex((bar) => bar.date >= requestedStartDate);
+  const appliedEndIndex = bars.length - 1;
+  if (appliedStartIndex < 0 || appliedEndIndex - appliedStartIndex + 1 < 2) throw new Error("선택 기간에는 최소 2개 ETF 거래일이 필요합니다.");
+  const hasCustomRange = requestedStartDate != null || requestedEndDate != null;
+  const appliedStartDate = bars[appliedStartIndex].date;
+  const appliedEndDate = bars[appliedEndIndex].date;
+  const windowBars = bars.slice(appliedStartIndex, appliedEndIndex + 1);
+  const fullBuyHoldValues = bars.map((bar) => bar.longClose / bars[0].longOpen);
+  const fullZeroCostValues = actualPairZeroCostEquity(bars, positions);
+  const strategyBase = hasCustomRange ? equityValues[appliedStartIndex] : 1;
+  const buyHoldBase = hasCustomRange ? fullBuyHoldValues[appliedStartIndex] : 1;
+  const zeroCostBase = hasCustomRange ? fullZeroCostValues[appliedStartIndex] : 1;
+  const windowEquityValues = equityValues.slice(appliedStartIndex).map((value) => value / strategyBase);
+  const buyHoldValues = fullBuyHoldValues.slice(appliedStartIndex).map((value) => value / buyHoldBase);
+  const zeroCostValues = fullZeroCostValues.slice(appliedStartIndex).map((value) => value / zeroCostBase);
+  const windowExposures = exposures.slice(appliedStartIndex);
+  const windowPositions = positions.slice(appliedStartIndex);
+  const windowActions = actions.filter((action) => action.date >= appliedStartDate && action.date <= appliedEndDate).map((action) => ({
+    ...action,
+    includedInWindowMetrics: !hasCustomRange || action.date > appliedStartDate,
+    transactionCostWindowFraction: action.transactionCostAmount / strategyBase
+  }));
+  const metricTrades = hasCustomRange ? trades.filter((trade) => trade.entry_date > appliedStartDate && trade.exit_date <= appliedEndDate) : trades;
+  const excludedCarryInClosedTrades = hasCustomRange ? trades.filter((trade) => trade.entry_date <= appliedStartDate && trade.exit_date > appliedStartDate && trade.exit_date <= appliedEndDate).length : 0;
+  const windowTransactionCostTotal = hasCustomRange
+    ? actions.filter((action) => action.date > appliedStartDate && action.date <= appliedEndDate).reduce((sum, action) => sum + action.transactionCostAmount, 0) / strategyBase
+    : transactionCostTotal;
+  const metricBars = windowBars.map((bar) => ({date: bar.date, open: bar.longOpen, close: bar.longClose}));
+  const baseMetrics = calculateMetrics({
+    bars: metricBars,
+    equityValues: windowEquityValues,
+    exposures: windowExposures,
+    trades: metricTrades,
+    transactionCostTotal: windowTransactionCostTotal,
+    buyHoldValues: hasCustomRange ? buyHoldValues : null,
+    zeroCostValues: zeroCostValues,
+    initialExposure: hasCustomRange ? windowExposures[0] : 0
+  });
+  const inverseTrades = metricTrades.filter((trade) => trade.side === "inverse");
+  const longTrades = metricTrades.filter((trade) => trade.side === "long");
+  const inverseExposure = windowPositions.filter((side) => side === "inverse").length / windowPositions.length;
+  const metrics = {
+    ...baseMetrics,
+    longExposure: windowPositions.filter((side) => side === "long").length / windowPositions.length,
+    inverseExposure,
+    shortExposure: 0,
+    cashExposure: windowPositions.filter((side) => side === "cash").length / windowPositions.length,
+    exposure: 1 - windowPositions.filter((side) => side === "cash").length / windowPositions.length,
+    grossExposure: 1 - windowPositions.filter((side) => side === "cash").length / windowPositions.length,
+    netExposure: windowExposures.reduce((sum, value) => sum + value, 0) / windowExposures.length,
+    economicNetExposure: windowExposures.reduce((sum, value) => sum + value, 0) / windowExposures.length,
+    longTradeCount: longTrades.length,
+    inverseTradeCount: inverseTrades.length,
+    shortTradeCount: 0,
+    longWinRate: longTrades.length ? longTrades.filter((trade) => trade.net_return > 0).length / longTrades.length : null,
+    inverseWinRate: inverseTrades.length ? inverseTrades.filter((trade) => trade.net_return > 0).length / inverseTrades.length : null,
+    shortWinRate: null,
+    implementation: "actual_listed_etfs"
+  };
+  const equityDrawdowns = drawdowns(windowEquityValues);
+  const buyHoldDrawdowns = drawdowns(buyHoldValues);
+  const endSnapshot = ledger[appliedEndIndex];
+  const startSnapshot = ledger[appliedStartIndex];
+  const endOpenTrade = endSnapshot.openTrade ? {...endSnapshot.openTrade, carryIn: hasCustomRange && endSnapshot.openTrade.entryDate <= appliedStartDate} : null;
+  const windowLedger = ledger.slice(appliedStartIndex).map((item, index) => ({
+    ...item,
+    value: windowEquityValues[index],
+    buyHoldValue: buyHoldValues[index],
+    drawdown: equityDrawdowns[index],
+    buyHoldDrawdown: buyHoldDrawdowns[index]
+  }));
+  const holdingSegments = [];
+  let segment = null;
+  windowLedger.forEach((item) => {
+    if (item.position === "cash") {
+      if (segment) {
+        holdingSegments.push(segment);
+        segment = null;
+      }
+      return;
+    }
+    if (!segment || segment.position !== item.position) {
+      if (segment) holdingSegments.push(segment);
+      segment = {position: item.position, instrumentTicker: item.instrumentTicker, startDate: item.date, endDate: item.date};
+    } else {
+      segment.endDate = item.date;
+    }
+  });
+  if (segment) holdingSegments.push(segment);
+  return {
+    pair,
+    ticker: pair.longTicker,
+    oneWayCostBps: Number(costBps),
+    policyId,
+    period: period === "full" ? "pair" : period,
+    position: endSnapshot.position,
+    latestPosition: endSnapshot.position,
+    latestInstrumentTicker: endSnapshot.instrumentTicker,
+    openPosition: endSnapshot.position !== "cash",
+    pendingAction: endSnapshot.pendingAction,
+    pendingReason: endSnapshot.pendingReason,
+    pendingSide: endSnapshot.pendingSide,
+    pendingSignalDate: endSnapshot.pendingSignalDate,
+    openTrade: endOpenTrade,
+    longExitPercentile: exitPercentile,
+    inverseExitPercentile,
+    status: "ok",
+    unavailableReason: null,
+    metrics,
+    trades: metricTrades,
+    tradeHistoryTruncated: false,
+    equity: windowBars.map((bar, index) => ({
+      date: bar.date,
+      value: windowEquityValues[index],
+      buyHoldValue: buyHoldValues[index],
+      drawdown: equityDrawdowns[index],
+      buyHoldDrawdown: buyHoldDrawdowns[index],
+      position: windowPositions[index],
+      instrumentTicker: windowPositions[index] === "cash" ? null : tickerFor(windowPositions[index])
+    })),
+    holdingSegments,
+    actions: windowActions,
+    signals: signals.slice(appliedStartIndex),
+    ledger: windowLedger,
+    range: {
+      requestedStartDate,
+      requestedEndDate,
+      appliedStartDate,
+      appliedEndDate,
+      startSnapped: requestedStartDate != null && requestedStartDate !== appliedStartDate,
+      endSnapped: requestedEndDate != null && requestedEndDate !== appliedEndDate,
+      baselinePhase: hasCustomRange ? "applied_start_close" : "strategy_inception_open",
+      pathMode: "full_history_then_window",
+      carryIn: {
+        position: startSnapshot.openingPosition,
+        pendingAction: startSnapshot.openingPendingAction,
+        pendingReason: startSnapshot.openingPendingReason,
+        pendingSide: startSnapshot.openingPendingSide,
+        signalDate: startSnapshot.openingPendingSignalDate
+      },
+      startClosePosition: startSnapshot.position,
+      endClosePosition: endSnapshot.position,
+      excludedCarryInClosedTrades,
+      metricTradeInclusion: hasCustomRange ? "entry_after_start_close_and_exit_on_or_before_end" : "all_closed_trades"
+    },
+    calculationSource: "browser_user_scenario_actual_etfs"
   };
 }

@@ -76,6 +76,54 @@ class BacktestResult:
     pending_signal_date: date | None = None
 
 
+@dataclass(frozen=True)
+class ActualEtfTrade:
+    side: str
+    instrument_ticker: str
+    entry_date: date
+    exit_date: date
+    entry_price: float
+    exit_price: float
+    holding_sessions: int
+    reason: str
+    gross_return: float
+    transaction_cost: float
+    net_return: float
+    entry_signal_date: date
+    entry_reason: str
+    exit_signal_date: date
+    exit_reason: str
+    borrow_cost: float = 0.0
+
+
+@dataclass(frozen=True)
+class ActualEtfPairBacktestResult:
+    pair_id: str
+    leverage: int
+    long_ticker: str
+    inverse_ticker: str
+    cost_bps: float
+    policy_id: str
+    trades: list[ActualEtfTrade]
+    actions: list[dict[str, Any]]
+    equity: pd.Series
+    buy_hold_equity: pd.Series
+    exposure: pd.Series
+    position_series: pd.Series
+    position: str
+    pending_action: str | None
+    pending_reason: str | None
+    pending_side: str | None
+    pending_signal_date: date | None
+    open_trade: dict[str, Any] | None
+    long_exit_percentile: float
+    inverse_exit_percentile: float
+    metrics: dict[str, Any]
+    range: dict[str, Any]
+    status: str = "ok"
+    unavailable_reason: str | None = None
+
+
 def run_long_cash(
     signals: list[FlowSignal],
     bars: list[ProxyBar],
@@ -119,8 +167,12 @@ def run_backtest(
         raise ValueError("one_way_cost_bps cannot be negative")
     if policy_id not in {"long_cash", "long_short_cash"}:
         raise ValueError("unsupported policy_id")
-    if not isfinite(long_exit_percentile) or not 5 < long_exit_percentile <= 100:
-        raise ValueError("long_exit_percentile must be above 5 and at most 100")
+    if (
+        not isfinite(long_exit_percentile)
+        or int(long_exit_percentile) != long_exit_percentile
+        or not 50 <= long_exit_percentile <= 94
+    ):
+        raise ValueError("long_exit_percentile must be an integer from 50 through 94")
     if not isfinite(short_exit_percentile) or not 0 <= short_exit_percentile < 95:
         raise ValueError("short_exit_percentile must be below 95 and at least 0")
     required = {"open", "close"}
@@ -469,6 +521,636 @@ def run_backtest(
     )
 
 
+ACTUAL_ETF_PAIRS: dict[str, dict[str, Any]] = {
+    "1x": {
+        "pairId": "1x",
+        "leverage": 1,
+        "longTicker": "069500",
+        "inverseTicker": "114800",
+        "longName": "KODEX 200",
+        "inverseName": "KODEX 인버스",
+    },
+    "2x": {
+        "pairId": "2x",
+        "leverage": 2,
+        "longTicker": "122630",
+        "inverseTicker": "252670",
+        "longName": "KODEX 레버리지",
+        "inverseName": "KODEX 200선물인버스2X",
+    },
+}
+
+
+def run_actual_etf_pair_backtest(
+    signals: list[FlowSignal],
+    long_bars: pd.DataFrame,
+    inverse_bars: pd.DataFrame,
+    *,
+    pair_id: str = "1x",
+    long_ticker: str | None = None,
+    inverse_ticker: str | None = None,
+    leverage: int | None = None,
+    max_holding: int = 20,
+    one_way_cost_bps: float = 10,
+    policy_id: str = "long_inverse_cash",
+    long_exit_percentile: float = 80,
+    start_date: date | str | None = None,
+    end_date: date | str | None = None,
+) -> ActualEtfPairBacktestResult:
+    """Backtest a signal by buying the listed long and inverse ETFs.
+
+    Both directions use positive ETF units.  A reversal therefore sells the
+    current fund and buys the other fund at their own next-session opens,
+    charging two one-way transaction costs.
+    """
+    if pair_id not in ACTUAL_ETF_PAIRS:
+        raise ValueError("unsupported actual ETF pair")
+    pair = ACTUAL_ETF_PAIRS[pair_id]
+    long_ticker = long_ticker or str(pair["longTicker"])
+    inverse_ticker = inverse_ticker or str(pair["inverseTicker"])
+    leverage = leverage if leverage is not None else int(pair["leverage"])
+    if policy_id not in {"long_cash", "long_inverse_cash"}:
+        raise ValueError("unsupported actual ETF policy_id")
+    if max_holding <= 0:
+        raise ValueError("max_holding must be positive")
+    if not isfinite(one_way_cost_bps) or one_way_cost_bps < 0:
+        raise ValueError("one_way_cost_bps cannot be negative")
+    if (
+        not isfinite(long_exit_percentile)
+        or int(long_exit_percentile) != long_exit_percentile
+        or not 50 <= long_exit_percentile <= 94
+    ):
+        raise ValueError("long_exit_percentile must be an integer from 50 through 94")
+    inverse_exit_percentile = 100 - long_exit_percentile
+    requested_start = _normalize_backtest_date(start_date, "start_date")
+    requested_end = _normalize_backtest_date(end_date, "end_date")
+    if requested_start and requested_end and requested_start > requested_end:
+        raise ValueError("start_date cannot be after end_date")
+    clean = _aligned_actual_pair_bars(long_bars, inverse_bars)
+    if requested_end is not None:
+        clean = clean.loc[clean.index.date <= requested_end]
+    if len(clean) < 2:
+        raise ValueError("at least two common pair bars are required")
+    if len({item.date for item in signals}) != len(signals):
+        raise ValueError("signals must have unique dates")
+    eligible_signals = [
+        item for item in signals if requested_end is None or item.date <= requested_end
+    ]
+    signal_by_date = {pd.Timestamp(item.date): item for item in eligible_signals}
+    aligned_signals = [signal_by_date.get(timestamp) for timestamp in clean.index]
+    long_entry_dates = _extreme_entry_dates(eligible_signals, "extreme_fear")
+    inverse_entry_dates = (
+        _extreme_entry_dates(eligible_signals, "extreme_greed")
+        if policy_id == "long_inverse_cash"
+        else set()
+    )
+    cost = one_way_cost_bps / 10_000
+    cash = 1.0
+    units = 0.0
+    position_side: str | None = None
+    entry_index: int | None = None
+    entry_price = 0.0
+    entry_equity = 0.0
+    entry_cost_amount = 0.0
+    entry_signal_date: date | None = None
+    entry_reason: str | None = None
+    pending_entry_side: str | None = None
+    pending_entry_signal_date: date | None = None
+    pending_exit_reason: str | None = None
+    pending_exit_signal_date: date | None = None
+    pending_reversal_side: str | None = None
+    trades: list[ActualEtfTrade] = []
+    actions: list[dict[str, Any]] = []
+    equity_values: list[float] = []
+    exposure_values: list[float] = []
+    position_values: list[str] = []
+    ledgers: list[dict[str, Any]] = []
+    transaction_cost_total = 0.0
+    action_sequence = 0
+
+    def ticker_for(side: str) -> str:
+        return long_ticker if side == "long" else inverse_ticker
+
+    def price_for(row: pd.Series, side: str, phase: str) -> float:
+        return float(row[f"{side}_{phase}"])
+
+    def entry_reason_for(side: str) -> str:
+        return "extreme_fear_entry" if side == "long" else "extreme_greed_entry"
+
+    def enter(side: str, index: int, row: pd.Series, signal_date: date) -> float:
+        nonlocal cash, units, position_side, entry_index, entry_price
+        nonlocal entry_equity, entry_cost_amount, entry_signal_date, entry_reason
+        nonlocal transaction_cost_total
+        execution_date = clean.index[index].date()
+        if signal_date >= execution_date or position_side is not None:
+            raise ValueError("actual ETF entry must use a prior signal and empty position")
+        open_price = price_for(row, side, "open")
+        entry_equity = cash
+        trading_capital = cash * (1 - cost)
+        entry_cost_amount = cash - trading_capital
+        units = trading_capital / open_price
+        cash = trading_capital - units * open_price
+        position_side = side
+        entry_index = index
+        entry_price = open_price
+        entry_signal_date = signal_date
+        entry_reason = entry_reason_for(side)
+        transaction_cost_total += entry_cost_amount
+        return entry_cost_amount
+
+    def exit_position(
+        index: int, row: pd.Series, reason: str, signal_date: date
+    ) -> tuple[float, float, str]:
+        nonlocal cash, units, position_side, entry_index, entry_price
+        nonlocal entry_equity, entry_cost_amount, entry_signal_date, entry_reason
+        nonlocal transaction_cost_total
+        if (
+            position_side is None
+            or entry_index is None
+            or entry_signal_date is None
+            or entry_reason is None
+        ):
+            raise ValueError("invalid actual ETF exit")
+        execution_date = clean.index[index].date()
+        if signal_date >= execution_date:
+            raise ValueError("actual ETF exit signal must precede execution")
+        exited_side = position_side
+        open_price = price_for(row, exited_side, "open")
+        proceeds = units * open_price
+        exit_cost_amount = proceeds * cost
+        ending_equity = cash + proceeds - exit_cost_amount
+        if not isfinite(ending_equity) or ending_equity <= 0:
+            raise ValueError("actual_etf_equity_non_positive")
+        trades.append(
+            ActualEtfTrade(
+                side=exited_side,
+                instrument_ticker=ticker_for(exited_side),
+                entry_date=clean.index[entry_index].date(),
+                exit_date=execution_date,
+                entry_price=entry_price,
+                exit_price=open_price,
+                holding_sessions=index - entry_index,
+                reason=reason,
+                gross_return=open_price / entry_price - 1,
+                transaction_cost=(entry_cost_amount + exit_cost_amount) / entry_equity,
+                net_return=ending_equity / entry_equity - 1,
+                entry_signal_date=entry_signal_date,
+                entry_reason=entry_reason,
+                exit_signal_date=signal_date,
+                exit_reason=reason,
+            )
+        )
+        transaction_cost_total += exit_cost_amount
+        cash = ending_equity
+        units = 0.0
+        position_side = None
+        entry_index = None
+        entry_price = 0.0
+        entry_equity = 0.0
+        entry_cost_amount = 0.0
+        entry_signal_date = None
+        entry_reason = None
+        return exit_cost_amount, open_price, exited_side
+
+    for index, (timestamp, row) in enumerate(clean.iterrows()):
+        opening_position = position_side or "cash"
+        opening_pending = _actual_pending_snapshot(
+            pending_entry_side,
+            pending_entry_signal_date,
+            pending_exit_reason,
+            pending_exit_signal_date,
+            pending_reversal_side,
+        )
+        action_ids: list[str] = []
+        if pending_exit_reason is not None and position_side is not None:
+            if pending_exit_signal_date is None:
+                raise ValueError("pending actual ETF exit signal date is missing")
+            from_side = position_side
+            reversal_side = pending_reversal_side
+            reason = pending_exit_reason
+            signal_date = pending_exit_signal_date
+            exit_cost, from_price, _ = exit_position(index, row, reason, signal_date)
+            pending_exit_reason = None
+            pending_exit_signal_date = None
+            pending_reversal_side = None
+            entry_cost = 0.0
+            to_price: float | None = None
+            if reversal_side is not None:
+                entry_cost = enter(reversal_side, index, row, signal_date)
+                to_price = price_for(row, reversal_side, "open")
+            action_sequence += 1
+            action_type = "reverse" if reversal_side else "exit"
+            action_id = (
+                f"{policy_id}:{pair_id}:{timestamp.date().isoformat()}:"
+                f"{action_sequence:04d}:{action_type}"
+            )
+            actions.append(
+                {
+                    "actionId": action_id,
+                    "signalDate": signal_date,
+                    "executionDate": timestamp.date(),
+                    "type": action_type,
+                    "fromPosition": from_side,
+                    "toPosition": reversal_side or "cash",
+                    "fromTicker": ticker_for(from_side),
+                    "toTicker": ticker_for(reversal_side) if reversal_side else None,
+                    "fromPrice": from_price,
+                    "toPrice": to_price,
+                    "reason": reason,
+                    "transactionCostAmount": exit_cost + entry_cost,
+                    "transactionSides": 2 if reversal_side else 1,
+                }
+            )
+            action_ids.append(action_id)
+        if pending_entry_side is not None and position_side is None:
+            if pending_entry_signal_date is None:
+                raise ValueError("pending actual ETF entry signal date is missing")
+            side = pending_entry_side
+            signal_date = pending_entry_signal_date
+            entry_cost = enter(side, index, row, signal_date)
+            action_sequence += 1
+            action_id = (
+                f"{policy_id}:{pair_id}:{timestamp.date().isoformat()}:{action_sequence:04d}:enter"
+            )
+            actions.append(
+                {
+                    "actionId": action_id,
+                    "signalDate": signal_date,
+                    "executionDate": timestamp.date(),
+                    "type": "enter",
+                    "fromPosition": "cash",
+                    "toPosition": side,
+                    "fromTicker": None,
+                    "toTicker": ticker_for(side),
+                    "fromPrice": None,
+                    "toPrice": price_for(row, side, "open"),
+                    "reason": entry_reason_for(side),
+                    "transactionCostAmount": entry_cost,
+                    "transactionSides": 1,
+                }
+            )
+            action_ids.append(action_id)
+            pending_entry_side = None
+            pending_entry_signal_date = None
+
+        signal = aligned_signals[index]
+        if position_side is not None and entry_index is not None:
+            held_sessions = index - entry_index + 1
+            percentile = signal.percentile if signal is not None else None
+            opposite_side = (
+                "inverse"
+                if position_side == "long"
+                and signal is not None
+                and signal.date in inverse_entry_dates
+                else "long"
+                if position_side == "inverse"
+                and signal is not None
+                and signal.date in long_entry_dates
+                else None
+            )
+            if opposite_side is not None:
+                pending_exit_reason = "opposite_extreme"
+                pending_exit_signal_date = signal.date
+                pending_reversal_side = opposite_side
+            elif (
+                position_side == "long"
+                and percentile is not None
+                and percentile >= long_exit_percentile
+            ) or (
+                position_side == "inverse"
+                and percentile is not None
+                and percentile <= inverse_exit_percentile
+            ):
+                pending_exit_reason = "recovery"
+                pending_exit_signal_date = signal.date
+            elif held_sessions >= max_holding:
+                pending_exit_reason = "max_holding"
+                pending_exit_signal_date = timestamp.date()
+        elif signal is not None and signal.date in long_entry_dates:
+            pending_entry_side = "long"
+            pending_entry_signal_date = signal.date
+        elif signal is not None and signal.date in inverse_entry_dates:
+            pending_entry_side = "inverse"
+            pending_entry_signal_date = signal.date
+
+        marked = (
+            cash if position_side is None else cash + units * price_for(row, position_side, "close")
+        )
+        if not isfinite(marked) or marked <= 0:
+            raise ValueError("actual_etf_equity_non_positive")
+        equity_values.append(marked)
+        exposure_values.append(
+            1.0 if position_side == "long" else -1.0 if position_side == "inverse" else 0.0
+        )
+        position_values.append(position_side or "cash")
+        pending = _actual_pending_snapshot(
+            pending_entry_side,
+            pending_entry_signal_date,
+            pending_exit_reason,
+            pending_exit_signal_date,
+            pending_reversal_side,
+        )
+        ledgers.append(
+            {
+                "date": timestamp.date(),
+                "openingPosition": opening_position,
+                "openingPendingAction": opening_pending["action"],
+                "openingPendingReason": opening_pending["reason"],
+                "openingPendingSide": opening_pending["side"],
+                "openingPendingSignalDate": opening_pending["signalDate"],
+                "position": position_side or "cash",
+                "instrumentTicker": ticker_for(position_side) if position_side else None,
+                "value": marked,
+                "actionIds": action_ids,
+                "pendingAction": pending["action"],
+                "pendingReason": pending["reason"],
+                "pendingSide": pending["side"],
+                "pendingSignalDate": pending["signalDate"],
+            }
+        )
+
+    equity_full = pd.Series(equity_values, index=clean.index, name="equity")
+    position_full = pd.Series(position_values, index=clean.index, name="position")
+    exposure_full = pd.Series(exposure_values, index=clean.index, name="exposure")
+    buy_hold_full = clean["long_close"] / float(clean["long_open"].iloc[0])
+    zero_cost_full = _build_actual_pair_zero_cost(clean, position_full)
+    applied_start_index = 0
+    if requested_start is not None:
+        matches = np.flatnonzero(clean.index.date >= requested_start)
+        applied_start_index = int(matches[0]) if len(matches) else -1
+    applied_end_index = len(clean) - 1
+    if applied_start_index < 0 or applied_end_index - applied_start_index + 1 < 2:
+        raise ValueError("selected range requires at least two pair sessions")
+    window = slice(applied_start_index, applied_end_index + 1)
+    applied_start = clean.index[applied_start_index].date()
+    applied_end = clean.index[applied_end_index].date()
+    custom_range = requested_start is not None or requested_end is not None
+    equity_base = float(equity_full.iloc[applied_start_index]) if custom_range else 1.0
+    buy_hold_base = float(buy_hold_full.iloc[applied_start_index]) if custom_range else 1.0
+    zero_cost_base = float(zero_cost_full.iloc[applied_start_index]) if custom_range else 1.0
+    equity = (equity_full.iloc[window] / equity_base).copy()
+    buy_hold = (buy_hold_full.iloc[window] / buy_hold_base).copy()
+    zero_cost = (zero_cost_full.iloc[window] / zero_cost_base).copy()
+    positions = position_full.iloc[window].copy()
+    exposure = exposure_full.iloc[window].copy()
+    metric_trades = (
+        [
+            trade
+            for trade in trades
+            if trade.entry_date > applied_start and trade.exit_date <= applied_end
+        ]
+        if custom_range
+        else trades
+    )
+    metric_actions = (
+        [action for action in actions if applied_start < action["executionDate"] <= applied_end]
+        if custom_range
+        else actions
+    )
+    window_cost_total = (
+        sum(float(action["transactionCostAmount"]) for action in metric_actions) / equity_base
+        if custom_range
+        else transaction_cost_total
+    )
+    metrics = _calculate_actual_pair_metrics(
+        equity,
+        buy_hold,
+        zero_cost,
+        positions,
+        metric_trades,
+        metric_actions,
+        transaction_cost_total=window_cost_total,
+    )
+    pending = _actual_pending_snapshot(
+        pending_entry_side,
+        pending_entry_signal_date,
+        pending_exit_reason,
+        pending_exit_signal_date,
+        pending_reversal_side,
+    )
+    open_trade = None
+    if position_side is not None and entry_index is not None:
+        open_trade = {
+            "side": position_side,
+            "instrumentTicker": ticker_for(position_side),
+            "entryDate": clean.index[entry_index].date().isoformat(),
+            "entrySignalDate": entry_signal_date.isoformat() if entry_signal_date else None,
+            "entryReason": entry_reason,
+            "entryPrice": entry_price,
+            "holdingSessions": len(clean) - entry_index,
+            "unrealizedReturn": equity_values[-1] / entry_equity - 1,
+        }
+    range_meta = {
+        "requestedStartDate": requested_start.isoformat() if requested_start else None,
+        "requestedEndDate": requested_end.isoformat() if requested_end else None,
+        "appliedStartDate": applied_start.isoformat(),
+        "appliedEndDate": applied_end.isoformat(),
+        "startSnapped": requested_start is not None and requested_start != applied_start,
+        "endSnapped": requested_end is not None and requested_end != applied_end,
+        "baselinePhase": "applied_start_close" if custom_range else "strategy_inception_open",
+        "pathMode": "full_history_then_window",
+        "carryIn": {
+            "position": ledgers[applied_start_index]["openingPosition"],
+            "pendingAction": ledgers[applied_start_index]["openingPendingAction"],
+            "pendingReason": ledgers[applied_start_index]["openingPendingReason"],
+            "pendingSide": ledgers[applied_start_index]["openingPendingSide"],
+            "signalDate": _public_value(ledgers[applied_start_index]["openingPendingSignalDate"]),
+        },
+    }
+    return ActualEtfPairBacktestResult(
+        pair_id=pair_id,
+        leverage=leverage,
+        long_ticker=long_ticker,
+        inverse_ticker=inverse_ticker,
+        cost_bps=one_way_cost_bps,
+        policy_id=policy_id,
+        trades=metric_trades,
+        actions=metric_actions,
+        equity=equity,
+        buy_hold_equity=buy_hold,
+        exposure=exposure,
+        position_series=positions,
+        position=position_side or "cash",
+        pending_action=pending["action"],
+        pending_reason=pending["reason"],
+        pending_side=pending["side"],
+        pending_signal_date=pending["signalDate"],
+        open_trade=open_trade,
+        long_exit_percentile=long_exit_percentile,
+        inverse_exit_percentile=inverse_exit_percentile,
+        metrics=metrics,
+        range=range_meta,
+    )
+
+
+def _normalize_backtest_date(value: date | str | None, name: str) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        parsed = date.fromisoformat(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be an ISO date") from error
+    if parsed.isoformat() != value:
+        raise ValueError(f"{name} must be an ISO date")
+    return parsed
+
+
+def _aligned_actual_pair_bars(long_bars: pd.DataFrame, inverse_bars: pd.DataFrame) -> pd.DataFrame:
+    required = {"open", "close"}
+    if not required.issubset(long_bars.columns) or not required.issubset(inverse_bars.columns):
+        raise ValueError("both ETF bars require adjusted open and close")
+
+    def normalized(frame: pd.DataFrame, side: str) -> pd.DataFrame:
+        result = frame[["open", "close"]].copy().sort_index()
+        result.index = pd.to_datetime(result.index).tz_localize(None).normalize()
+        result.columns = [f"{side}_open", f"{side}_close"]
+        return result
+
+    clean = normalized(long_bars, "long").join(normalized(inverse_bars, "inverse"), how="inner")
+    if (
+        clean.index.isna().any()
+        or clean.index.duplicated().any()
+        or not np.isfinite(clean.to_numpy(dtype=float)).all()
+        or (clean <= 0).any().any()
+    ):
+        raise ValueError("pair bars must have unique dates and finite positive prices")
+    return clean
+
+
+def _actual_pending_snapshot(
+    entry_side: str | None,
+    entry_signal_date: date | None,
+    exit_reason: str | None,
+    exit_signal_date: date | None,
+    reversal_side: str | None,
+) -> dict[str, Any]:
+    if exit_reason:
+        return {
+            "action": "reverse_next_open" if reversal_side else "exit_next_open",
+            "reason": exit_reason,
+            "side": reversal_side,
+            "signalDate": exit_signal_date,
+        }
+    if entry_side:
+        return {
+            "action": "enter_next_open",
+            "reason": "extreme_fear_entry" if entry_side == "long" else "extreme_greed_entry",
+            "side": entry_side,
+            "signalDate": entry_signal_date,
+        }
+    return {"action": None, "reason": None, "side": None, "signalDate": None}
+
+
+def _build_actual_pair_zero_cost(clean: pd.DataFrame, positions: pd.Series) -> pd.Series:
+    cash = 1.0
+    units = 0.0
+    previous = "cash"
+    values: list[float] = []
+    for timestamp, row in clean.iterrows():
+        side = str(positions.loc[timestamp])
+        if side != previous:
+            if previous != "cash":
+                cash += units * float(row[f"{previous}_open"])
+                units = 0.0
+            if side != "cash":
+                open_price = float(row[f"{side}_open"])
+                units = cash / open_price
+                cash -= units * open_price
+        value = cash if side == "cash" else cash + units * float(row[f"{side}_close"])
+        if value <= 0:
+            raise ValueError("actual_etf_equity_non_positive")
+        values.append(value)
+        previous = side
+    return pd.Series(values, index=clean.index, name="zero_cost_actual_pair")
+
+
+def _calculate_actual_pair_metrics(
+    equity: pd.Series,
+    buy_hold: pd.Series,
+    zero_cost: pd.Series,
+    positions: pd.Series,
+    trades: list[ActualEtfTrade],
+    actions: list[dict[str, Any]],
+    *,
+    transaction_cost_total: float,
+) -> dict[str, Any]:
+    returns = equity.pct_change().fillna(0.0)
+    years = (equity.index[-1] - equity.index[0]).days / 365.2425
+    volatility = float(returns.std(ddof=1) * sqrt(252))
+    return_std = float(returns.std(ddof=1))
+    drawdown = equity / equity.cummax() - 1
+    buy_hold_drawdown = buy_hold / buy_hold.cummax() - 1
+    zero_cost_drawdown = zero_cost / zero_cost.cummax() - 1
+    risk_matched, risk_scale = build_risk_matched_equity(buy_hold, target_volatility=volatility)
+    risk_drawdown = risk_matched / risk_matched.cummax() - 1
+    long_trades = [item for item in trades if item.side == "long"]
+    inverse_trades = [item for item in trades if item.side == "inverse"]
+    long_exposure = float((positions == "long").mean())
+    inverse_exposure = float((positions == "inverse").mean())
+    cash_exposure = float((positions == "cash").mean())
+    transaction_sides = sum(int(action["transactionSides"]) for action in actions)
+    reason_counts = {
+        reason: sum(item.reason == reason for item in trades)
+        for reason in ("recovery", "max_holding", "opposite_extreme")
+    }
+    return {
+        "start": equity.index[0].date().isoformat(),
+        "end": equity.index[-1].date().isoformat(),
+        "totalReturn": float(equity.iloc[-1] - 1),
+        "cagr": float(equity.iloc[-1] ** (1 / years) - 1) if years > 0 else None,
+        "volatility": volatility,
+        "sharpe": float(returns.mean() / return_std * sqrt(252)) if return_std else None,
+        "maxDrawdown": float(drawdown.min()),
+        "winRate": float(np.mean([item.net_return > 0 for item in trades])) if trades else None,
+        "exposure": long_exposure + inverse_exposure,
+        "longExposure": long_exposure,
+        "inverseExposure": inverse_exposure,
+        "shortExposure": 0.0,
+        "cashExposure": cash_exposure,
+        "grossExposure": long_exposure + inverse_exposure,
+        "economicNetExposure": long_exposure - inverse_exposure,
+        "netExposure": long_exposure - inverse_exposure,
+        "turnover": transaction_sides / years if years > 0 else None,
+        "annualizedNotionalTurnover": transaction_sides / years if years > 0 else None,
+        "transactionSidesPerYear": transaction_sides / years if years > 0 else None,
+        "tradeCount": len(trades),
+        "closedTradeCount": len(trades),
+        "longTradeCount": len(long_trades),
+        "inverseTradeCount": len(inverse_trades),
+        "shortTradeCount": 0,
+        "longWinRate": (
+            float(np.mean([item.net_return > 0 for item in long_trades])) if long_trades else None
+        ),
+        "inverseWinRate": (
+            float(np.mean([item.net_return > 0 for item in inverse_trades]))
+            if inverse_trades
+            else None
+        ),
+        "shortWinRate": None,
+        "averageHoldingSessions": (
+            float(np.mean([item.holding_sessions for item in trades])) if trades else None
+        ),
+        "buyAndHoldReturn": float(buy_hold.iloc[-1] - 1),
+        "buyAndHoldMaxDrawdown": float(buy_hold_drawdown.min()),
+        "zeroCostTimingReturn": float(zero_cost.iloc[-1] - 1),
+        "zeroCostTimingMaxDrawdown": float(zero_cost_drawdown.min()),
+        "exposureMatchedReturn": float(zero_cost.iloc[-1] - 1),
+        "exposureMatchedMaxDrawdown": float(zero_cost_drawdown.min()),
+        "excessReturnVsExposureMatched": float(equity.iloc[-1] - zero_cost.iloc[-1]),
+        "excessReturnVsZeroCostTiming": float(equity.iloc[-1] - zero_cost.iloc[-1]),
+        "riskMatchedBuyHoldReturn": float(risk_matched.iloc[-1] - 1),
+        "riskMatchedBuyHoldMaxDrawdown": float(risk_drawdown.min()),
+        "riskMatchedScale": risk_scale,
+        "transactionCostTotal": float(transaction_cost_total),
+        "borrowCostTotal": 0.0,
+        "reasonCounts": reason_counts,
+        "reversalCount": reason_counts["opposite_extreme"],
+        "implementation": "actual_listed_etfs",
+    }
+
+
 def run_backtest_safe(
     signals: list[FlowSignal],
     bars: pd.DataFrame,
@@ -789,6 +1471,97 @@ def result_to_public(result: BacktestResult) -> dict[str, Any]:
     }
 
 
+def actual_etf_pair_result_to_public(result: ActualEtfPairBacktestResult) -> dict[str, Any]:
+    equity_drawdown = result.equity / result.equity.cummax() - 1
+    buy_hold_drawdown = result.buy_hold_equity / result.buy_hold_equity.cummax() - 1
+    pair = ACTUAL_ETF_PAIRS[result.pair_id]
+    return _public_value(
+        {
+            "pair": {
+                **pair,
+                "longTicker": result.long_ticker,
+                "inverseTicker": result.inverse_ticker,
+                "leverage": result.leverage,
+                "implementation": "actual_listed_etfs",
+            },
+            "oneWayCostBps": result.cost_bps,
+            "policyId": result.policy_id,
+            "position": result.position,
+            "latestPosition": result.position,
+            "latestInstrumentTicker": (
+                result.long_ticker
+                if result.position == "long"
+                else result.inverse_ticker
+                if result.position == "inverse"
+                else None
+            ),
+            "openPosition": result.position in {"long", "inverse"},
+            "pendingAction": result.pending_action,
+            "pendingReason": result.pending_reason,
+            "pendingSide": result.pending_side,
+            "pendingSignalDate": result.pending_signal_date,
+            "openTrade": result.open_trade,
+            "longExitPercentile": result.long_exit_percentile,
+            "inverseExitPercentile": result.inverse_exit_percentile,
+            "status": result.status,
+            "unavailableReason": result.unavailable_reason,
+            "metrics": result.metrics,
+            "trades": [asdict(trade) for trade in result.trades],
+            "actions": result.actions,
+            "equity": [
+                {
+                    "date": timestamp.date(),
+                    "value": float(value),
+                    "buyHoldValue": float(result.buy_hold_equity.loc[timestamp]),
+                    "drawdown": float(equity_drawdown.loc[timestamp]),
+                    "buyHoldDrawdown": float(buy_hold_drawdown.loc[timestamp]),
+                    "position": str(result.position_series.loc[timestamp]),
+                    "instrumentTicker": (
+                        result.long_ticker
+                        if result.position_series.loc[timestamp] == "long"
+                        else result.inverse_ticker
+                        if result.position_series.loc[timestamp] == "inverse"
+                        else None
+                    ),
+                }
+                for timestamp, value in result.equity.items()
+            ],
+            "holdingSegments": _actual_holding_segments(result),
+            "range": result.range,
+            "calculationSource": "python_verified_actual_etfs",
+        }
+    )
+
+
+def _actual_holding_segments(result: ActualEtfPairBacktestResult) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    previous_date: date | None = None
+    for timestamp, side in result.position_series.items():
+        if side == "cash":
+            if current is not None and previous_date is not None:
+                current["endDate"] = previous_date
+                segments.append(current)
+                current = None
+        elif current is None or current["position"] != side:
+            if current is not None and previous_date is not None:
+                current["endDate"] = previous_date
+                segments.append(current)
+            current = {
+                "position": side,
+                "instrumentTicker": (
+                    result.long_ticker if side == "long" else result.inverse_ticker
+                ),
+                "startDate": timestamp.date(),
+                "endDate": timestamp.date(),
+            }
+        previous_date = timestamp.date()
+    if current is not None and previous_date is not None:
+        current["endDate"] = previous_date
+        segments.append(current)
+    return segments
+
+
 def _unavailable_result(
     ticker: str,
     cost_bps: float,
@@ -820,6 +1593,10 @@ def _unavailable_result(
 
 
 def _public_value(value: Any) -> Any:
+    if isinstance(value, pd.Timestamp):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, float):
         return round(value, 10)
     if isinstance(value, dict):
