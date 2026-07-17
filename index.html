@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const q=new URLSearchParams(location.search).get("theme");const s=localStorage.getItem("quant-calm-theme");const p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=q==="dark"||q==="light"?q:(s||p)}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260717-release-v2c">
+  <link rel="stylesheet" href="assets/styles.css?v=20260717-release-v2d">
 </head>
 <body id="top">
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -91,17 +91,28 @@
       <article class="card wide span-2">
         <div class="card-head">
           <div><div class="title-with-scope"><h2>KOSPI와 실전 연구 상태</h2><span id="history-model-scope" class="scope-badge fixed">실전 신호 고정</span></div><p>종가 추세 · 극단 상태 마커 · 226490 모형 보유구간</p></div>
-          <div class="chart-action-row"><div class="chart-actions segmented" role="group" aria-label="표시 기간"><button type="button" data-window="252" aria-pressed="false">1년</button><button type="button" data-window="756" aria-pressed="true">3년</button><button type="button" data-window="all" aria-pressed="false">전체</button></div><button class="latest-button" type="button" data-chart-latest="history-chart">최신으로</button></div>
+          <button class="latest-button" type="button" data-chart-latest="history-chart">최신으로</button>
         </div>
-        <div class="legend"><span><i class="legend-line price"></i>KOSPI 종가</span><span><i class="legend-line holding"></i>롱 보유구간</span><span><i class="legend-dot fear"></i>극단적 공포</span><span><i class="legend-dot greed"></i>극단적 탐욕</span></div>
+        <div class="history-range-toolbar" aria-label="KOSPI 차트 기간 설정">
+          <div class="chart-actions segmented" role="group" aria-label="빠른 표시 기간"><button type="button" data-window="1m" aria-pressed="false">1개월</button><button type="button" data-window="3m" aria-pressed="false">3개월</button><button type="button" data-window="6m" aria-pressed="false">6개월</button><button type="button" data-window="ytd" aria-pressed="false">YTD</button><button type="button" data-window="1y" aria-pressed="false">1년</button><button type="button" data-window="3y" aria-pressed="true">3년</button><button type="button" data-window="all" aria-pressed="false">전체</button></div>
+          <form id="history-range-form" class="history-custom-range" aria-label="사용자 지정 기간">
+            <label for="history-start">시작일<input id="history-start" name="history-start" type="date"></label>
+            <span aria-hidden="true">–</span>
+            <label for="history-end">종료일<input id="history-end" name="history-end" type="date"></label>
+            <button type="submit">기간 적용</button>
+          </form>
+        </div>
+        <p id="history-range-status" class="history-range-status" role="status" aria-live="polite"></p>
+        <div class="legend"><span><i class="legend-line price"></i>KOSPI 종가</span><span><i class="legend-line holding"></i>롱 보유구간</span><span><i class="legend-entry"></i>실제 롱 진입</span><span><i class="legend-dot fear"></i>극단적 공포 관측</span><span><i class="legend-dot greed"></i>극단적 탐욕 관측</span></div>
         <div id="history-chart" class="chart chart-large" role="img" aria-roledescription="대화형 시계열 차트" aria-label="KOSPI 가격, 극단 상태와 전략 보유구간 시계열" aria-describedby="history-help" tabindex="0"></div>
-        <p id="history-help" class="chart-help">좁은 화면에서는 좌우로 밀어 기간을 탐색합니다. 키보드는 좌우 화살표·Home·End로 날짜별 값을 확인할 수 있습니다.</p>
+        <div id="history-exposure-note" class="history-exposure-note" aria-live="polite"></div>
+        <p id="history-help" class="chart-help">공포 원은 상태 관측이지 모두 매수 주문은 아닙니다. 실제 진입은 첫 유효 극단 공포를 확인한 다음 거래일 시가이며, 보유 중 반복 신호는 무시합니다. 좁은 화면에서는 좌우로 밀어 탐색하고, 키보드는 좌우 화살표·Home·End를 사용합니다.</p>
         <details class="data-alternative"><summary>차트 값 표로 보기</summary><div class="table-scroll" id="history-data-table"></div></details>
       </article>
 
       <article class="card">
         <div class="card-head"><div><div class="title-with-scope"><h2 id="scatter-title">수익률 × 개인 순매수율</h2><span id="scatter-model-scope" class="scope-badge">선택 모형</span></div><p id="scatter-subtitle">직전 252거래일 · 회귀선과 현재 잔차</p></div><span class="tag">Relationship</span></div>
-        <div class="legend"><span><i class="legend-dot observation"></i>학습 관측</span><span><i class="legend-dot current"></i>현재 관측</span><span><i class="legend-line regression"></i>회귀선</span></div>
+        <div class="legend"><span><i class="legend-dot observation"></i>학습 관측</span><span><i class="legend-dot current"></i>현재 관측</span><span><i class="legend-line regression"></i>회귀선</span><span id="scatter-zone-legend-fear"><i class="legend-zone fear"></i>극단적 공포 영역</span><span id="scatter-zone-legend-greed"><i class="legend-zone greed"></i>극단적 탐욕 영역</span></div>
         <div id="scatter-chart" class="chart" role="img" aria-roledescription="대화형 산점도" aria-label="KOSPI 수익률과 개인 순매수 산점도" aria-describedby="scatter-help" tabindex="0"></div>
         <p id="scatter-note" class="chart-note"></p>
         <p id="scatter-help" class="chart-help">포인터는 가장 가까운 실제 관측점을 선택합니다. 키보드는 날짜 순서로 좌우 화살표·Home·End를 지원합니다.</p>
@@ -109,9 +120,9 @@
       </article>
 
       <article class="card">
-        <div class="card-head"><div><div class="title-with-scope"><h2>실전 신호 잔차 백분위</h2><span id="residual-model-scope" class="scope-badge fixed">실전 신호 고정</span></div><p>5·20·80·95 고정 경계 · 품질 불가 구간은 선을 끊음</p></div><button class="latest-button" type="button" data-chart-latest="residual-chart">최신으로</button></div>
+        <div class="card-head"><div><div class="title-with-scope"><h2>실전 신호 잔차 백분위</h2><span id="residual-model-scope" class="scope-badge fixed">실전 신호 고정</span></div><p>최근 3년 고정 · 5·20·80·95 경계 · 품질 불가 구간은 선을 끊음</p></div><button class="latest-button" type="button" data-chart-latest="residual-chart">최신으로</button></div>
         <div id="residual-chart" class="chart" role="img" aria-roledescription="대화형 시계열 차트" aria-label="규모보정 회귀 잔차의 과거 분포 백분위 시계열" aria-describedby="residual-help" tabindex="0"></div>
-        <p id="residual-help" class="chart-help">좁은 화면에서는 좌우로 밀어 날짜별 백분위를 확인합니다. 원시 수급 비교 모델의 과거 백분위 시계열은 공개 계약에 포함되지 않습니다.</p>
+        <p id="residual-help" class="chart-help">이 차트는 위 KOSPI 기간 선택과 독립적으로 최신 3년을 고정 표시합니다. 좁은 화면에서는 좌우로 밀어 날짜별 백분위를 확인합니다. 원시 수급 비교 모델의 과거 백분위 시계열은 공개 계약에 포함되지 않습니다.</p>
         <details class="data-alternative"><summary>최근 백분위 표로 보기</summary><div class="table-scroll" id="residual-data-table"></div></details>
       </article>
     </section>
@@ -175,6 +186,6 @@
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260717-release-v2c"></script>
+  <script type="module" src="assets/app.js?v=20260717-release-v2d"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from fearngreed.backtest import run_backtest
 from fearngreed.model import FlowSignal
@@ -15,6 +16,7 @@ from fearngreed.pipeline import (
     _reconcile_adjusted_etf_history,
     _scatter,
     _scatter_meta,
+    _scatter_state_boundaries,
     _semiconductor_diagnostics,
     build_outputs,
     output_size_report,
@@ -138,6 +140,73 @@ def test_scatter_contains_exact_training_window_and_one_current_observation() ->
     assert meta["trainingCount"] == 252
     assert meta["currentCount"] == 1
     assert meta["pointCount"] == 253
+    boundaries = meta["stateBoundaries"]
+    assert boundaries["method"] == "empirical_cdf_transition_order_statistic"
+    assert boundaries["trainingCount"] == 252
+    offsets = boundaries["residualOffsets"]
+    assert offsets["extremeFearUpper"] <= offsets["fearUpper"]
+    assert offsets["fearUpper"] <= offsets["greedLower"]
+    assert offsets["greedLower"] <= offsets["extremeGreedLower"]
+
+
+def test_scatter_state_boundaries_match_empirical_cdf_transition_ranks() -> None:
+    outputs = build_outputs(_pipeline_inputs())
+    scatter = outputs.dashboard["scatterByModel"]["robust"]
+    regression = outputs.dashboard["regression"]["robust"]
+    residuals = sorted(
+        point["flowShare"] - (regression["alpha"] + regression["beta"] * point["return1d"])
+        for point in scatter
+        if point["role"] == "training"
+    )
+    offsets = outputs.dashboard["scatterMetaByModel"]["robust"]["stateBoundaries"][
+        "residualOffsets"
+    ]
+
+    assert offsets["extremeFearUpper"] == pytest.approx(residuals[12], abs=2e-9)
+    assert offsets["fearUpper"] == pytest.approx(residuals[50], abs=2e-9)
+    assert offsets["greedLower"] == pytest.approx(residuals[201], abs=2e-9)
+    assert offsets["extremeGreedLower"] == pytest.approx(residuals[239], abs=2e-9)
+
+
+def test_scatter_state_boundaries_fail_closed_without_a_valid_fit() -> None:
+    frame = pd.DataFrame(
+        {
+            "return_1d": [0.01, -0.01],
+            "flow_share": [0.02, -0.02],
+            "scaled_alpha": [np.nan, np.nan],
+            "scaled_beta": [np.nan, np.nan],
+            "scaled_percentile": [np.nan, np.nan],
+            "scaled_state": ["unavailable", "unavailable"],
+        },
+        index=pd.bdate_range("2026-01-02", periods=2),
+    )
+
+    assert _scatter_state_boundaries(frame, "scaled") is None
+
+
+def test_history_marks_pre_proxy_sessions_unavailable_instead_of_cash() -> None:
+    inputs = _pipeline_inputs()
+    proxy_start = inputs.kospi.index[20]
+    adjusted = dict(inputs.adjusted)
+    adjusted["226490.KS"] = adjusted["226490.KS"].loc[proxy_start:]
+    adjusted["069500.KS"] = adjusted["069500.KS"].loc[proxy_start:]
+    krx_etfs = {ticker: prices.loc[proxy_start:] for ticker, prices in inputs.krx_etfs.items()}
+    outputs = build_outputs(
+        PipelineInputs(
+            kospi=inputs.kospi,
+            flow=inputs.flow,
+            adjusted=adjusted,
+            krx_etfs=krx_etfs,
+            generated_at=inputs.generated_at,
+            core_source=inputs.core_source,
+            krx_stocks=inputs.krx_stocks,
+        )
+    )
+    columns = outputs.history["seriesColumns"]
+    decoded = [dict(zip(columns, row, strict=True)) for row in outputs.history["seriesRows"]]
+
+    assert all(row["position"] == "unavailable" for row in decoded[:20])
+    assert decoded[20]["position"] in {"cash", "long"}
 
 
 def test_compacted_equity_always_keeps_the_latest_row() -> None:

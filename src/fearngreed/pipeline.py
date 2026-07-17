@@ -901,6 +901,77 @@ def _scatter_meta(frame: pd.DataFrame, model: str = "scaled") -> dict[str, Any]:
         "currentCount": current_count,
         "pointCount": len(points),
         "roles": {"training": "rolling_window", "current": "out_of_sample_observation"},
+        "stateBoundaries": _scatter_state_boundaries(frame, model),
+    }
+
+
+def _scatter_state_boundaries(frame: pd.DataFrame, model: str) -> dict[str, Any] | None:
+    """Publish the current fit's empirical residual transition lines.
+
+    ``fit_latest_signal`` classifies the current residual with the empirical CDF
+    ``count(training_residual <= current_residual) / n``.  The four order
+    statistics below are therefore the first residual values that enter the
+    next state under the exact inclusive/exclusive rules in
+    ``classify_percentile``.  A scatter plot can add each residual offset to the
+    current regression line without re-fitting or inventing visual thresholds.
+    """
+
+    value_column = "raw_flow_trillion" if model == "raw" else "flow_share"
+    complete = frame.dropna(subset=["return_1d", value_column]).tail(253)
+    if len(complete) < 2:
+        return None
+    latest = complete.iloc[-1]
+    alpha = latest.get(f"{model}_alpha")
+    beta = latest.get(f"{model}_beta")
+    percentile = latest.get(f"{model}_percentile")
+    state = latest.get(f"{model}_state")
+    if pd.isna(alpha) or pd.isna(beta) or pd.isna(percentile) or state == "unavailable":
+        return None
+
+    training = complete.iloc[:-1]
+    residuals = sorted(
+        float(row[value_column] - (alpha + beta * row["return_1d"]))
+        for _, row in training.iterrows()
+    )
+    count = len(residuals)
+    if count == 0:
+        return None
+
+    def lower_tail_transition(percentile: float) -> float:
+        # Lower states include p <= cut, so transition occurs at the first rank
+        # whose empirical percentile is strictly greater than the cut.
+        index = min(count - 1, math.floor(percentile * count / 100))
+        return residuals[index]
+
+    def upper_tail_transition(percentile: float) -> float:
+        # Upper states include p >= cut, so transition occurs at the first rank
+        # whose empirical percentile reaches the cut.
+        index = max(0, min(count - 1, math.ceil(percentile * count / 100) - 1))
+        return residuals[index]
+
+    return {
+        "method": "empirical_cdf_transition_order_statistic",
+        "fitScope": "current_fit_on_prior_window",
+        "trainingCount": count,
+        "residualOffsets": {
+            "extremeFearUpper": public_number(lower_tail_transition(5)),
+            "fearUpper": public_number(lower_tail_transition(20)),
+            "greedLower": public_number(upper_tail_transition(80)),
+            "extremeGreedLower": public_number(upper_tail_transition(95)),
+        },
+        "percentileCuts": {
+            "extremeFearUpper": 5,
+            "fearUpper": 20,
+            "greedLower": 80,
+            "extremeGreedLower": 95,
+        },
+        "comparators": {
+            "extremeFear": "residual < extremeFearUpper",
+            "fear": "extremeFearUpper <= residual < fearUpper",
+            "neutral": "fearUpper <= residual < greedLower",
+            "greed": "greedLower <= residual < extremeGreedLower",
+            "extremeGreed": "residual >= extremeGreedLower",
+        },
     }
 
 
@@ -944,7 +1015,7 @@ def _history_rows(
                 "long"
                 if timestamp in exposure.index and exposure.loc[timestamp]
                 else "cash"
-                if base_result is not None and base_result.status == "ok"
+                if timestamp in exposure.index
                 else "unavailable"
             ),
         }

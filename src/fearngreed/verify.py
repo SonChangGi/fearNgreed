@@ -72,6 +72,7 @@ def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[st
         raise ValueError("automation and summary operational states do not match")
     _verify_history(history)
     _verify_history_channel_roles(history)
+    _verify_scatter_state_boundaries(dashboard)
     _verify_cross_artifact_consistency(summary, dashboard, history)
     findings = scan_public_files(root)
     if findings:
@@ -171,6 +172,85 @@ def _verify_history_channel_roles(history: dict[str, Any]) -> None:
                 raise ValueError(f"history {channel_id} {field_key} is invalid")
 
 
+def _verify_scatter_state_boundaries(dashboard: dict[str, Any]) -> None:
+    """Verify that displayed state bands are sourced from the published fit."""
+
+    for model in ("robust", "scaled", "raw"):
+        try:
+            points = dashboard["scatterByModel"][model]
+            meta = dashboard["scatterMetaByModel"][model]
+            snapshot = dashboard["models"][model]
+            regression = dashboard["regression"][model]
+        except (KeyError, TypeError):
+            raise ValueError(f"{model} scatter boundary contract is missing") from None
+        if not isinstance(points, list) or not isinstance(meta, dict):
+            raise ValueError(f"{model} scatter boundary inputs are invalid")
+        boundaries = meta.get("stateBoundaries")
+        if snapshot.get("state") == "unavailable":
+            if boundaries is not None:
+                raise ValueError(f"{model} unavailable fit cannot publish state boundaries")
+            continue
+        if not isinstance(boundaries, dict):
+            raise ValueError(f"{model} scatter state boundaries are missing")
+        if boundaries.get("method") != "empirical_cdf_transition_order_statistic":
+            raise ValueError(f"{model} scatter boundary method is invalid")
+        if boundaries.get("fitScope") != "current_fit_on_prior_window":
+            raise ValueError(f"{model} scatter boundary fit scope is invalid")
+        if boundaries.get("percentileCuts") != {
+            "extremeFearUpper": 5,
+            "fearUpper": 20,
+            "greedLower": 80,
+            "extremeGreedLower": 95,
+        }:
+            raise ValueError(f"{model} scatter boundary percentile cuts are invalid")
+        if boundaries.get("comparators") != {
+            "extremeFear": "residual < extremeFearUpper",
+            "fear": "extremeFearUpper <= residual < fearUpper",
+            "neutral": "fearUpper <= residual < greedLower",
+            "greed": "greedLower <= residual < extremeGreedLower",
+            "extremeGreed": "residual >= extremeGreedLower",
+        }:
+            raise ValueError(f"{model} scatter boundary comparators are invalid")
+        training = [point for point in points if point.get("role") == "training"]
+        if boundaries.get("trainingCount") != len(training) or not training:
+            raise ValueError(f"{model} scatter boundary training count is invalid")
+        value_field = "rawFlowTrillion" if model == "raw" else "flowShare"
+        alpha = regression.get("alpha")
+        beta = regression.get("beta")
+        if not all(
+            isinstance(value, int | float) and math.isfinite(float(value))
+            for value in (alpha, beta)
+        ):
+            raise ValueError(f"{model} scatter regression is invalid")
+        try:
+            residuals = sorted(
+                float(point[value_field]) - (float(alpha) + float(beta) * float(point["return1d"]))
+                for point in training
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"{model} scatter training points are invalid") from None
+        count = len(residuals)
+        expected = {
+            "extremeFearUpper": residuals[min(count - 1, math.floor(0.05 * count))],
+            "fearUpper": residuals[min(count - 1, math.floor(0.20 * count))],
+            "greedLower": residuals[max(0, math.ceil(0.80 * count) - 1)],
+            "extremeGreedLower": residuals[max(0, math.ceil(0.95 * count) - 1)],
+        }
+        offsets = boundaries.get("residualOffsets")
+        if not isinstance(offsets, dict):
+            raise ValueError(f"{model} scatter residual offsets are missing")
+        values: list[float] = []
+        for key, expected_value in expected.items():
+            value = offsets.get(key)
+            if not isinstance(value, int | float) or not math.isfinite(float(value)):
+                raise ValueError(f"{model} scatter residual offset {key} is invalid")
+            if not math.isclose(float(value), expected_value, rel_tol=0, abs_tol=5e-8):
+                raise ValueError(f"{model} scatter residual offset {key} is inconsistent")
+            values.append(float(value))
+        if values != sorted(values):
+            raise ValueError(f"{model} scatter residual offsets are not ordered")
+
+
 def _verify_cross_artifact_consistency(
     summary: dict[str, Any], dashboard: dict[str, Any], history: dict[str, Any]
 ) -> None:
@@ -242,6 +322,9 @@ def _verify_cross_artifact_consistency(
     end = metrics.get("end")
     if not isinstance(start, str) or not isinstance(end, str):
         raise ValueError("default proxy backtest period is missing")
+    pre_start_rows = [row for row in decoded if str(row.get("date")) < start]
+    if any(row.get("position") != "unavailable" for row in pre_start_rows):
+        raise ValueError("226490 pre-backtest history position must be unavailable")
     rows = [
         row
         for row in decoded

@@ -50,7 +50,9 @@ const fmt = {
 const esc = (value) => String(value ?? "").replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[char]);
 
 const DEFAULT_CONTROLS = Object.freeze({
-  window: 756,
+  window: "3y",
+  historyStart: "",
+  historyEnd: "",
   model: "robust",
   eventAsset: "KOSPI",
   eventSample: "nonOverlapping20d",
@@ -62,6 +64,8 @@ const DEFAULT_CONTROLS = Object.freeze({
 
 const CONTROL_QUERY = Object.freeze({
   window: "window",
+  historyStart: "start",
+  historyEnd: "end",
   model: "model",
   eventAsset: "eventAsset",
   eventSample: "eventSample",
@@ -72,7 +76,7 @@ const CONTROL_QUERY = Object.freeze({
 });
 
 const CONTROL_ALLOWED = Object.freeze({
-  window: ["252", "756", "all"],
+  window: ["1m", "3m", "6m", "ytd", "1y", "3y", "all", "custom"],
   model: ["robust", "scaled", "raw"],
   eventAsset: ["KOSPI", "226490", "069500"],
   eventSample: ["nonOverlapping20d", "all"],
@@ -308,9 +312,102 @@ function linearTicks(min, max, count = 5) {
   return Array.from({ length: count }, (_, index) => min + (max - min) * index / (count - 1));
 }
 
+function isIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function shiftIsoDate(value, { months = 0, years = 0 } = {}) {
+  if (!isIsoDate(value)) return "";
+  const [year, month, day] = value.split("-").map(Number);
+  const target = new Date(Date.UTC(year, month - 1 + months + years * 12, 1));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(day, lastDay));
+  return target.toISOString().slice(0, 10);
+}
+
+function historyStartForWindow(windowValue, latestDate, firstDate) {
+  if (!isIsoDate(latestDate)) return firstDate || "";
+  if (windowValue === "all") return firstDate || latestDate;
+  if (windowValue === "ytd") return `${latestDate.slice(0, 4)}-01-01`;
+  const shifts = {
+    "1m": { months: -1 },
+    "3m": { months: -3 },
+    "6m": { months: -6 },
+    "1y": { years: -1 },
+    "3y": { years: -3 }
+  };
+  return shiftIsoDate(latestDate, shifts[windowValue] || shifts["3y"]);
+}
+
 function selectedHistory() {
-  const rows = store.history.series || [];
-  return store.window === "all" ? rows : rows.slice(-Number(store.window));
+  const rows = store.history?.series || [];
+  if (!rows.length) return [];
+  const firstDate = rows[0].date;
+  const latestDate = rows.at(-1).date;
+  const start = store.window === "custom" ? store.historyStart : historyStartForWindow(store.window, latestDate, firstDate);
+  const end = store.window === "custom" ? store.historyEnd : latestDate;
+  if (!isIsoDate(start) || !isIsoDate(end) || start > end) return [];
+  return rows.filter((row) => row.date >= start && row.date <= end);
+}
+
+function historyWindowLabel(value = store.window) {
+  return ({ "1m": "최근 1개월", "3m": "최근 3개월", "6m": "최근 6개월", ytd: "연초 이후", "1y": "최근 1년", "3y": "최근 3년", all: "전체 기간", custom: "사용자 지정" })[value] || "선택 기간";
+}
+
+function syncHistoryRangeControls(rows) {
+  const allRows = store.history?.series || [];
+  const firstDate = allRows[0]?.date || "";
+  const latestDate = allRows.at(-1)?.date || "";
+  const startInput = $("#history-start");
+  const endInput = $("#history-end");
+  if (!startInput || !endInput || !firstDate || !latestDate) return;
+  [startInput, endInput].forEach((input) => {
+    input.min = firstDate;
+    input.max = latestDate;
+    input.setAttribute("aria-invalid", "false");
+  });
+  startInput.value = store.window === "custom" ? store.historyStart : (rows[0]?.date || firstDate);
+  endInput.value = store.window === "custom" ? store.historyEnd : (rows.at(-1)?.date || latestDate);
+  $("#history-range-status").dataset.state = "ok";
+  $("#history-range-status").textContent = rows.length
+    ? `${historyWindowLabel()} · ${rows[0].date}–${rows.at(-1).date} · ${rows.length.toLocaleString()}거래일`
+    : "선택한 기간에 표시할 거래일이 없습니다.";
+}
+
+function setHistoryRangeError(message, input = null) {
+  const status = $("#history-range-status");
+  status.dataset.state = "error";
+  status.textContent = message;
+  if (input) {
+    input.setAttribute("aria-invalid", "true");
+    input.focus();
+  }
+}
+
+function applyCustomHistoryRange(event) {
+  event.preventDefault();
+  const startInput = $("#history-start");
+  const endInput = $("#history-end");
+  const start = startInput.value;
+  const end = endInput.value;
+  const rows = store.history?.series || [];
+  const firstDate = rows[0]?.date;
+  const latestDate = rows.at(-1)?.date;
+  if (!isIsoDate(start)) return setHistoryRangeError("올바른 시작일을 입력해 주세요.", startInput);
+  if (!isIsoDate(end)) return setHistoryRangeError("올바른 종료일을 입력해 주세요.", endInput);
+  if (start > end) return setHistoryRangeError("시작일은 종료일보다 늦을 수 없습니다.", startInput);
+  if (start < firstDate || end > latestDate) return setHistoryRangeError(`공개 이력 범위 ${firstDate}–${latestDate} 안에서 선택해 주세요.`, start < firstDate ? startInput : endInput);
+  if (!rows.some((row) => row.date >= start && row.date <= end)) return setHistoryRangeError("선택한 기간에 KOSPI 거래일이 없습니다.", startInput);
+  startInput.setAttribute("aria-invalid", "false");
+  endInput.setAttribute("aria-invalid", "false");
+  store.window = "custom";
+  store.historyStart = start;
+  store.historyEnd = end;
+  persistControlState();
+  updatePressed("[data-window]", store.window, "window");
+  renderHistory();
 }
 
 function compactDate(value) {
@@ -585,8 +682,14 @@ function renderHistory() {
   $("#history-model-scope").textContent = `${modelRole(primary)} · ${compactModelName(primary)}`;
   $("#history-model-scope").className = `scope-badge ${primary === "robust" ? "practical" : "baseline"}`;
   const rows = selectedHistory().filter((row) => row.kospiClose != null || row.kospi != null);
+  syncHistoryRangeControls(rows);
   const container = $("#history-chart");
-  if (rows.length < 8) return showEmpty(container, "시계열 관측치가 부족합니다.");
+  if (rows.length < 8) {
+    $("#history-exposure-note").innerHTML = "<strong>기간을 넓혀 주세요.</strong><span>추세 차트는 최소 8거래일이 필요합니다. 아래 값 표에는 선택 기간의 관측값을 유지합니다.</span>";
+    const tableRows = rows.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[row.state] || row.state, labels[row.position] || row.position]);
+    $("#history-data-table").innerHTML = dataTable(["날짜", "KOSPI", "연구 상태", "포지션"], tableRows, `선택 기간 ${tableRows.length}개 관측값`);
+    return showEmpty(container, "추세를 표시하려면 8거래일 이상을 선택해 주세요.");
+  }
   const values = rows.map((row) => Number(row.kospiClose ?? row.kospi));
   const w = 1040, h = 390, p = { l: 66, r: 22, t: 18, b: 38 };
   const min = Math.min(...values), max = Math.max(...values), pad = (max - min || 1) * .08;
@@ -609,13 +712,29 @@ function renderHistory() {
     if (row.state === "extreme_greed") return `<rect class="${cls}" x="${x(index) - 4}" y="${y(row.kospiClose ?? row.kospi) - 4}" width="8" height="8" transform="rotate(45 ${x(index)} ${y(row.kospiClose ?? row.kospi)})"><title>${esc(title)}</title></rect>`;
     return `<circle class="${cls}" cx="${x(index)}" cy="${y(row.kospiClose ?? row.kospi)}" r="5"><title>${esc(title)}</title></circle>`;
   }).join("");
+  const allRows = store.history?.series || [];
+  const firstGlobalIndex = allRows.findIndex((row) => row.date === rows[0].date);
+  const entryRows = rows.map((row, index) => {
+    const previous = allRows[firstGlobalIndex + index - 1];
+    if (row.position !== "long" || previous?.position === "long") return "";
+    const px = x(index), py = y(row.kospiClose ?? row.kospi);
+    return `<path class="entry-long" d="M ${px} ${py - 8} L ${px - 6} ${py + 5} L ${px + 6} ${py + 5} Z"><title>${esc(`${row.date} · 실제 롱 포지션 시작`)}</title></path>`;
+  }).join("");
   const ticks = linearTicks(min - pad, max + pad).map((value) => {
     const yy = y(value);
     return `<line class="grid-line" x1="${p.l}" y1="${yy}" x2="${w - p.r}" y2="${yy}"/><text class="axis-label" x="${p.l - 9}" y="${yy + 3}" text-anchor="end">${Math.round(value).toLocaleString()}</text>`;
   }).join("");
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${zones.join("")}${ticks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-price">${pathSegments(rows, (row) => row.kospiClose ?? row.kospi, x, y)}</g>${events}<text class="axis-title" x="${p.l}" y="12">KOSPI 종가</text><text class="axis-label" x="${p.l}" y="${h - 10}">${esc(rows[0].date)}</text><text class="axis-label" x="${w - p.r}" y="${h - 10}" text-anchor="end">${esc(rows.at(-1).date)}</text></svg>`;
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${zones.join("")}${ticks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-price">${pathSegments(rows, (row) => row.kospiClose ?? row.kospi, x, y)}</g>${events}${entryRows}<text class="axis-title" x="${p.l}" y="12">KOSPI 종가</text><text class="axis-label" x="${p.l}" y="${h - 10}">${esc(rows[0].date)}</text><text class="axis-label" x="${w - p.r}" y="${h - 10}" text-anchor="end">${esc(rows.at(-1).date)}</text></svg>`;
   container.setAttribute("aria-label", `${rows[0].date}부터 ${rows.at(-1).date}까지 KOSPI 종가. 최저 ${Math.round(min)}, 최고 ${Math.round(max)}.`);
   attachChartNavigation(container, rows, (row) => `${row.date}, KOSPI ${Number(row.kospiClose ?? row.kospi).toLocaleString()}, ${labels[row.state] || row.state}, 포지션 ${labels[row.position] || row.position}`);
+  const positionRows = rows.filter((row) => ["long", "cash"].includes(row.position));
+  const longSessions = positionRows.filter((row) => row.position === "long").length;
+  const cashSessions = positionRows.filter((row) => row.position === "cash").length;
+  const unavailableSessions = rows.length - positionRows.length;
+  const entryCount = (entryRows.match(/class="entry-long"/g) || []).length;
+  const fearObservations = rows.filter((row) => row.tradeEligible && row.state === "extreme_fear").length;
+  const unavailableText = unavailableSessions ? ` · 포지션 산출 전/불가 ${unavailableSessions.toLocaleString()}일(노출도 분모 제외)` : "";
+  $("#history-exposure-note").innerHTML = `<strong>선택 기간 노출도 ${esc(positionRows.length ? fmt.pct(longSessions / positionRows.length, 1) : "—")}</strong><span>롱 ${longSessions.toLocaleString()}일 · 현금 ${cashSessions.toLocaleString()}일 · 실제 신규 진입 ${entryCount.toLocaleString()}회${esc(unavailableText)}</span><span>극단 공포 ${fearObservations.toLocaleString()}일은 상태 관측 수입니다. 연속 관측·보유 중 신호는 추가 매수하지 않고, 다음 거래일 시가 진입 후 백분위 50 회복 또는 최대 20일에 청산합니다.</span>`;
   const tableRows = recentRows(rows).map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[row.state] || row.state, labels[row.position] || row.position]);
   $("#history-data-table").innerHTML = dataTable(["날짜", "KOSPI", "연구 상태", "포지션"], tableRows, `선택 기간의 최근 ${tableRows.length}개 관측값`);
 }
@@ -635,10 +754,29 @@ function scatterPoints() {
   return rows.map((row, index) => ({ ...row, y: row[field], role: index === rows.length - 1 ? "current" : "training" }));
 }
 
+function publishedScatterStateBoundaries() {
+  const boundaries = store.dashboard?.scatterMetaByModel?.[store.model]?.stateBoundaries;
+  const offsets = boundaries?.residualOffsets;
+  const required = [offsets?.extremeFearUpper, offsets?.fearUpper, offsets?.greedLower, offsets?.extremeGreedLower];
+  if (required.some((value) => typeof value !== "number")) return null;
+  const numeric = required.map(Number);
+  const ordered = numeric.every((value, index) => index === 0 || value >= numeric[index - 1]);
+  if (boundaries?.method !== "empirical_cdf_transition_order_statistic" || boundaries?.fitScope !== "current_fit_on_prior_window" || !numeric.every(Number.isFinite) || !ordered || Number(boundaries.trainingCount) < 20) return null;
+  return {
+    count: Number(boundaries.trainingCount),
+    extremeFearUpper: Number(offsets.extremeFearUpper),
+    fearUpper: Number(offsets.fearUpper),
+    greedLower: Number(offsets.greedLower),
+    extremeGreedLower: Number(offsets.extremeGreedLower)
+  };
+}
+
 function renderScatter() {
   const points = scatterPoints();
   const container = $("#scatter-chart");
   if (points.length < 8) {
+    $("#scatter-zone-legend-fear").hidden = true;
+    $("#scatter-zone-legend-greed").hidden = true;
     $("#scatter-title").textContent = "수익률 × 개인 수급";
     $("#scatter-subtitle").textContent = `${modelName()} 산점도 입력이 공개되지 않았습니다.`;
     $("#scatter-note").textContent = "사용할 수 없는 모형을 브라우저에서 추정해 대체하지 않습니다.";
@@ -648,37 +786,58 @@ function renderScatter() {
   const xs = points.map((row) => Number(row.return1d));
   const ys = points.map((row) => Number(row.y));
   const predicted = (value) => Number(regression.alpha) + Number(regression.beta) * value;
-  const predictedEnds = [predicted(Math.min(...xs)), predicted(Math.max(...xs))].filter(Number.isFinite);
-  const xmin0 = Math.min(...xs), xmax0 = Math.max(...xs), ymin0 = Math.min(...ys, ...predictedEnds), ymax0 = Math.max(...ys, ...predictedEnds);
-  const xpad = (xmax0 - xmin0 || .01) * .06, ypad = (ymax0 - ymin0 || .01) * .08;
-  const xmin = xmin0 - xpad, xmax = xmax0 + xpad, ymin = ymin0 - ypad, ymax = ymax0 + ypad;
+  const xmin0 = Math.min(...xs), xmax0 = Math.max(...xs);
+  const xpad = (xmax0 - xmin0 || .01) * .06;
+  const xmin = xmin0 - xpad, xmax = xmax0 + xpad;
+  const stateBoundaries = publishedScatterStateBoundaries();
+  $("#scatter-zone-legend-fear").hidden = !stateBoundaries;
+  $("#scatter-zone-legend-greed").hidden = !stateBoundaries;
+  const offsets = stateBoundaries ? [stateBoundaries.extremeFearUpper, stateBoundaries.fearUpper, stateBoundaries.greedLower, stateBoundaries.extremeGreedLower] : [];
+  const predictedEnds = [predicted(xmin), predicted(xmax)].filter(Number.isFinite);
+  const boundaryEnds = offsets.flatMap((offset) => [predicted(xmin) + offset, predicted(xmax) + offset]).filter(Number.isFinite);
+  const ymin0 = Math.min(...ys, ...predictedEnds, ...boundaryEnds), ymax0 = Math.max(...ys, ...predictedEnds, ...boundaryEnds);
+  const ypad = (ymax0 - ymin0 || .01) * .08;
+  const ymin = ymin0 - ypad, ymax = ymax0 + ypad;
   const w = 600, h = 340, p = { l: 68, r: 20, t: 20, b: 50 };
   const x = scale(xmin, xmax, p.l, w - p.r), y = scale(ymin, ymax, h - p.b, p.t);
   const xTicks = linearTicks(xmin, xmax).map((value) => `<line class="grid-line" x1="${x(value)}" y1="${p.t}" x2="${x(value)}" y2="${h - p.b}"/><text class="axis-label" x="${x(value)}" y="${h - p.b + 17}" text-anchor="middle">${esc(fmt.pct(value, 1))}</text>`).join("");
   const yFormat = store.model === "raw" ? (value) => `${Number(value).toFixed(1)}조` : (value) => fmt.pct(value, 1);
   const yTicks = linearTicks(ymin, ymax).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 8}" y="${y(value) + 3}" text-anchor="end">${esc(yFormat(value))}</text>`).join("");
+  const extremeZones = stateBoundaries ? (() => {
+    const lineY = (offset, xValue) => y(predicted(xValue) + offset);
+    const fearExtremeLeft = lineY(stateBoundaries.extremeFearUpper, xmin), fearExtremeRight = lineY(stateBoundaries.extremeFearUpper, xmax);
+    const fearLeft = lineY(stateBoundaries.fearUpper, xmin), fearRight = lineY(stateBoundaries.fearUpper, xmax);
+    const greedLeft = lineY(stateBoundaries.greedLower, xmin), greedRight = lineY(stateBoundaries.greedLower, xmax);
+    const greedExtremeLeft = lineY(stateBoundaries.extremeGreedLower, xmin), greedExtremeRight = lineY(stateBoundaries.extremeGreedLower, xmax);
+    return `<g clip-path="url(#scatter-plot-clip)"><polygon class="scatter-zone scatter-zone-extreme-fear" points="${x(xmin)},${fearExtremeLeft} ${x(xmax)},${fearExtremeRight} ${x(xmax)},${h - p.b} ${x(xmin)},${h - p.b}"/><polygon class="scatter-zone scatter-zone-fear" points="${x(xmin)},${fearLeft} ${x(xmax)},${fearRight} ${x(xmax)},${fearExtremeRight} ${x(xmin)},${fearExtremeLeft}"/><polygon class="scatter-zone scatter-zone-greed" points="${x(xmin)},${greedExtremeLeft} ${x(xmax)},${greedExtremeRight} ${x(xmax)},${greedRight} ${x(xmin)},${greedLeft}"/><polygon class="scatter-zone scatter-zone-extreme-greed" points="${x(xmin)},${p.t} ${x(xmax)},${p.t} ${x(xmax)},${greedExtremeRight} ${x(xmin)},${greedExtremeLeft}"/>${[[stateBoundaries.extremeFearUpper, "fear extreme"], [stateBoundaries.fearUpper, "fear"], [stateBoundaries.greedLower, "greed"], [stateBoundaries.extremeGreedLower, "greed extreme"]].map(([offset, cls]) => `<line class="scatter-boundary ${cls}" x1="${x(xmin)}" y1="${lineY(offset, xmin)}" x2="${x(xmax)}" y2="${lineY(offset, xmax)}"/>`).join("")}</g><text class="scatter-zone-label fear" x="${p.l + 8}" y="${h - p.b - 10}">극단적 공포 ≤5%</text><text class="scatter-zone-label greed" x="${p.l + 8}" y="${p.t + 16}">극단적 탐욕 ≥95%</text>`;
+  })() : "";
   const pointGeometry = points.map((row) => ({ row, plotX: x(row.return1d), plotY: y(row.y) }));
   const marks = pointGeometry.map(({ row, plotX, plotY }) => `<circle class="scatter-point ${row.role === "current" ? "current" : ""}" cx="${plotX}" cy="${plotY}" r="${row.role === "current" ? 6 : 3}"><title>${esc(`${row.date} · 수익률 ${fmt.pct(row.return1d)} · ${store.model === "raw" ? `순매수 ${fmt.score(row.y, 3)}조원` : `순매수율 ${fmt.pct(row.y, 3)}`}`)}</title></circle>`).join("");
   const current = points.find((row) => row.role === "current") || points.at(-1);
   const currentPredicted = predicted(current.return1d);
   const residual = Number.isFinite(currentPredicted) ? `<line class="residual-arrow" x1="${x(current.return1d)}" y1="${y(currentPredicted)}" x2="${x(current.return1d)}" y2="${y(current.y)}"/>` : "";
-  const regressionLine = predictedEnds.length === 2 ? `<line class="regression-line" x1="${x(xmin0)}" y1="${y(predicted(xmin0))}" x2="${x(xmax0)}" y2="${y(predicted(xmax0))}"/>` : "";
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${xTicks}${yTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/>${regressionLine}${residual}${marks}<text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 7}" text-anchor="middle">KOSPI 1일 수익률 (%)</text><text class="axis-title" x="${p.l}" y="13">${store.model === "raw" ? "개인 순매수대금 (조원)" : "개인 순매수율 (%)"}</text></svg>`;
+  const regressionLine = predictedEnds.length === 2 ? `<line class="regression-line" x1="${x(xmin)}" y1="${y(predicted(xmin))}" x2="${x(xmax)}" y2="${y(predicted(xmax))}"/>` : "";
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><defs><clipPath id="scatter-plot-clip"><rect x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/></clipPath></defs>${extremeZones}${xTicks}${yTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/>${regressionLine}${residual}${marks}<text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 7}" text-anchor="middle">KOSPI 1일 수익률 (%)</text><text class="axis-title" x="${p.l}" y="13">${store.model === "raw" ? "개인 순매수대금 (조원)" : "개인 순매수율 (%)"}</text></svg>`;
   const inputLabel = store.model === "raw" ? "개인 순매수대금" : "개인 순매수율";
   $("#scatter-title").textContent = `수익률 × ${inputLabel}`;
   $("#scatter-subtitle").textContent = `${modelName()} · 직전 ${regression.trainingCount || regression.window || points.length - 1}거래일과 현재 관측`;
-  container.setAttribute("aria-label", `${points.length}개 관측치 ${modelName()} 산점도. 현재 수익률 ${fmt.pct(current.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(current.y, 3)}조원` : fmt.pct(current.y, 3)}.`);
-  $("#scatter-note").textContent = `학습 n=${points.filter((row) => row.role !== "current").length} · 현재 n=${points.filter((row) => row.role === "current").length} · β=${fmt.score(regression.beta, 4)} · R²=${fmt.score(modelPayload()?.rollingR2, 3)}`;
-  attachScatterNavigation(container, pointGeometry, (row) => `${row.date}, KOSPI ${fmt.signedPct(row.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3)}${row.role === "current" ? ", 현재 관측" : ", 학습 관측"}`, { width: w, height: h });
-  const tableRows = recentRows(points).map((row) => [row.date, fmt.signedPct(row.return1d), store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3), row.role === "current" ? "현재" : "학습"]);
-  $("#scatter-data-table").innerHTML = dataTable(["날짜", "KOSPI 1일", inputLabel, "역할"], tableRows, `${modelName()} 최근 ${tableRows.length}개 산점도 관측`);
+  const zoneAria = stateBoundaries ? "회귀선 대비 최신 학습 잔차의 경험적 5% 이하 극단 공포와 95% 이상 극단 탐욕 영역을 표시합니다." : "정확한 최신 회귀 상태 경계가 없어 극단 영역은 표시하지 않습니다.";
+  container.setAttribute("aria-label", `${points.length}개 관측치 ${modelName()} 산점도. ${zoneAria} 현재 수익률 ${fmt.pct(current.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(current.y, 3)}조원` : fmt.pct(current.y, 3)}.`);
+  const cutoffFormat = store.model === "raw" ? (value) => `${fmt.score(value, 3)}조원` : (value) => `${(Number(value) * 100).toFixed(2)}%p`;
+  const zoneNote = stateBoundaries
+    ? ` · 최신 회귀 학습 잔차 경계: 5% ${cutoffFormat(stateBoundaries.extremeFearUpper)}, 20% ${cutoffFormat(stateBoundaries.fearUpper)}, 80% ${cutoffFormat(stateBoundaries.greedLower)}, 95% ${cutoffFormat(stateBoundaries.extremeGreedLower)} (n=${stateBoundaries.count})`
+    : " · 정확한 최신-fit 상태 경계가 공개되지 않아 영역을 표시하지 않음 (브라우저 재추정 없음)";
+  $("#scatter-note").textContent = `학습 n=${points.filter((row) => row.role !== "current").length} · 현재 n=${points.filter((row) => row.role === "current").length} · β=${fmt.score(regression.beta, 4)} · R²=${fmt.score(modelPayload()?.rollingR2, 3)}${zoneNote}`;
+  attachScatterNavigation(container, pointGeometry, (row) => `${row.date}, KOSPI ${fmt.signedPct(row.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3)}, 당시 롤링 상태 ${labels[row.state] || row.state || "미확인"}${row.role === "current" ? ", 현재 관측" : ", 학습 관측"}`, { width: w, height: h });
+  const tableRows = recentRows(points).map((row) => [row.date, fmt.signedPct(row.return1d), store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3), labels[row.state] || row.state || "—", row.role === "current" ? "현재" : "학습"]);
+  $("#scatter-data-table").innerHTML = dataTable(["날짜", "KOSPI 1일", inputLabel, "당시 롤링 상태", "역할"], tableRows, `${modelName()} 최근 ${tableRows.length}개 산점도 관측`);
 }
 
 function renderResidual() {
   const primary = primaryModelKind();
   $("#residual-model-scope").textContent = `${modelRole(primary)} · ${compactModelName(primary)}`;
   $("#residual-model-scope").className = `scope-badge ${primary === "robust" ? "practical" : "baseline"}`;
-  const rows = selectedHistory().slice(-756);
+  const rows = (store.history?.series || []).slice(-756);
   const container = $("#residual-chart");
   if (rows.length < 8) return showEmpty(container, "잔차 시계열이 부족합니다.");
   const w = 600, h = 340, p = { l: 50, r: 18, t: 20, b: 40 };
@@ -1141,10 +1300,29 @@ function initializeControlState() {
   const params = new URLSearchParams(location.search);
   Object.entries(CONTROL_QUERY).forEach(([key, param]) => {
     const candidate = params.has(param) ? params.get(param) : saved[key];
-    const normalized = key === "backtestVariant" && candidate === "base" ? "scaled_ols" : String(candidate ?? "");
-    if (CONTROL_ALLOWED[key].includes(normalized)) store[key] = key === "backtestCost" ? Number(normalized) : normalized;
+    if (["historyStart", "historyEnd"].includes(key)) {
+      if (isIsoDate(candidate)) store[key] = candidate;
+      return;
+    }
+    let normalized = key === "backtestVariant" && candidate === "base" ? "scaled_ols" : String(candidate ?? "");
+    if (key === "window") normalized = ({ "252": "1y", "756": "3y" })[normalized] || normalized;
+    if (CONTROL_ALLOWED[key]?.includes(normalized)) store[key] = key === "backtestCost" ? Number(normalized) : normalized;
   });
-  if (!params.has("window") && saved.window == null && matchMedia("(max-width: 520px)").matches) store.window = "252";
+  if (store.window === "custom" && (!isIsoDate(store.historyStart) || !isIsoDate(store.historyEnd) || store.historyStart > store.historyEnd)) store.window = "3y";
+  if (!params.has("window") && saved.window == null && matchMedia("(max-width: 520px)").matches) store.window = "1y";
+}
+
+function ensureHistoryRangeAvailable() {
+  if (store.window !== "custom") return true;
+  const rows = store.history?.series || [];
+  const firstDate = rows[0]?.date;
+  const latestDate = rows.at(-1)?.date;
+  const valid = firstDate && latestDate && isIsoDate(store.historyStart) && isIsoDate(store.historyEnd) && store.historyStart <= store.historyEnd && store.historyStart >= firstDate && store.historyEnd <= latestDate && rows.some((row) => row.date >= store.historyStart && row.date <= store.historyEnd);
+  if (valid) return true;
+  store.window = "3y";
+  store.historyStart = "";
+  store.historyEnd = "";
+  return false;
 }
 
 function persistControlState({ replaceUrl = true } = {}) {
@@ -1152,7 +1330,11 @@ function persistControlState({ replaceUrl = true } = {}) {
   try { localStorage.setItem("fearngreed-controls-v2", JSON.stringify(values)); } catch (_) { /* URL remains shareable */ }
   if (!replaceUrl) return;
   const url = new URL(location.href);
-  Object.entries(CONTROL_QUERY).forEach(([key, param]) => url.searchParams.set(param, store[key]));
+  Object.entries(CONTROL_QUERY).forEach(([key, param]) => {
+    if (["historyStart", "historyEnd"].includes(key) && store.window !== "custom") url.searchParams.delete(param);
+    else if (store[key] === "" || store[key] == null) url.searchParams.delete(param);
+    else url.searchParams.set(param, store[key]);
+  });
   history.replaceState(null, "", url);
 }
 
@@ -1200,7 +1382,6 @@ function bindControls() {
     persistControlState();
     updatePressed("[data-window]", store.window, "window");
     renderHistory();
-    renderResidual();
   }));
   $$('[data-model]').forEach((button) => button.addEventListener("click", () => {
     if (button.disabled) return;
@@ -1251,6 +1432,7 @@ function bindControls() {
     renderBacktests();
   }));
   $$('[data-chart-latest]').forEach((button) => button.addEventListener("click", () => scrollChartLatest(button.dataset.chartLatest)));
+  $("#history-range-form").addEventListener("submit", applyCustomHistoryRange);
   $("#reset-controls").addEventListener("click", resetControls);
   $("#share-view").addEventListener("click", shareCurrentView);
 }
@@ -1318,8 +1500,10 @@ Promise.all([loadJson("data/summary.json"), loadJson("data/dashboard.json"), loa
     store = { ...store, summary, dashboard, history: decodeHistory(history) };
     if (!modelPayload(store.model)) store.model = modelPayload("robust") ? "robust" : "scaled";
     ensureBacktestSelection();
-    persistControlState({ replaceUrl: false });
+    const rangeAvailable = ensureHistoryRangeAvailable();
+    persistControlState({ replaceUrl: !rangeAvailable });
     renderAll();
+    if (!rangeAvailable) announceViewAction("저장된 사용자 기간이 공개 이력 밖이어서 최근 3년으로 복원했습니다.");
   })
   .catch((error) => {
     $("#status-badge").textContent = "unavailable";

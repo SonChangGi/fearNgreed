@@ -27,6 +27,14 @@ test('first-party context and every public operational artifact are linked',asyn
   for(const path of ['data/summary.json','data/dashboard.json','data/history.json','data/automation-status.json']) assert.match(html,new RegExp(path.replace('.','\\.')));
 });
 
+test('stylesheet and module cache versions advance together',async()=>{
+  const html=await read('index.html');
+  const cssVersion=html.match(/assets\/styles\.css\?v=([^"']+)/)?.[1];
+  const jsVersion=html.match(/assets\/app\.js\?v=([^"']+)/)?.[1];
+  assert.ok(cssVersion);
+  assert.equal(jsVersion,cssVersion);
+});
+
 test('charts provide keyboard instructions and adjacent exact-value alternatives',async()=>{
   const html=await read('index.html');
   const app=await read('assets/app.js');
@@ -182,6 +190,50 @@ test('controls persist to URL and localStorage and charts expose an explicit lat
   assert.match(app,/fearngreed-controls-v2/);
   assert.match(app,/history\.replaceState/);
   assert.match(app,/navigator\.clipboard\.writeText/);
+});
+
+test('KOSPI history supports calendar presets and validated shareable custom dates',async()=>{
+  const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
+  for(const value of ['1m','3m','6m','ytd','1y','3y','all']) assert.match(html,new RegExp(`data-window="${value}"`));
+  for(const id of ['history-range-form','history-start','history-end','history-range-status','history-exposure-note']) assert.match(html,new RegExp(`id="${id}"`));
+  assert.match(app,/function applyCustomHistoryRange/);
+  assert.match(app,/start > end/);
+  assert.match(app,/start < firstDate \|\| end > latestDate/);
+  assert.match(app,/store\.window = "custom"/);
+  assert.match(app,/historyStart:\s*"start"/);
+  assert.match(app,/historyEnd:\s*"end"/);
+  assert.match(app,/url\.searchParams\.delete\(param\)/);
+  assert.match(app,/\{ "252": "1y", "756": "3y" \}/);
+  assert.match(app,/\(store\.history\?\.series \|\| \[\]\)\.slice\(-756\)/);
+  assert.match(css,/\.history-custom-range/);
+  assert.match(css,/\.history-range-status\[data-state="error"\]/);
+});
+
+test('history distinguishes state observations from actual entries and computes exposure on available positions only',async()=>{
+  const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
+  assert.match(html,/공포 원은 상태 관측이지 모두 매수 주문은 아닙니다/);
+  assert.match(html,/실제 롱 진입/);
+  assert.match(app,/\["long", "cash"\]\.includes\(row\.position\)/);
+  assert.match(app,/포지션 산출 전\/불가/);
+  assert.match(app,/class="entry-long"/);
+  assert.match(css,/\.entry-long/);
+});
+
+test('scatter renders only published latest-fit empirical state boundaries and fails closed without them',async()=>{
+  const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
+  assert.match(html,/극단적 공포 영역/);
+  assert.match(html,/극단적 탐욕 영역/);
+  assert.match(app,/scatterMetaByModel\?\.\[store\.model\]\?\.stateBoundaries/);
+  assert.match(app,/empirical_cdf_transition_order_statistic/);
+  assert.match(app,/current_fit_on_prior_window/);
+  assert.match(app,/typeof value !== "number"/);
+  for(const field of ['extremeFearUpper','fearUpper','greedLower','extremeGreedLower']) assert.match(app,new RegExp(field));
+  assert.match(app,/clipPath id="scatter-plot-clip"/);
+  assert.match(app,/브라우저 재추정 없음/);
+  assert.doesNotMatch(app,/function empiricalExtremeResidualCutoffs/);
+  assert.match(app,/당시 롤링 상태/);
+  assert.match(css,/\.scatter-zone-extreme-fear/);
+  assert.match(css,/\.scatter-zone-extreme-greed/);
 });
 
 test('frontend decodes compact columnar history and scatter pointer uses nearest XY distance',async()=>{

@@ -10,6 +10,7 @@ from fearngreed.verify import (
     _verify_cross_artifact_consistency,
     _verify_history,
     _verify_history_channel_roles,
+    _verify_scatter_state_boundaries,
     verify_local,
 )
 
@@ -56,6 +57,27 @@ def test_summary_schema_format_checker_rejects_invalid_public_dates() -> None:
         ).validate(summary)
 
 
+def test_scatter_boundary_verifier_rejects_browser_invented_thresholds() -> None:
+    root = Path(__file__).resolve().parents[1]
+    dashboard = json.loads((root / "data" / "dashboard.json").read_text(encoding="utf-8"))
+
+    _verify_scatter_state_boundaries(dashboard)
+    dashboard["scatterMetaByModel"]["robust"]["stateBoundaries"]["residualOffsets"][
+        "extremeFearUpper"
+    ] += 0.01
+    with pytest.raises(ValueError, match="extremeFearUpper is inconsistent"):
+        _verify_scatter_state_boundaries(dashboard)
+
+
+def test_scatter_boundary_verifier_rejects_misleading_metadata() -> None:
+    root = Path(__file__).resolve().parents[1]
+    dashboard = json.loads((root / "data" / "dashboard.json").read_text(encoding="utf-8"))
+
+    dashboard["scatterMetaByModel"]["robust"]["stateBoundaries"]["fitScope"] = "browser_fit"
+    with pytest.raises(ValueError, match="fit scope is invalid"):
+        _verify_scatter_state_boundaries(dashboard)
+
+
 def test_cross_artifact_verifier_reproduces_default_position_path() -> None:
     columns = [
         "date",
@@ -69,6 +91,7 @@ def test_cross_artifact_verifier_reproduces_default_position_path() -> None:
         "seriesEncoding": "columnar-v1",
         "seriesColumns": columns,
         "seriesRows": [
+            ["2026-07-09", "unavailable", None, None, 199.0, 200.0],
             ["2026-07-10", "cash", 100.0, 101.0, 200.0, 201.0],
             ["2026-07-13", "long", 102.0, 103.0, 202.0, 203.0],
             ["2026-07-14", "long", 103.0, 104.0, 203.0, 204.0],
@@ -131,6 +154,11 @@ def test_cross_artifact_verifier_reproduces_default_position_path() -> None:
 
     _verify_cross_artifact_consistency(summary, dashboard, history)
 
+    history["seriesRows"][0][1] = "cash"
+    with pytest.raises(ValueError, match="pre-backtest history position"):
+        _verify_cross_artifact_consistency(summary, dashboard, history)
+    history["seriesRows"][0][1] = "unavailable"
+
     for ticker in ("226490", "069500"):
         reconciliation = dashboard["crosschecks"]["etf"][ticker]["historyReconciliation"]
         reconciliation["filledCount"] = 1
@@ -151,7 +179,7 @@ def test_cross_artifact_verifier_reproduces_default_position_path() -> None:
         _verify_cross_artifact_consistency(summary, dashboard, history)
     summary["status"]["degradedReasons"].append("adjusted_history_gap_reconciled_069500")
 
-    history["seriesRows"][1][2] = None
+    history["seriesRows"][2][2] = None
     with pytest.raises(ValueError, match="history sessions"):
         _verify_cross_artifact_consistency(summary, dashboard, history)
 
