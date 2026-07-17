@@ -33,7 +33,7 @@ from .events import (
 from .model import FlowSignal
 from .quality import compare_close_anchors, compare_latest_close
 
-METHODOLOGY_VERSION = "fear-flow-v2"
+METHODOLOGY_VERSION = "fear-flow-v3"
 PROXY_TICKERS = {"226490": "226490.KS", "069500": "069500.KS"}
 STOCK_TICKERS = {"000660": "000660.KS", "005930": "005930.KS"}
 PDF_ANNOTATED_EVENTS = {
@@ -71,6 +71,7 @@ class PipelineOutputs:
     dashboard: dict[str, Any]
     history: dict[str, Any]
     automation_status: dict[str, Any]
+    strategy_comparison: dict[str, Any] = field(default_factory=dict)
 
 
 def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
@@ -118,6 +119,8 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
             degraded.append(f"price_crosscheck_{ticker}_{check['state']}")
 
     backtests: dict[str, dict[str, BacktestResult]] = {}
+    long_short_backtests: dict[str, dict[str, BacktestResult]] = {}
+    exit50_backtests: dict[str, BacktestResult] = {}
     disparity_signals = disparity_filtered_signals(robust_signals, frame)
     for ticker, yahoo_ticker in PROXY_TICKERS.items():
         if crosschecks["etf"][ticker]["state"] != "ok":
@@ -137,9 +140,38 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
             one_way_cost_bps=10,
         )
         backtests[ticker] = variants
+        long_short_backtests[ticker] = {
+            f"robust_{int(result.cost_bps)}bp": result
+            for result in run_cost_sensitivity(
+                robust_signals,
+                bars,
+                ticker=ticker,
+                policy_id="long_short_cash",
+            )
+        }
+        exit50_backtests[ticker] = run_backtest_safe(
+            robust_signals,
+            bars,
+            ticker=ticker,
+            one_way_cost_bps=10,
+            long_exit_percentile=50,
+        )
 
     common_backtests = _common_period_backtests(
         adjusted, model_signals, disparity_signals, crosschecks
+    )
+    common_long_short_backtests = _common_period_backtests(
+        adjusted,
+        {"robust": robust_signals},
+        None,
+        crosschecks,
+        policy_id="long_short_cash",
+    )
+    common_exit50_backtests = _common_exit_threshold_backtests(
+        adjusted,
+        robust_signals,
+        crosschecks,
+        long_exit_percentile=50,
     )
     events_by_model = {
         model_name: _event_section_for_signals(frame, signals, adjusted, crosschecks)
@@ -168,7 +200,7 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
     status_state = "degraded" if degraded else "ok"
     generated_at = inputs.generated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
     data_as_of = frame.index[-1].date().isoformat()
-    history_rows = _history_rows(frame, base_result, adjusted)
+    history_rows = _history_rows(frame, base_result, adjusted, disparity_signals)
     primary_reconciliation = crosschecks["etf"]["226490"].get("historyReconciliation", {})
     adjusted_proxy_source = (
         "yfinance_adjusted_plus_scaled_krx_gap_rows"
@@ -235,6 +267,16 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         "fixture": False,
         "models": {model_name: _model_snapshot(latest, model_name) for model_name in model_signals},
         "flowChannelRoles": _history_flow_channel_roles(),
+        "strategyScenario": {
+            "engineVersion": "signed-fixed-quantity-v1",
+            "defaultLongExitPercentile": 80,
+            "customLongExitMinimum": 50,
+            "customLongExitMaximum": 94,
+            "customLongExitStep": 1,
+            "shortExitFormula": "100-longExitPercentile",
+            "signalInputsAreServerPublished": True,
+            "browserMayRefitRegression": False,
+        },
         "seriesEncoding": "columnar-v1",
         "seriesColumns": history_columns,
         "seriesRows": history_values,
@@ -248,7 +290,25 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         "degradedReasons": degraded,
         "sourceMode": inputs.core_source,
     }
-    return PipelineOutputs(summary, dashboard, history, automation_status)
+    strategy_comparison = _strategy_comparison(
+        generated_at=generated_at,
+        data_as_of=data_as_of,
+        status_state=status_state,
+        degraded=degraded,
+        backtests=long_short_backtests,
+        common=common_long_short_backtests,
+        exit50=exit50_backtests,
+        common_exit50=common_exit50_backtests,
+        long_cash=backtests,
+        common_long_cash=common_backtests,
+    )
+    return PipelineOutputs(
+        summary=summary,
+        dashboard=dashboard,
+        history=history,
+        automation_status=automation_status,
+        strategy_comparison=strategy_comparison,
+    )
 
 
 def _summary(
@@ -332,7 +392,7 @@ def _summary(
                 "pendingReason": pending_reason,
                 "primaryProxy": "226490",
                 "sourceMode": core_source,
-                "strategyModel": "robust_huber_scaled",
+                "strategyModel": "robust_huber_scaled_exit80",
                 "fieldSources": {
                     "kospi": core_source,
                     "retailFlow": "authenticated_pykrx",
@@ -348,7 +408,18 @@ def _summary(
         "limitations": [
             "2026년 관측 후 제안된 사후적·탐색적 연구이며 예측력이나 인과관계를 증명하지 않는다.",
             "원문은 회귀창·수급 범위·임계값·전체 사건 수·거래비용을 공개하지 않았다.",
-            "ETF 백테스트는 조정가격, 익일 시가 체결, 현금수익률 0%를 가정한다.",
+            (
+                "기본 롱/현금 백테스트는 조정가격, 익일 시가 체결, 백분위 80 청산, "
+                "현금수익률 0%를 가정한다."
+            ),
+            (
+                "합성 롱/숏 비교는 조정 총수익 가격의 배당 경제효과를 반영하지만 "
+                "대차료·리콜·증거금·강제청산·공매도 가능 수량을 모델링하지 않는다."
+            ),
+            (
+                "웹 사용자 청산값은 공개된 신호와 가격만으로 브라우저에서 재계산하는 "
+                "탐색 시나리오이며 서버 검증 기본 결과와 구분한다."
+            ),
             "강건 회귀는 이상점 영향을 줄이기 위한 사전 정의 후보이며 수익 개선을 보장하지 않는다.",
         ],
         "sources": [
@@ -378,6 +449,7 @@ def _summary(
             "dashboardUrl": "./dashboard.json",
             "historyUrl": "./history.json",
             "automationStatusUrl": "./automation-status.json",
+            "strategyComparisonUrl": "./strategy-comparison.json",
         },
     }
 
@@ -644,8 +716,10 @@ def _inherit_reconciliation_provenance(
 def _common_period_backtests(
     adjusted: dict[str, pd.DataFrame],
     model_signals: dict[str, list[FlowSignal]],
-    disparity_signals: list[FlowSignal],
+    disparity_signals: list[FlowSignal] | None,
     crosschecks: dict[str, Any],
+    *,
+    policy_id: str = "long_cash",
 ) -> dict[str, dict[str, BacktestResult]]:
     if not all(
         PROXY_TICKERS[ticker] in adjusted
@@ -665,13 +739,49 @@ def _common_period_backtests(
         bars = adjusted[yahoo_ticker].loc[common, ["open", "close"]]
         variants: dict[str, BacktestResult] = {}
         for model_name, signals in model_signals.items():
-            for result in run_cost_sensitivity(signals, bars, ticker=ticker):
+            for result in run_cost_sensitivity(
+                signals,
+                bars,
+                ticker=ticker,
+                policy_id=policy_id,
+            ):
                 variants[f"{model_name}_{int(result.cost_bps)}bp"] = result
-        variants["disparity_10bp"] = run_backtest_safe(
-            disparity_signals, bars, ticker=ticker, one_way_cost_bps=10
-        )
+        if disparity_signals is not None and policy_id == "long_cash":
+            variants["disparity_10bp"] = run_backtest_safe(
+                disparity_signals, bars, ticker=ticker, one_way_cost_bps=10
+            )
         output[ticker] = variants
     return output
+
+
+def _common_exit_threshold_backtests(
+    adjusted: dict[str, pd.DataFrame],
+    signals: list[FlowSignal],
+    crosschecks: dict[str, Any],
+    *,
+    long_exit_percentile: float,
+) -> dict[str, BacktestResult]:
+    if not all(
+        PROXY_TICKERS[ticker] in adjusted
+        and crosschecks["etf"].get(ticker, {}).get("state") == "ok"
+        for ticker in PROXY_TICKERS
+    ):
+        return {}
+    common = adjusted[PROXY_TICKERS["226490"]].index.intersection(
+        adjusted[PROXY_TICKERS["069500"]].index
+    )
+    signal_cutoff = max(pd.Timestamp(signal.date) for signal in signals)
+    common = common[common <= signal_cutoff]
+    return {
+        ticker: run_backtest_safe(
+            signals,
+            adjusted[yahoo_ticker].loc[common, ["open", "close"]],
+            ticker=ticker,
+            one_way_cost_bps=10,
+            long_exit_percentile=long_exit_percentile,
+        )
+        for ticker, yahoo_ticker in PROXY_TICKERS.items()
+    }
 
 
 def _price_frame_as_of(frame: pd.DataFrame, cutoff: pd.Timestamp) -> pd.DataFrame:
@@ -810,6 +920,131 @@ def _public_backtests(
     return result
 
 
+def _strategy_comparison(
+    *,
+    generated_at: str,
+    data_as_of: str,
+    status_state: str,
+    degraded: list[str],
+    backtests: dict[str, dict[str, BacktestResult]],
+    common: dict[str, dict[str, BacktestResult]],
+    exit50: dict[str, BacktestResult],
+    common_exit50: dict[str, BacktestResult],
+    long_cash: dict[str, dict[str, BacktestResult]],
+    common_long_cash: dict[str, dict[str, BacktestResult]],
+) -> dict[str, Any]:
+    proxies: dict[str, Any] = {}
+    sensitivity: dict[str, Any] = {}
+    for ticker, variants in backtests.items():
+        common_variants = common.get(ticker, {})
+        proxies[ticker] = {
+            "fullPeriod": {
+                name: _compact_result(
+                    value,
+                    include_equity=True,
+                    include_trades=name == "robust_10bp",
+                    equity_step=252,
+                )
+                for name, value in variants.items()
+            },
+            "commonPeriod": {
+                name: _compact_result(
+                    value,
+                    include_equity=True,
+                    include_trades=name == "robust_10bp",
+                    equity_step=60,
+                )
+                for name, value in common_variants.items()
+            }
+            or None,
+            "costBreakEvenBps": {"robust": _cost_break_even_bps(variants, "robust")},
+        }
+        exit80_full = long_cash.get(ticker, {}).get("robust_10bp")
+        exit80_common = common_long_cash.get(ticker, {}).get("robust_10bp")
+        sensitivity[ticker] = {
+            "fullPeriod": {
+                "exit50": _metrics_only(exit50.get(ticker)),
+                "exit80": _metrics_only(exit80_full),
+            },
+            "commonPeriod": {
+                "exit50": _metrics_only(common_exit50.get(ticker)),
+                "exit80": _metrics_only(exit80_common),
+            },
+        }
+    return {
+        "schemaVersion": 1,
+        "contract": "fearngreed-strategy-comparison",
+        "methodologyVersion": METHODOLOGY_VERSION,
+        "generatedAt": generated_at,
+        "dataAsOf": data_as_of,
+        "status": {
+            "state": status_state,
+            "degradedReasons": degraded,
+        },
+        "policyDefinitions": {
+            "longCash": {
+                "policyId": "long_cash",
+                "role": "primary_research",
+                "longEntry": "first_trade_eligible_extreme_fear_at_or_below_5",
+                "longExit": "next_open_after_percentile_at_or_above_80_or_max_20_sessions",
+                "shortEntry": None,
+                "shortExit": None,
+            },
+            "longShortCash": {
+                "policyId": "long_short_cash",
+                "role": "exploratory_synthetic_comparison",
+                "longEntry": "first_trade_eligible_extreme_fear_at_or_below_5",
+                "longExit": "next_open_after_percentile_at_or_above_80_or_max_20_sessions",
+                "shortEntry": "first_trade_eligible_extreme_greed_at_or_above_95",
+                "shortExit": "next_open_after_percentile_at_or_below_20_or_max_20_sessions",
+                "sameOpenReversal": True,
+                "reversalTransactionSides": 2,
+                "shortAccounting": (
+                    "post_entry_cost_available_equity_1x_fixed_quantity_no_rebalance"
+                ),
+                "adjustedPriceTreatment": (
+                    "split_and_distribution_adjusted_total_return_economics"
+                ),
+                "borrowFeeAnnualPct": 0,
+                "cashAndCollateralReturnPct": 0,
+                "shortabilityModeled": False,
+                "excludedExecutionConstraints": [
+                    "borrow_availability",
+                    "borrow_fee",
+                    "recall",
+                    "margin",
+                    "forced_liquidation",
+                    "short_sale_order_rules",
+                    "market_impact",
+                ],
+            },
+        },
+        "dynamicExitControl": {
+            "defaultLongExitPercentile": 80,
+            "minimum": 50,
+            "maximum": 94,
+            "step": 1,
+            "shortExitFormula": "100-longExitPercentile",
+            "calculationLocation": "browser_on_server_published_signals_and_prices",
+            "regressionRefit": False,
+        },
+        "exitThresholdSensitivity": {
+            "policyId": "long_cash",
+            "model": "robust",
+            "oneWayCostBps": 10,
+            "selectionUse": "diagnostic_only_not_threshold_optimization",
+            "proxies": sensitivity,
+        },
+        "proxies": proxies,
+    }
+
+
+def _metrics_only(result: BacktestResult | None) -> dict[str, Any] | None:
+    if result is None:
+        return None
+    return _compact_result(result, include_equity=False, include_trades=False)
+
+
 def _compact_result(
     result: BacktestResult,
     *,
@@ -865,9 +1100,6 @@ def _scatter(frame: pd.DataFrame, model: str = "scaled") -> list[dict[str, Any]]
     if recent.empty:
         return []
     current_date = recent.index[-1]
-    latest = recent.iloc[-1]
-    alpha = latest[f"{model}_alpha"]
-    beta = latest[f"{model}_beta"]
     rows: list[dict[str, Any]] = []
     for timestamp, row in recent.iterrows():
         if pd.isna(row["return_1d"]) or pd.isna(row[value_column]):
@@ -875,10 +1107,6 @@ def _scatter(frame: pd.DataFrame, model: str = "scaled") -> list[dict[str, Any]]
         point = {
             "date": timestamp.date().isoformat(),
             "return1d": public_number(row["return_1d"]),
-            "predicted": public_number(alpha + beta * row["return_1d"])
-            if pd.notna(alpha) and pd.notna(beta)
-            else None,
-            "percentile": public_number(row[f"{model}_percentile"]),
             "state": row[f"{model}_state"],
             "role": "current" if timestamp == current_date else "training",
         }
@@ -979,6 +1207,7 @@ def _history_rows(
     frame: pd.DataFrame,
     base_result: BacktestResult | None,
     adjusted: dict[str, pd.DataFrame],
+    disparity_signals: list[FlowSignal],
 ) -> list[dict[str, Any]]:
     exposure = (
         base_result.exposure
@@ -986,7 +1215,9 @@ def _history_rows(
         else pd.Series(dtype=float)
     )
     rows: list[dict[str, Any]] = []
+    disparity_by_date = {signal.date: signal for signal in disparity_signals}
     for timestamp, row in frame.iterrows():
+        disparity_signal = disparity_by_date.get(timestamp.date())
         output = {
             "date": timestamp.date().isoformat(),
             "kospiClose": public_number(row["close"]),
@@ -1006,8 +1237,13 @@ def _history_rows(
             "tradeEligible": bool(row["robust_trade_eligible"]),
             "scaledPercentile": public_number(row["scaled_percentile"]),
             "scaledState": row["scaled_state"],
+            "scaledTradeEligible": bool(row["scaled_trade_eligible"]),
             "rawPercentile": public_number(row["raw_percentile"]),
             "rawState": row["raw_state"],
+            "rawTradeEligible": bool(row["raw_trade_eligible"]),
+            "disparityTradeEligible": bool(
+                disparity_signal.trade_eligible if disparity_signal is not None else False
+            ),
             "directionAgreement": row["model_direction_agreement"],
             "triggerAgreement": row["model_trigger_agreement"],
             "sourceHash": row["source_hash"],
@@ -1462,6 +1698,9 @@ def _columnar_history(
         "state",
         "quality",
         "tradeEligible",
+        "scaledTradeEligible",
+        "rawTradeEligible",
+        "disparityTradeEligible",
         "sourceHash",
         "position",
         "p226490Open",
@@ -1498,7 +1737,13 @@ def output_size_report(outputs: PipelineOutputs) -> dict[str, int]:
         name: len(
             json.dumps(getattr(outputs, name), ensure_ascii=False, separators=(",", ":")).encode()
         )
-        for name in ("summary", "dashboard", "history", "automation_status")
+        for name in (
+            "summary",
+            "dashboard",
+            "history",
+            "automation_status",
+            "strategy_comparison",
+        )
     }
 
 
@@ -1513,6 +1758,7 @@ def write_outputs_atomic(outputs: PipelineOutputs, data_dir: Path) -> None:
         "dashboard.json": outputs.dashboard,
         "history.json": outputs.history,
         "automation-status.json": outputs.automation_status,
+        "strategy-comparison.json": outputs.strategy_comparison,
     }
     for filename, payload in mapping.items():
         encoded = (

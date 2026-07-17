@@ -23,7 +23,7 @@
     "schemaVersion": {"const": 1},
     "contract": {"const": "quant-research-summary"},
     "projectId": {"const": "fearngreed"},
-    "methodologyVersion": {"const": "fear-flow-v2"},
+    "methodologyVersion": {"const": "fear-flow-v3"},
     "generatedAt": {"type": "string", "format": "date-time"},
     "dataAsOf": {"type": "string", "format": "date"},
     "status": {
@@ -115,11 +115,12 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["dashboardUrl", "historyUrl", "automationStatusUrl"],
+      "required": ["dashboardUrl", "historyUrl", "automationStatusUrl", "strategyComparisonUrl"],
       "properties": {
         "dashboardUrl": {"type": "string", "minLength": 1},
         "historyUrl": {"type": "string", "minLength": 1},
-        "automationStatusUrl": {"type": "string", "minLength": 1}
+        "automationStatusUrl": {"type": "string", "minLength": 1},
+        "strategyComparisonUrl": {"const": "./strategy-comparison.json"}
       }
     }
   },

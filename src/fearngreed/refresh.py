@@ -43,6 +43,7 @@ PUBLIC_LIMITS = {
     "dashboard": 500_000,
     "history": 2_000_000,
     "automation_status": 50_000,
+    "strategy_comparison": 500_000,
 }
 CORE_YAHOO_TICKERS = ["^KS11", "226490.KS", "069500.KS"]
 CORE_YAHOO_HISTORY_STARTS = {
@@ -242,7 +243,7 @@ def refresh(
         raise RefreshStageError(_safe_stage_code("refresh_artifact", error)) from None
     oversized = [name for name, size in sizes.items() if size > PUBLIC_LIMITS[name]]
     if oversized:
-        raise ValueError(f"public output size limit exceeded: {','.join(oversized)}")
+        raise RefreshStageError(f"refresh_artifact_size_limit_{'_'.join(oversized)}")
     no_op = bool(seed and _is_unchanged(seed, outputs))
     if not dry_run and not no_op:
         write_outputs_atomic(outputs, root / "data")
@@ -262,6 +263,7 @@ def _load_incremental_seed(root: Path, end: date) -> IncrementalSeed | None:
     history_path = root / "data" / "history.json"
     summary_path = root / "data" / "summary.json"
     dashboard_path = root / "data" / "dashboard.json"
+    strategy_path = root / "data" / "strategy-comparison.json"
     if not history_path.exists() or not summary_path.exists() or not dashboard_path.exists():
         return None
     try:
@@ -272,6 +274,17 @@ def _load_incremental_seed(root: Path, end: date) -> IncrementalSeed | None:
         return None
     rows = _decode_history_rows(history) if isinstance(history, dict) else None
     methodology_version = str(history.get("methodologyVersion", ""))
+    strategy_comparison: dict[str, object] | None = None
+    if methodology_version == METHODOLOGY_VERSION:
+        if not strategy_path.exists():
+            return None
+        try:
+            loaded_strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(loaded_strategy, dict):
+            return None
+        strategy_comparison = loaded_strategy
     if (
         not isinstance(rows, list)
         or history.get("fixture") is not False
@@ -319,7 +332,12 @@ def _load_incremental_seed(root: Path, end: date) -> IncrementalSeed | None:
         methodology_version=methodology_version,
         data_as_of=str(history.get("dataAsOf", usable[-1]["date"])),
         status_state=str(summary.get("status", {}).get("state", "unavailable")),
-        existing_signature=_output_signature(summary, dashboard, history),
+        existing_signature=_output_signature(
+            summary,
+            dashboard,
+            history,
+            strategy_comparison,
+        ),
         history_rows=usable,
         kospi=kospi,
         flow=flow,
@@ -461,7 +479,12 @@ def _align_core_to_latest_common(
 
 
 def _is_unchanged(seed: IncrementalSeed, outputs: PipelineOutputs) -> bool:
-    current_signature = _output_signature(outputs.summary, outputs.dashboard, outputs.history)
+    current_signature = _output_signature(
+        outputs.summary,
+        outputs.dashboard,
+        outputs.history,
+        outputs.strategy_comparison,
+    )
     return current_signature == seed.existing_signature
 
 
@@ -539,15 +562,23 @@ def _assert_adjusted_scale_stable(
 
 
 def _output_signature(
-    summary: dict[str, object], dashboard: dict[str, object], history: dict[str, object]
+    summary: dict[str, object],
+    dashboard: dict[str, object],
+    history: dict[str, object],
+    strategy_comparison: dict[str, object] | None = None,
 ) -> str:
     stable_summary = {
         key: value for key, value in summary.items() if key not in {"generatedAt", "automation"}
     }
     stable_dashboard = {key: value for key, value in dashboard.items() if key != "generatedAt"}
     stable_history = {key: value for key, value in history.items() if key != "generatedAt"}
+    stable_strategy = (
+        {key: value for key, value in strategy_comparison.items() if key != "generatedAt"}
+        if strategy_comparison is not None
+        else None
+    )
     encoded = json.dumps(
-        [stable_summary, stable_dashboard, stable_history],
+        [stable_summary, stable_dashboard, stable_history, stable_strategy],
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,

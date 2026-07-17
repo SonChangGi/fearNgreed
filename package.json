@@ -1,8 +1,9 @@
 {
   "name": "fearngreed-flow-lab-web",
   "private": true,
+  "type": "module",
   "scripts": {
-    "test": "node --test tests-js/*.test.mjs",
+    "test": "node --check assets/app.js && node --check assets/strategy-engine.js && node --test tests-js/*.test.mjs",
     "check": "npm test"
   }
 }

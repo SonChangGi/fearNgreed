@@ -10,6 +10,7 @@ test('dashboard exposes all precomputed research selectors with pressed state',a
     'data-model="robust"','data-model="scaled"','data-model="raw"',
     'data-event-asset="KOSPI"','data-event-asset="226490"','data-event-asset="069500"',
     'data-event-sample="all"','data-event-sample="nonOverlapping20d"',
+    'data-backtest-policy="compare"','data-backtest-policy="long_cash"','data-backtest-policy="long_short_cash"',
     'data-backtest-proxy="226490"','data-backtest-proxy="069500"',
     'data-backtest-variant="scaled_huber"','data-backtest-variant="scaled_ols"','data-backtest-variant="raw_ols"','data-backtest-variant="disparity"',
     'data-backtest-cost="0"','data-backtest-cost="5"','data-backtest-cost="10"','data-backtest-cost="20"',
@@ -24,7 +25,71 @@ test('first-party context and every public operational artifact are linked',asyn
   assert.match(html,/assets\/favicon\.svg/);
   assert.match(html,/https:\/\/sonchanggi\.github\.io\/quant-dashboard\//);
   assert.match(html,/https:\/\/github\.com\/SonChangGi\/fearNgreed\/actions/);
-  for(const path of ['data/summary.json','data/dashboard.json','data/history.json','data/automation-status.json']) assert.match(html,new RegExp(path.replace('.','\\.')));
+  for(const path of ['data/summary.json','data/dashboard.json','data/history.json','data/strategy-comparison.json','data/automation-status.json']) assert.match(html,new RegExp(path.replace('.','\\.')));
+});
+
+test('strategy controls expose a bounded dynamic exit input and a symmetric short threshold',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/id="exit-threshold-form"/);
+  assert.match(html,/id="exit-threshold-input"[^>]+type="number"[^>]+min="50"[^>]+max="94"[^>]+step="1"[^>]+value="80"/);
+  assert.match(html,/id="exit-threshold-status"[^>]+aria-live="polite"/);
+  assert.match(html,/롱은 입력값 이상, 숏은 대칭값 이하/);
+  assert.match(app,/DEFAULT_LONG_EXIT_PERCENTILE/);
+  assert.match(app,/normalizeLongExitPercentile/);
+  assert.match(app,/short-exit-threshold-value/);
+  assert.match(app,/100 - store\.longExitPercentile/);
+  assert.match(app,/runStrategyScenario/);
+  assert.match(app,/browser_user_scenario/);
+});
+
+test('position policy comparison discloses short-model limitations and side-aware output',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/id="policy-comparison-card"/);
+  assert.match(html,/id="strategy-exposure"/);
+  assert.match(html,/id="exit-sensitivity"/);
+  assert.match(html,/id="short-method-warning"/);
+  assert.match(html,/대차 가능 수량·대차료·리콜·증거금/);
+  assert.match(html,/롱 \/ 숏 \/ 현금/);
+  assert.match(app,/longExposure/);
+  assert.match(app,/shortExposure/);
+  assert.match(app,/cashExposure/);
+  assert.match(app,/trade\.side/);
+  assert.match(app,/이격도 변형에는 숏 규칙이 정의되지 않았습니다/);
+});
+
+test('compare mode names both policy results in the key cards and conclusion',async()=>{
+  const app=await read('assets/app.js');
+  assert.match(app,/store\.backtestPolicy === "compare" && longCash\?\.metrics && longShort\?\.metrics/);
+  assert.match(app,/metric\("롱 \/ 현금 총수익률", fmt\.pct\(longCash\.metrics\.totalReturn\)/);
+  assert.match(app,/metric\("롱 \/ 숏 \/ 현금 총수익률", fmt\.pct\(longShort\.metrics\.totalReturn\)/);
+  assert.match(app,/const conclusionLongCash = store\.backtestPolicy === "compare" \? longCashResultFor\(\) : null/);
+  assert.match(app,/const conclusionLongShort = store\.backtestPolicy === "compare" \? longShortResultFor\(\) : null/);
+  assert.match(app,/롱\/현금 \$\{fmt\.signedPct\(conclusionLongCash\.metrics\.totalReturn\)\}/);
+  assert.match(app,/롱\/숏\/현금 \$\{fmt\.signedPct\(conclusionLongShort\.metrics\.totalReturn\)\}/);
+});
+
+test('dynamic exit submit validates loaded data and scenario success before announcing apply',async()=>{
+  const app=await read('assets/app.js');
+  const start=app.indexOf('$("#exit-threshold-form").addEventListener("submit"');
+  const end=app.indexOf('$("#reset-controls").addEventListener',start);
+  assert.ok(start>=0 && end>start);
+  const submit=app.slice(start,end);
+  const dataGuard=submit.indexOf('if (!store.dashboard || !store.history || !store.strategyComparison)');
+  const errorGuard=submit.indexOf('if (latestScenarioError) throw latestScenarioError');
+  const resultGuard=submit.indexOf('if (scenarioResults.length !== expectedCount)');
+  const success=submit.indexOf('status.dataset.state = "ok"');
+  assert.ok(dataGuard>=0 && errorGuard>dataGuard && resultGuard>errorGuard && success>resultGuard);
+  assert.match(submit,/const previous = store\.longExitPercentile/);
+  assert.match(submit,/store\.longExitPercentile = previous/);
+  assert.match(submit,/status\.dataset\.state = "error"/);
+});
+
+test('single-policy equity legend has stable ids and policy-aware visibility toggles',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/id="equity-legend-long-cash"/);
+  assert.match(html,/id="equity-legend-long-short"/);
+  assert.match(app,/\$\("#equity-legend-long-cash"\)\.hidden = store\.backtestPolicy === "long_short_cash"/);
+  assert.match(app,/\$\("#equity-legend-long-short"\)\.hidden = store\.backtestPolicy === "long_cash"/);
 });
 
 test('stylesheet and module cache versions advance together',async()=>{
@@ -58,9 +123,9 @@ test('evidence conclusion is computed from published confidence intervals and be
   assert.doesNotMatch(html,/387\.25|4\.57|1\.61|0\.18/);
 });
 
-test('performance lookup includes return, win rate, turnover, holding time and benchmark risk',async()=>{
+test('performance lookup includes return, win rate, annualized position changes, holding time and benchmark risk',async()=>{
   const html=await read('index.html');
-  for(const label of ['총수익률','승률','회전율','평균 보유','BH MDD','동일 타이밍 0bp','위험 일치 BH']) assert.match(html,new RegExp(label));
+  for(const label of ['총수익률','승률','연환산 매매측수','평균 보유','BH MDD','동일 타이밍 0bp','위험 일치 BH']) assert.match(html,new RegExp(label));
   const app=await read('assets/app.js');
   for(const field of ['totalReturn','winRate','turnover','averageHoldingSessions','buyAndHoldMaxDrawdown','exposureMatchedReturn','riskMatchedBuyHoldReturn','costBreakEvenBps']) assert.match(app,new RegExp(field));
 });
@@ -187,9 +252,22 @@ test('controls persist to URL and localStorage and charts expose an explicit lat
   assert.match(html,/id="reset-controls"/);
   assert.match(html,/id="share-view"/);
   assert.ok((html.match(/data-chart-latest=/g)||[]).length>=4);
-  assert.match(app,/fearngreed-controls-v2/);
+  assert.match(app,/localStorage\.setItem\("fearngreed-controls-v3"/);
+  assert.match(app,/getItem\("fearngreed-controls-v3"\) \|\| localStorage\.getItem\("fearngreed-controls-v2"\)/);
   assert.match(app,/history\.replaceState/);
   assert.match(app,/navigator\.clipboard\.writeText/);
+  assert.match(app,/longExitPercentile:\s*"exit"/);
+  assert.match(app,/backtestPolicy:\s*"policy"/);
+  assert.match(app,/url\.searchParams\.set\(param, store\[key\]\)/);
+});
+
+test('frontend validates the separate strategy-comparison contract before rendering',async()=>{
+  const app=await read('assets/app.js');
+  assert.match(app,/validateContracts\(summary, dashboard, history, strategyComparison\)/);
+  assert.match(app,/strategyComparison\?\.contract !== "fearngreed-strategy-comparison"/);
+  assert.match(app,/strategyComparison\?\.dataAsOf !== summary\.dataAsOf/);
+  assert.match(app,/summary\?\.payload\?\.strategyComparisonUrl !== "\.\/strategy-comparison\.json"/);
+  assert.match(app,/loadJson\("data\/strategy-comparison\.json"\)/);
 });
 
 test('KOSPI history supports calendar presets and validated shareable custom dates',async()=>{
@@ -259,5 +337,5 @@ test('normalized benchmark equity and future flow channels remain explicit and f
   assert.match(app,/collecting \? "수집 중"/);
   assert.match(app,/collecting \? "표본 부족"/);
   assert.match(html,/외국인·기관 카드에 수치가 보여도 진단 결과/);
-  assert.match(app,/상세 행은 경량 공개 계약에서 생략했습니다/);
+  assert.match(app,/거래 상세 행은 경량 공개 계약에서 생략되었습니다/);
 });

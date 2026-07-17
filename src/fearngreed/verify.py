@@ -17,12 +17,14 @@ PUBLIC_FILES = (
     "data/dashboard.json",
     "data/history.json",
     "data/automation-status.json",
+    "data/strategy-comparison.json",
 )
 SIZE_LIMITS = {
     "data/summary.json": 50_000,
     "data/dashboard.json": 500_000,
     "data/history.json": 2_000_000,
     "data/automation-status.json": 50_000,
+    "data/strategy-comparison.json": 500_000,
 }
 
 
@@ -47,6 +49,7 @@ def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[st
     dashboard = payloads["data/dashboard.json"]
     history = payloads["data/history.json"]
     automation = payloads["data/automation-status.json"]
+    strategy = payloads["data/strategy-comparison.json"]
     schema = json.loads((root / "schemas/summary.schema.json").read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator(
         schema,
@@ -57,6 +60,7 @@ def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[st
         summary.get("methodologyVersion"),
         dashboard.get("methodologyVersion"),
         history.get("methodologyVersion"),
+        strategy.get("methodologyVersion"),
     }
     if len(methodology_versions) != 1 or None in methodology_versions:
         raise ValueError("public methodology versions do not match")
@@ -65,6 +69,7 @@ def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[st
         dashboard.get("dataAsOf"),
         history.get("dataAsOf"),
         automation.get("dataAsOf"),
+        strategy.get("dataAsOf"),
     }
     if len(data_dates) != 1 or None in data_dates:
         raise ValueError("public dataAsOf values do not match")
@@ -73,6 +78,7 @@ def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[st
     _verify_history(history)
     _verify_history_channel_roles(history)
     _verify_scatter_state_boundaries(dashboard)
+    _verify_strategy_comparison(summary, dashboard, history, strategy)
     _verify_cross_artifact_consistency(summary, dashboard, history)
     findings = scan_public_files(root)
     if findings:
@@ -362,6 +368,158 @@ def _verify_cross_artifact_consistency(
         != "yfinance_adjusted_plus_scaled_krx_gap_rows"
     ):
         raise ValueError("summary adjusted-proxy provenance is missing")
+
+
+def _verify_strategy_comparison(
+    summary: dict[str, Any],
+    dashboard: dict[str, Any],
+    history: dict[str, Any],
+    strategy: dict[str, Any],
+) -> None:
+    if strategy.get("schemaVersion") != 1 or strategy.get("contract") != (
+        "fearngreed-strategy-comparison"
+    ):
+        raise ValueError("strategy comparison contract is invalid")
+    if summary.get("payload", {}).get("strategyComparisonUrl") != ("./strategy-comparison.json"):
+        raise ValueError("summary strategy comparison URL is missing")
+    control = strategy.get("dynamicExitControl")
+    if not isinstance(control, dict) or control != {
+        "defaultLongExitPercentile": 80,
+        "minimum": 50,
+        "maximum": 94,
+        "step": 1,
+        "shortExitFormula": "100-longExitPercentile",
+        "calculationLocation": "browser_on_server_published_signals_and_prices",
+        "regressionRefit": False,
+    }:
+        raise ValueError("dynamic exit-control contract is invalid")
+    _verify_history_strategy_scenario(history, control)
+    definitions = strategy.get("policyDefinitions")
+    if not isinstance(definitions, dict):
+        raise ValueError("strategy policy definitions are missing")
+    synthetic = definitions.get("longShortCash")
+    if not isinstance(synthetic, dict) or synthetic.get("policyId") != "long_short_cash":
+        raise ValueError("synthetic long-short policy definition is missing")
+    if (
+        synthetic.get("borrowFeeAnnualPct") != 0
+        or synthetic.get("shortabilityModeled") is not False
+    ):
+        raise ValueError("synthetic short exclusions are not explicit")
+    proxies = strategy.get("proxies")
+    if not isinstance(proxies, dict):
+        raise ValueError("strategy comparison proxies are missing")
+    for ticker in ("226490", "069500"):
+        synthetic_proxy = proxies.get(ticker)
+        dashboard_proxy = dashboard.get("backtests", {}).get("proxies", {}).get(ticker)
+        if not isinstance(synthetic_proxy, dict) or not isinstance(dashboard_proxy, dict):
+            raise ValueError(f"{ticker} strategy comparison proxy is missing")
+        for public_period, dashboard_period in (
+            ("fullPeriod", "fullPeriod"),
+            ("commonPeriod", "commonPeriod"),
+        ):
+            synthetic_section = synthetic_proxy.get(public_period)
+            long_cash_section = dashboard_proxy.get(dashboard_period)
+            if not isinstance(synthetic_section, dict) or not isinstance(long_cash_section, dict):
+                raise ValueError(f"{ticker} strategy comparison period is missing")
+            result = synthetic_section.get("robust_10bp")
+            long_cash = long_cash_section.get("robust_10bp")
+            if not isinstance(result, dict) or not isinstance(long_cash, dict):
+                raise ValueError(f"{ticker} default strategy comparison is missing")
+            if long_cash.get("policyId") != "long_cash":
+                raise ValueError(f"{ticker} default long-cash policy id is invalid")
+            if long_cash.get("longExitPercentile") != 80:
+                raise ValueError(f"{ticker} default long-cash exit threshold is invalid")
+            if result.get("policyId") != "long_short_cash":
+                raise ValueError(f"{ticker} synthetic policy id is invalid")
+            if result.get("longExitPercentile") != 80 or result.get("shortExitPercentile") != 20:
+                raise ValueError(f"{ticker} synthetic exit thresholds are invalid")
+            status = result.get("status")
+            if status == "unavailable":
+                _verify_unavailable_strategy_result(result, ticker)
+                continue
+            if status != "ok":
+                raise ValueError(f"{ticker} synthetic strategy status is invalid")
+            if long_cash.get("status") != "ok":
+                raise ValueError(f"{ticker} long-cash comparison is unavailable")
+            if result.get("position") not in {"cash", "long", "short"}:
+                raise ValueError(f"{ticker} synthetic position is invalid")
+            metrics = result.get("metrics")
+            long_cash_metrics = long_cash.get("metrics")
+            if not isinstance(metrics, dict) or not isinstance(long_cash_metrics, dict):
+                raise ValueError(f"{ticker} strategy comparison metrics are missing")
+            if (metrics.get("start"), metrics.get("end")) != (
+                long_cash_metrics.get("start"),
+                long_cash_metrics.get("end"),
+            ):
+                raise ValueError(f"{ticker} strategy comparison dates do not match")
+            components = [
+                metrics.get("longExposure"),
+                metrics.get("shortExposure"),
+                metrics.get("cashExposure"),
+            ]
+            if not all(isinstance(value, int | float) for value in components) or not math.isclose(
+                sum(float(value) for value in components), 1.0, rel_tol=0, abs_tol=1e-9
+            ):
+                raise ValueError(f"{ticker} strategy exposure components are invalid")
+            gross = float(metrics.get("grossExposure", -1))
+            net = float(metrics.get("netExposure", 2))
+            if not math.isclose(gross, float(components[0]) + float(components[1]), abs_tol=1e-9):
+                raise ValueError(f"{ticker} gross exposure is invalid")
+            if not math.isclose(net, float(components[0]) - float(components[1]), abs_tol=1e-9):
+                raise ValueError(f"{ticker} net exposure is invalid")
+            if any(
+                trade.get("side") not in {"long", "short"} for trade in result.get("trades", [])
+            ):
+                raise ValueError(f"{ticker} strategy trade side is invalid")
+
+
+def _verify_history_strategy_scenario(history: dict[str, Any], control: dict[str, Any]) -> None:
+    scenario = history.get("strategyScenario")
+    expected = {
+        "engineVersion": "signed-fixed-quantity-v1",
+        "defaultLongExitPercentile": 80,
+        "customLongExitMinimum": 50,
+        "customLongExitMaximum": 94,
+        "customLongExitStep": 1,
+        "shortExitFormula": "100-longExitPercentile",
+        "signalInputsAreServerPublished": True,
+        "browserMayRefitRegression": False,
+    }
+    if not isinstance(scenario, dict) or scenario != expected:
+        raise ValueError("history strategy-scenario contract is invalid")
+    if (
+        scenario["defaultLongExitPercentile"] != control["defaultLongExitPercentile"]
+        or scenario["customLongExitMinimum"] != control["minimum"]
+        or scenario["customLongExitMaximum"] != control["maximum"]
+        or scenario["customLongExitStep"] != control["step"]
+        or scenario["shortExitFormula"] != control["shortExitFormula"]
+        or scenario["browserMayRefitRegression"] is not control["regressionRefit"]
+    ):
+        raise ValueError("history and strategy exit-control contracts do not match")
+
+
+def _verify_unavailable_strategy_result(result: dict[str, Any], ticker: str) -> None:
+    reason = result.get("unavailableReason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError(f"{ticker} unavailable synthetic strategy reason is missing")
+    if result.get("position") != "unavailable" or result.get("openPosition") is not False:
+        raise ValueError(f"{ticker} unavailable synthetic strategy position is invalid")
+    if any(
+        result.get(field) is not None
+        for field in ("pendingAction", "pendingReason", "pendingSide", "openTrade")
+    ):
+        raise ValueError(f"{ticker} unavailable synthetic strategy has pending state")
+    if result.get("trades", []) != [] or result.get("equity", []) != []:
+        raise ValueError(f"{ticker} unavailable synthetic strategy contains a partial path")
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict):
+        raise ValueError(f"{ticker} unavailable synthetic strategy metrics are invalid")
+    if metrics:
+        if set(metrics).difference({"state", "reason"}) or metrics.get("state") != "unavailable":
+            raise ValueError(f"{ticker} unavailable synthetic strategy metrics are unsafe")
+        metric_reason = metrics.get("reason")
+        if metric_reason is not None and metric_reason != reason:
+            raise ValueError(f"{ticker} unavailable synthetic strategy reasons do not match")
 
 
 def repository_root() -> Path:

@@ -20,12 +20,16 @@ class ProxyBar:
 
 @dataclass(frozen=True)
 class Trade:
+    side: str
     entry_date: date
     exit_date: date
     entry_price: float
     exit_price: float
     holding_sessions: int
     reason: str
+    gross_return: float
+    transaction_cost: float
+    borrow_cost: float
     net_return: float
 
 
@@ -43,6 +47,12 @@ class BacktestResult:
     metrics: dict[str, Any]
     status: str = "ok"
     unavailable_reason: str | None = None
+    policy_id: str = "long_cash"
+    position: str = "cash"
+    pending_side: str | None = None
+    open_trade: dict[str, Any] | None = None
+    long_exit_percentile: float = 80
+    short_exit_percentile: float = 20
 
 
 def run_long_cash(
@@ -51,6 +61,7 @@ def run_long_cash(
     *,
     max_holding: int = 20,
     one_way_cost_bps: float = 10,
+    long_exit_percentile: float = 80,
 ) -> list[Trade]:
     """Compatibility wrapper for the calculation contract's closed-trade list."""
     frame = pd.DataFrame(
@@ -66,6 +77,7 @@ def run_long_cash(
         ticker="proxy",
         max_holding=max_holding,
         one_way_cost_bps=one_way_cost_bps,
+        long_exit_percentile=long_exit_percentile,
     ).trades
 
 
@@ -76,11 +88,20 @@ def run_backtest(
     ticker: str,
     max_holding: int = 20,
     one_way_cost_bps: float = 10,
+    policy_id: str = "long_cash",
+    long_exit_percentile: float = 80,
+    short_exit_percentile: float = 20,
 ) -> BacktestResult:
     if max_holding <= 0:
         raise ValueError("max_holding must be positive")
     if not isfinite(one_way_cost_bps) or one_way_cost_bps < 0:
         raise ValueError("one_way_cost_bps cannot be negative")
+    if policy_id not in {"long_cash", "long_short_cash"}:
+        raise ValueError("unsupported policy_id")
+    if not isfinite(long_exit_percentile) or not 5 < long_exit_percentile <= 100:
+        raise ValueError("long_exit_percentile must be above 5 and at most 100")
+    if not isfinite(short_exit_percentile) or not 0 <= short_exit_percentile < 95:
+        raise ValueError("short_exit_percentile must be below 95 and at least 0")
     required = {"open", "close"}
     if not required.issubset(bars.columns):
         raise ValueError("bars require adjusted open and close")
@@ -99,76 +120,166 @@ def run_backtest(
         raise ValueError("signals must have unique dates")
     signal_by_date = {pd.Timestamp(signal.date): signal for signal in signals}
     aligned_signals = [signal_by_date.get(timestamp) for timestamp in clean.index]
-    entry_dates = _extreme_fear_entry_dates(signals)
+    long_entry_dates = _extreme_entry_dates(signals, "extreme_fear")
+    short_entry_dates = (
+        _extreme_entry_dates(signals, "extreme_greed") if policy_id == "long_short_cash" else set()
+    )
     one_way_cost = one_way_cost_bps / 10_000
     cash = 1.0
-    shares = 0.0
+    units = 0.0
+    position_side: str | None = None
     entry_index: int | None = None
     entry_price = 0.0
     entry_equity = 0.0
-    pending_entry = False
+    entry_cost_amount = 0.0
+    pending_entry_side: str | None = None
     pending_exit_reason: str | None = None
+    pending_reversal_side: str | None = None
     trades: list[Trade] = []
     equity_values: list[float] = []
     exposure_values: list[float] = []
+    transaction_cost_total = 0.0
+
+    def enter(side: str, index: int, open_price: float) -> None:
+        nonlocal cash, units, position_side, entry_index, entry_price
+        nonlocal entry_equity, entry_cost_amount, transaction_cost_total
+        if side not in {"long", "short"} or position_side is not None:
+            raise ValueError("invalid position entry")
+        entry_equity = cash
+        entry_price = open_price
+        trading_capital = cash * (1 - one_way_cost)
+        entry_cost_amount = cash - trading_capital
+        direction = 1.0 if side == "long" else -1.0
+        units = direction * trading_capital / open_price
+        cash = trading_capital - units * open_price
+        position_side = side
+        entry_index = index
+        transaction_cost_total += entry_cost_amount
+
+    def exit_position(index: int, timestamp: pd.Timestamp, open_price: float, reason: str) -> None:
+        nonlocal cash, units, position_side, entry_index, entry_price
+        nonlocal entry_equity, entry_cost_amount, transaction_cost_total
+        if position_side is None or entry_index is None:
+            raise ValueError("invalid position exit")
+        exit_cost_amount = abs(units) * open_price * one_way_cost
+        ending_equity = cash + units * open_price - exit_cost_amount
+        if not isfinite(ending_equity) or ending_equity <= 0:
+            raise ValueError("synthetic_short_equity_non_positive")
+        direction = 1.0 if position_side == "long" else -1.0
+        gross_return = direction * (open_price / entry_price - 1)
+        trades.append(
+            Trade(
+                side=position_side,
+                entry_date=clean.index[entry_index].date(),
+                exit_date=timestamp.date(),
+                entry_price=entry_price,
+                exit_price=open_price,
+                holding_sessions=index - entry_index,
+                reason=reason,
+                gross_return=gross_return,
+                transaction_cost=(entry_cost_amount + exit_cost_amount) / entry_equity,
+                borrow_cost=0.0,
+                net_return=ending_equity / entry_equity - 1,
+            )
+        )
+        transaction_cost_total += exit_cost_amount
+        cash = ending_equity
+        units = 0.0
+        position_side = None
+        entry_index = None
+        entry_price = 0.0
+        entry_equity = 0.0
+        entry_cost_amount = 0.0
 
     for index, (timestamp, row) in enumerate(clean.iterrows()):
-        if pending_exit_reason is not None and entry_index is not None:
-            gross = shares * float(row["open"])
-            cash = gross * (1 - one_way_cost)
-            held = index - entry_index
-            trades.append(
-                Trade(
-                    entry_date=clean.index[entry_index].date(),
-                    exit_date=timestamp.date(),
-                    entry_price=entry_price,
-                    exit_price=float(row["open"]),
-                    holding_sessions=held,
-                    reason=pending_exit_reason,
-                    net_return=cash / entry_equity - 1,
-                )
-            )
-            shares = 0.0
-            entry_index = None
+        open_price = float(row["open"])
+        if pending_exit_reason is not None and position_side is not None:
+            reversal_side = pending_reversal_side
+            exit_position(index, timestamp, open_price, pending_exit_reason)
             pending_exit_reason = None
+            pending_reversal_side = None
+            if reversal_side is not None:
+                enter(reversal_side, index, open_price)
 
-        if pending_entry and entry_index is None:
-            entry_equity = cash
-            entry_price = float(row["open"])
-            shares = cash * (1 - one_way_cost) / entry_price
-            cash = 0.0
-            entry_index = index
-            pending_entry = False
+        if pending_entry_side is not None and position_side is None:
+            enter(pending_entry_side, index, open_price)
+            pending_entry_side = None
 
         signal = aligned_signals[index]
-        if entry_index is not None:
+        if position_side is not None and entry_index is not None:
             held_sessions = index - entry_index + 1
-            recovery = (
-                signal is not None and signal.percentile is not None and signal.percentile >= 50
+            percentile = signal.percentile if signal is not None else None
+            opposite_side = (
+                "short"
+                if position_side == "long"
+                and signal is not None
+                and signal.date in short_entry_dates
+                else "long"
+                if position_side == "short"
+                and signal is not None
+                and signal.date in long_entry_dates
+                else None
             )
-            if recovery:
+            if opposite_side is not None:
+                pending_exit_reason = "opposite_extreme"
+                pending_reversal_side = opposite_side
+            elif (
+                position_side == "long"
+                and percentile is not None
+                and percentile >= long_exit_percentile
+            ) or (
+                position_side == "short"
+                and percentile is not None
+                and percentile <= short_exit_percentile
+            ):
                 pending_exit_reason = "recovery"
             elif held_sessions >= max_holding:
                 pending_exit_reason = "max_holding"
-        elif signal is not None and signal.date in entry_dates:
-            pending_entry = True
+        elif signal is not None and signal.date in long_entry_dates:
+            pending_entry_side = "long"
+        elif signal is not None and signal.date in short_entry_dates:
+            pending_entry_side = "short"
 
-        equity_values.append(cash if entry_index is None else shares * float(row["close"]))
-        exposure_values.append(0.0 if entry_index is None else 1.0)
+        marked_equity = cash + units * float(row["close"])
+        if not isfinite(marked_equity) or marked_equity <= 0:
+            raise ValueError("synthetic_short_equity_non_positive")
+        equity_values.append(marked_equity)
+        exposure_values.append(
+            1.0 if position_side == "long" else -1.0 if position_side == "short" else 0.0
+        )
 
     equity = pd.Series(equity_values, index=clean.index, name="equity")
     buy_hold_equity = clean["close"] / float(clean["open"].iloc[0])
     buy_hold_equity.name = "buy_hold_equity"
     exposure = pd.Series(exposure_values, index=clean.index, name="exposure")
-    metrics = calculate_metrics(equity, buy_hold_equity, trades, exposure, clean)
+    metrics = calculate_metrics(
+        equity,
+        buy_hold_equity,
+        trades,
+        exposure,
+        clean,
+        transaction_cost_total=transaction_cost_total,
+    )
     pending_action: str | None = None
     pending_reason: str | None = None
     if pending_exit_reason is not None and entry_index is not None:
-        pending_action = "exit_next_open"
+        pending_action = "reverse_next_open" if pending_reversal_side else "exit_next_open"
         pending_reason = pending_exit_reason
-    elif pending_entry and entry_index is None:
+    elif pending_entry_side is not None and entry_index is None:
         pending_action = "enter_next_open"
-        pending_reason = "extreme_fear_entry"
+        pending_reason = (
+            "extreme_fear_entry" if pending_entry_side == "long" else "extreme_greed_entry"
+        )
+    open_trade = None
+    if position_side is not None and entry_index is not None:
+        current_equity = equity_values[-1]
+        open_trade = {
+            "side": position_side,
+            "entryDate": clean.index[entry_index].date().isoformat(),
+            "entryPrice": entry_price,
+            "holdingSessions": len(clean) - entry_index,
+            "unrealizedReturn": current_equity / entry_equity - 1,
+        }
 
     return BacktestResult(
         ticker=ticker,
@@ -181,6 +292,12 @@ def run_backtest(
         pending_action=pending_action,
         pending_reason=pending_reason,
         metrics=metrics,
+        policy_id=policy_id,
+        position=position_side or "cash",
+        pending_side=pending_reversal_side or pending_entry_side,
+        open_trade=open_trade,
+        long_exit_percentile=long_exit_percentile,
+        short_exit_percentile=short_exit_percentile,
     )
 
 
@@ -191,6 +308,9 @@ def run_backtest_safe(
     ticker: str,
     max_holding: int = 20,
     one_way_cost_bps: float = 10,
+    policy_id: str = "long_cash",
+    long_exit_percentile: float = 80,
+    short_exit_percentile: float = 20,
 ) -> BacktestResult:
     """Fail closed for publication paths instead of presenting false cash results."""
     try:
@@ -200,9 +320,19 @@ def run_backtest_safe(
             ticker=ticker,
             max_holding=max_holding,
             one_way_cost_bps=one_way_cost_bps,
+            policy_id=policy_id,
+            long_exit_percentile=long_exit_percentile,
+            short_exit_percentile=short_exit_percentile,
         )
     except (AttributeError, TypeError, ValueError) as error:
-        return _unavailable_result(ticker, one_way_cost_bps, str(error))
+        return _unavailable_result(
+            ticker,
+            one_way_cost_bps,
+            str(error),
+            policy_id=policy_id,
+            long_exit_percentile=long_exit_percentile,
+            short_exit_percentile=short_exit_percentile,
+        )
 
 
 def run_cost_sensitivity(
@@ -213,6 +343,9 @@ def run_cost_sensitivity(
     cost_bps: tuple[float, ...] = (0, 5, 10, 20),
     max_holding: int = 20,
     fail_closed: bool = True,
+    policy_id: str = "long_cash",
+    long_exit_percentile: float = 80,
+    short_exit_percentile: float = 20,
 ) -> list[BacktestResult]:
     """Run the predeclared complete cost grid in deterministic order."""
     if (
@@ -229,21 +362,31 @@ def run_cost_sensitivity(
             ticker=ticker,
             max_holding=max_holding,
             one_way_cost_bps=cost,
+            policy_id=policy_id,
+            long_exit_percentile=long_exit_percentile,
+            short_exit_percentile=short_exit_percentile,
         )
         for cost in cost_bps
     ]
 
 
-def _extreme_fear_entry_dates(signals: list[FlowSignal]) -> set[date]:
+def _extreme_entry_dates(signals: list[FlowSignal], state: str) -> set[date]:
+    if state not in {"extreme_fear", "extreme_greed"}:
+        raise ValueError("entry state must be extreme fear or extreme greed")
     entries: set[date] = set()
     previous_valid_state: str | None = None
     for signal in sorted(signals, key=lambda item: item.date):
         if not signal.trade_eligible:
             continue
-        if signal.state == "extreme_fear" and signal.state != previous_valid_state:
+        if signal.state == state and signal.state != previous_valid_state:
             entries.add(signal.date)
         previous_valid_state = signal.state
     return entries
+
+
+def _extreme_fear_entry_dates(signals: list[FlowSignal]) -> set[date]:
+    """Compatibility alias retained for external calculation-contract users."""
+    return _extreme_entry_dates(signals, "extreme_fear")
 
 
 def calculate_metrics(
@@ -252,6 +395,8 @@ def calculate_metrics(
     trades: list[Trade],
     exposure: pd.Series,
     bars: pd.DataFrame,
+    *,
+    transaction_cost_total: float = 0.0,
 ) -> dict[str, Any]:
     if len(equity) < 2:
         raise ValueError("at least two bars are required")
@@ -264,6 +409,8 @@ def calculate_metrics(
     buy_hold_drawdown = buy_hold_equity / buy_hold_equity.cummax() - 1
     buy_hold = float(bars["close"].iloc[-1] / bars["open"].iloc[0] - 1)
     wins = [trade.net_return > 0 for trade in trades]
+    long_trades = [trade for trade in trades if trade.side == "long"]
+    short_trades = [trade for trade in trades if trade.side == "short"]
     exposure_matched = build_exposure_matched_equity(bars, exposure)
     exposure_matched_drawdown = exposure_matched / exposure_matched.cummax() - 1
     risk_matched, risk_scale = build_risk_matched_equity(
@@ -271,7 +418,15 @@ def calculate_metrics(
     )
     risk_matched_drawdown = risk_matched / risk_matched.cummax() - 1
     notional_turnover = _annualized_notional_turnover(exposure, years)
-    transaction_sides = float(len(trades) * 2 + (1 if exposure.iloc[-1] else 0))
+    long_exposure = float((exposure > 0).mean())
+    short_exposure = float((exposure < 0).mean())
+    cash_exposure = float((exposure == 0).mean())
+    gross_exposure = float(exposure.abs().mean())
+    net_exposure = float(exposure.mean())
+    reason_counts = {
+        reason: sum(trade.reason == reason for trade in trades)
+        for reason in ("recovery", "max_holding", "opposite_extreme")
+    }
     zero_cost_timing_return = float(exposure_matched.iloc[-1] - 1)
     zero_cost_timing_drawdown = float(exposure_matched_drawdown.min())
     return {
@@ -283,13 +438,27 @@ def calculate_metrics(
         "sharpe": sharpe,
         "maxDrawdown": float(drawdown.min()),
         "winRate": float(np.mean(wins)) if wins else None,
-        "exposure": float(exposure.mean()),
+        "exposure": gross_exposure,
+        "longExposure": long_exposure,
+        "shortExposure": short_exposure,
+        "cashExposure": cash_exposure,
+        "grossExposure": gross_exposure,
+        "netExposure": net_exposure,
         # ``turnover`` remains as a compatibility alias.  New consumers should
         # use the explicitly named notional allocation change metric.
         "turnover": notional_turnover,
         "annualizedNotionalTurnover": notional_turnover,
-        "transactionSidesPerYear": transaction_sides / years if years > 0 else None,
+        "transactionSidesPerYear": notional_turnover,
         "tradeCount": len(trades),
+        "closedTradeCount": len(trades),
+        "longTradeCount": len(long_trades),
+        "shortTradeCount": len(short_trades),
+        "longWinRate": float(np.mean([trade.net_return > 0 for trade in long_trades]))
+        if long_trades
+        else None,
+        "shortWinRate": float(np.mean([trade.net_return > 0 for trade in short_trades]))
+        if short_trades
+        else None,
         "averageHoldingSessions": float(np.mean([trade.holding_sessions for trade in trades]))
         if trades
         else None,
@@ -304,6 +473,10 @@ def calculate_metrics(
         "riskMatchedBuyHoldReturn": float(risk_matched.iloc[-1] - 1),
         "riskMatchedBuyHoldMaxDrawdown": float(risk_matched_drawdown.min()),
         "riskMatchedScale": risk_scale,
+        "transactionCostTotal": float(transaction_cost_total),
+        "borrowCostTotal": 0.0,
+        "reasonCounts": reason_counts,
+        "reversalCount": reason_counts["opposite_extreme"],
     }
 
 
@@ -312,22 +485,33 @@ def build_exposure_matched_equity(bars: pd.DataFrame, exposure: pd.Series) -> pd
     clean_bars, weights = bars[["open", "close"]].align(exposure, join="inner", axis=0)
     if clean_bars.empty:
         return pd.Series(dtype=float, name="exposure_matched_equity")
-    weights = weights.astype(float).clip(0, 1)
+    weights = weights.astype(float)
+    if not weights.isin((-1.0, 0.0, 1.0)).all():
+        raise ValueError("exposure must contain only -1, 0, or 1")
     values: list[float] = []
-    capital = 1.0
+    settled_cash = 1.0
+    collateral_cash = 1.0
+    units = 0.0
+    previous_side = 0.0
     for index in range(len(clean_bars)):
-        current_exposure = bool(weights.iloc[index])
-        previous_exposure = bool(weights.iloc[index - 1]) if index else False
+        current_side = float(weights.iloc[index])
         open_price = float(clean_bars.iloc[index]["open"])
         close_price = float(clean_bars.iloc[index]["close"])
-        previous_close = float(clean_bars.iloc[index - 1]["close"]) if index else open_price
-        if current_exposure and not previous_exposure:
-            capital *= close_price / open_price
-        elif current_exposure and previous_exposure:
-            capital *= close_price / previous_close
-        elif previous_exposure and not current_exposure:
-            capital *= open_price / previous_close
-        values.append(capital)
+        if current_side != previous_side:
+            if previous_side:
+                settled_cash = collateral_cash + units * open_price
+                if settled_cash <= 0:
+                    raise ValueError("synthetic_short_equity_non_positive")
+                units = 0.0
+                collateral_cash = settled_cash
+            if current_side:
+                units = current_side * settled_cash / open_price
+                collateral_cash = settled_cash - units * open_price
+        marked = collateral_cash + units * close_price
+        if marked <= 0:
+            raise ValueError("synthetic_short_equity_non_positive")
+        values.append(marked)
+        previous_side = current_side
     matched = pd.Series(values, index=clean_bars.index)
     matched.name = "exposure_matched_equity"
     return matched
@@ -373,9 +557,15 @@ def result_to_public(result: BacktestResult) -> dict[str, Any]:
     return {
         "ticker": result.ticker,
         "oneWayCostBps": result.cost_bps,
+        "policyId": result.policy_id,
+        "position": result.position,
         "openPosition": result.open_position,
         "pendingAction": result.pending_action,
         "pendingReason": result.pending_reason,
+        "pendingSide": result.pending_side,
+        "openTrade": _public_value(result.open_trade),
+        "longExitPercentile": result.long_exit_percentile,
+        "shortExitPercentile": result.short_exit_percentile,
         "status": result.status,
         "unavailableReason": result.unavailable_reason,
         "metrics": _public_value(result.metrics),
@@ -404,7 +594,15 @@ def result_to_public(result: BacktestResult) -> dict[str, Any]:
     }
 
 
-def _unavailable_result(ticker: str, cost_bps: float, reason: str) -> BacktestResult:
+def _unavailable_result(
+    ticker: str,
+    cost_bps: float,
+    reason: str,
+    *,
+    policy_id: str,
+    long_exit_percentile: float,
+    short_exit_percentile: float,
+) -> BacktestResult:
     empty = pd.Series(dtype=float)
     return BacktestResult(
         ticker=ticker,
@@ -419,6 +617,10 @@ def _unavailable_result(ticker: str, cost_bps: float, reason: str) -> BacktestRe
         metrics={"state": "unavailable", "reason": reason},
         status="unavailable",
         unavailable_reason=reason,
+        policy_id=policy_id,
+        position="unavailable",
+        long_exit_percentile=long_exit_percentile,
+        short_exit_percentile=short_exit_percentile,
     )
 
 

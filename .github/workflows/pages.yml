@@ -23,9 +23,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - run: uv sync --locked
+      - run: uv run --frozen pytest
+      - run: uv run --frozen ruff check .
       - run: uv run --frozen python -m fearngreed.verify
       - run: uv run --frozen ruff format --check .
+      - run: npm test
       - run: uv run --frozen python -m fearngreed.site --output dist
       - run: uv run --frozen python -c "from pathlib import Path; from fearngreed.security import scan_public_files; assert not scan_public_files(Path('.'))"
       - uses: actions/configure-pages@v5

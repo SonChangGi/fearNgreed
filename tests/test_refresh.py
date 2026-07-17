@@ -92,6 +92,70 @@ def test_incremental_seed_freezes_everything_before_latest_five_sessions(tmp_pat
     assert seed.etf_reconciliation["226490"]["filledCount"] == 29
 
 
+def test_v3_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    dates = pd.bdate_range("2025-01-02", periods=260)
+    columns = [
+        "date",
+        "kospiClose",
+        "flowShare",
+        "rawFlowTrillion",
+        "sourceHash",
+        "p069500Open",
+        "p069500Close",
+        "p226490Open",
+        "p226490Close",
+    ]
+    rows = [
+        [
+            timestamp.date().isoformat(),
+            100.0 + index,
+            -0.01 + index / 100_000,
+            -0.20 + index / 10_000,
+            f"hash-{index}",
+            200.0 + index,
+            201.0 + index,
+            100.0 + index,
+            101.0 + index,
+        ]
+        for index, timestamp in enumerate(dates)
+    ]
+    history = {
+        "methodologyVersion": "fear-flow-v3",
+        "dataAsOf": rows[-1][0],
+        "fixture": False,
+        "seriesEncoding": "columnar-v1",
+        "seriesColumns": columns,
+        "seriesRows": rows,
+    }
+    (data_dir / "history.json").write_text(json.dumps(history), encoding="utf-8")
+    (data_dir / "summary.json").write_text(
+        json.dumps({"status": {"state": "ok"}}), encoding="utf-8"
+    )
+    (data_dir / "dashboard.json").write_text(
+        json.dumps({"crosschecks": {"etf": {}}}), encoding="utf-8"
+    )
+
+    assert _load_incremental_seed(tmp_path, dates[-1].date()) is None
+
+    (data_dir / "strategy-comparison.json").write_text(
+        json.dumps(
+            {
+                "methodologyVersion": "fear-flow-v3",
+                "dataAsOf": rows[-1][0],
+                "contract": "fearngreed-strategy-comparison",
+            }
+        ),
+        encoding="utf-8",
+    )
+    seed = _load_incremental_seed(tmp_path, dates[-1].date())
+
+    assert seed is not None
+    assert seed.methodology_version == "fear-flow-v3"
+    assert len(seed.history_rows) == 260
+
+
 def test_merge_frames_replaces_mutable_dates_without_touching_older_rows():
     frozen = pd.DataFrame(
         {"close": [100.0, 101.0]}, index=pd.to_datetime(["2026-07-13", "2026-07-14"])
@@ -123,7 +187,7 @@ def test_frozen_history_rejects_any_public_row_drift_until_explicit_backfill():
     ]
     seed = IncrementalSeed(
         mutable_start=dates[-2].date(),
-        methodology_version="fear-flow-v2",
+        methodology_version="fear-flow-v3",
         data_as_of=rows[-1]["date"],
         status_state="ok",
         existing_signature="signature",
@@ -139,7 +203,7 @@ def test_frozen_history_rejects_any_public_row_drift_until_explicit_backfill():
         summary={},
         dashboard={},
         history={
-            "methodologyVersion": "fear-flow-v2",
+            "methodologyVersion": "fear-flow-v3",
             "seriesColumns": columns,
             "seriesRows": [[row[column] for column in columns] for row in regenerated],
         },
@@ -164,7 +228,7 @@ def test_frozen_history_preserves_old_rows_when_all_public_values_match():
     ]
     seed = IncrementalSeed(
         mutable_start=dates[-2].date(),
-        methodology_version="fear-flow-v2",
+        methodology_version="fear-flow-v3",
         data_as_of=rows[-1]["date"],
         status_state="ok",
         existing_signature="signature",
@@ -181,7 +245,7 @@ def test_frozen_history_preserves_old_rows_when_all_public_values_match():
         summary={},
         dashboard={},
         history={
-            "methodologyVersion": "fear-flow-v2",
+            "methodologyVersion": "fear-flow-v3",
             "seriesColumns": columns,
             "seriesRows": [[row[column] for column in columns] for row in regenerated],
         },
@@ -235,7 +299,7 @@ def test_open_api_stock_crosscheck_frames_cover_both_approved_tickers():
     assert result["005930"].loc["2026-07-15", "close"] == 101.0
 
 
-def test_incremental_seed_decodes_compact_v1_history_for_v2_recomputation(tmp_path):
+def test_incremental_seed_decodes_compact_v1_history_for_v3_recomputation(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     columns = [

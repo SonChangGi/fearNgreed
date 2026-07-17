@@ -55,7 +55,7 @@ def test_next_open_entry_and_recovery_exit_with_costs() -> None:
     signals = [
         signal(0, "extreme_fear", 2),
         signal(1, "fear", 10),
-        signal(2, "neutral", 55),
+        signal(2, "greed", 85),
         signal(3, "neutral", 60),
     ]
     bars = [ProxyBar(item.date, 100 + index * 10) for index, item in enumerate(signals)]
@@ -84,7 +84,7 @@ def test_repeated_fear_is_ignored_while_position_is_open() -> None:
         signal(0, "extreme_fear", 2),
         signal(1, "extreme_fear", 1),
         signal(2, "extreme_fear", 3),
-        signal(3, "neutral", 55),
+        signal(3, "greed", 85),
         signal(4, "neutral", 60),
     ]
     bars = [ProxyBar(item.date, 100 + index, 100 + index) for index, item in enumerate(signals)]
@@ -133,7 +133,7 @@ def test_final_recovery_is_reported_as_next_open_exit() -> None:
     signals = [
         signal(0, "extreme_fear", 2),
         signal(1, "fear", 10),
-        signal(2, "neutral", 55),
+        signal(2, "greed", 80),
     ]
     bars = pd.DataFrame(
         {"open": [100.0, 101.0, 102.0], "close": [100.0, 101.0, 102.0]},
@@ -145,6 +145,97 @@ def test_final_recovery_is_reported_as_next_open_exit() -> None:
     assert result.open_position is True
     assert result.pending_action == "exit_next_open"
     assert result.pending_reason == "recovery"
+
+
+def test_default_long_recovery_boundary_is_80_and_executes_next_open() -> None:
+    signals = [
+        signal(0, "extreme_fear", 2),
+        signal(1, "neutral", 79),
+        signal(2, "greed", 80),
+        signal(3, "neutral", 50),
+    ]
+    bars = pd.DataFrame(
+        {"open": [100.0] * 4, "close": [100.0] * 4},
+        index=pd.to_datetime([item.date for item in signals]),
+    )
+
+    result = run_backtest(signals, bars, ticker="226490", one_way_cost_bps=0)
+
+    assert result.long_exit_percentile == 80
+    assert len(result.trades) == 1
+    assert result.trades[0].entry_date == bars.index[1].date()
+    assert result.trades[0].exit_date == bars.index[3].date()
+    assert result.trades[0].reason == "recovery"
+
+
+def test_synthetic_short_recovery_boundary_is_20_and_return_sign_is_short() -> None:
+    signals = [
+        signal(0, "extreme_greed", 98),
+        signal(1, "neutral", 21),
+        signal(2, "fear", 20),
+        signal(3, "neutral", 50),
+    ]
+    bars = pd.DataFrame(
+        {"open": [100.0, 100.0, 90.0, 80.0], "close": [100.0, 95.0, 85.0, 80.0]},
+        index=pd.to_datetime([item.date for item in signals]),
+    )
+
+    result = run_backtest(
+        signals,
+        bars,
+        ticker="226490",
+        policy_id="long_short_cash",
+        one_way_cost_bps=10,
+    )
+
+    assert result.short_exit_percentile == 20
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.side == "short"
+    assert trade.entry_date == bars.index[1].date()
+    assert trade.exit_date == bars.index[3].date()
+    assert trade.gross_return == pytest.approx(0.20)
+    assert trade.transaction_cost == pytest.approx(0.0017992)
+    assert trade.net_return == pytest.approx(0.1980008)
+    assert result.metrics["shortTradeCount"] == 1
+    assert result.metrics["longTradeCount"] == 0
+
+
+def test_opposite_extreme_reverses_on_one_open_and_charges_four_sides() -> None:
+    signals = [
+        signal(0, "extreme_fear", 2),
+        signal(1, "extreme_greed", 98),
+        signal(2, "fear", 20),
+        signal(3, "neutral", 50),
+    ]
+    bars = pd.DataFrame(
+        {"open": [100.0] * 4, "close": [100.0] * 4},
+        index=pd.to_datetime([item.date for item in signals]),
+    )
+
+    result = run_backtest(
+        signals,
+        bars,
+        ticker="226490",
+        policy_id="long_short_cash",
+        one_way_cost_bps=10,
+    )
+
+    assert [(trade.side, trade.reason) for trade in result.trades] == [
+        ("long", "opposite_extreme"),
+        ("short", "recovery"),
+    ]
+    assert result.trades[0].exit_date == result.trades[1].entry_date == bars.index[2].date()
+    assert result.metrics["reversalCount"] == 1
+    assert result.metrics["longTradeCount"] == 1
+    assert result.metrics["shortTradeCount"] == 1
+    assert result.metrics["totalReturn"] == pytest.approx(0.999**4 - 1)
+    assert result.metrics["transactionCostTotal"] == pytest.approx(
+        0.001 + 0.000999 + 0.000998001 + 0.000997002999
+    )
+    assert result.metrics["longExposure"] == pytest.approx(0.25)
+    assert result.metrics["shortExposure"] == pytest.approx(0.25)
+    assert result.metrics["cashExposure"] == pytest.approx(0.50)
 
 
 def test_event_returns_include_external_benchmark_and_paired_excess() -> None:
@@ -278,7 +369,7 @@ def test_cost_grid_and_matched_comparators_are_reported() -> None:
 def test_exposure_matched_benchmark_uses_the_same_open_execution_windows() -> None:
     signals = [
         signal(0, "extreme_fear", 2),
-        signal(1, "neutral", 55),
+        signal(1, "greed", 80),
         signal(2, "neutral", 60),
     ]
     bars = pd.DataFrame(

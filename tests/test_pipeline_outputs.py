@@ -117,7 +117,23 @@ def test_public_outputs_expose_three_models_with_compact_daily_history() -> None
             assert model["trainingCount"] == 252
     assert outputs.history["seriesEncoding"] == "columnar-v1"
     assert "rawState" in outputs.history["seriesColumns"]
+    assert {
+        "tradeEligible",
+        "scaledTradeEligible",
+        "rawTradeEligible",
+        "disparityTradeEligible",
+    }.issubset(outputs.history["seriesColumns"])
     assert len(outputs.history["seriesRows"][-1]) == len(outputs.history["seriesColumns"])
+    assert outputs.history["strategyScenario"] == {
+        "engineVersion": "signed-fixed-quantity-v1",
+        "defaultLongExitPercentile": 80,
+        "customLongExitMinimum": 50,
+        "customLongExitMaximum": 94,
+        "customLongExitStep": 1,
+        "shortExitFormula": "100-longExitPercentile",
+        "signalInputsAreServerPublished": True,
+        "browserMayRefitRegression": False,
+    }
     roles = outputs.history["flowChannelRoles"]
     assert roles["primaryChannel"] == "retail"
     assert roles["strategyChannelCount"] == 1
@@ -126,6 +142,7 @@ def test_public_outputs_expose_three_models_with_compact_daily_history() -> None
         assert roles["channels"][channel]["strategyUse"] == "diagnostic_only"
         assert roles["channels"][channel]["eligibleForTrading"] is False
     assert output_size_report(outputs)["history"] < 2_000_000
+    assert output_size_report(outputs)["strategy_comparison"] < 500_000
 
 
 def test_scatter_contains_exact_training_window_and_one_current_observation() -> None:
@@ -472,11 +489,11 @@ def test_scatter_helpers_are_empty_safe() -> None:
     assert _scatter_meta(frame)["pointCount"] == 0
 
 
-def test_v2_outputs_separate_operations_signal_and_publish_full_result_matrix() -> None:
+def test_v3_outputs_separate_operations_signal_and_publish_strategy_comparison() -> None:
     outputs = build_outputs(_pipeline_inputs())
     entity = outputs.summary["primaryEntities"][0]
 
-    assert outputs.summary["methodologyVersion"] == "fear-flow-v2"
+    assert outputs.summary["methodologyVersion"] == "fear-flow-v3"
     assert outputs.summary["status"]["label"] in {"데이터 정상", "데이터 저하"}
     assert entity["signalLabel"] in {
         "극단적 공포",
@@ -486,7 +503,8 @@ def test_v2_outputs_separate_operations_signal_and_publish_full_result_matrix() 
         "극단적 탐욕",
         "산출 불가",
     }
-    assert entity["strategyModel"] == "robust_huber_scaled"
+    assert entity["strategyModel"] == "robust_huber_scaled_exit80"
+    assert outputs.summary["payload"]["strategyComparisonUrl"] == ("./strategy-comparison.json")
     assert entity["fieldSources"]["retailFlow"] == "authenticated_pykrx"
     assert outputs.dashboard["regression"]["primaryModel"] == "robust"
     assert set(outputs.dashboard["eventsByModel"]) == {"robust", "scaled", "raw"}
@@ -510,6 +528,46 @@ def test_v2_outputs_separate_operations_signal_and_publish_full_result_matrix() 
     event_section = outputs.dashboard["eventsByModel"]["robust"]["KOSPI"]["nonOverlapping20d"]
     assert event_section["meanExcessReturnCi95BenchmarkTreatment"] == "fixed_external_mean"
     assert "meanExcessReturnCi95BenchmarkTreatment" not in summary_row
+
+    comparison = outputs.strategy_comparison
+    assert comparison["contract"] == "fearngreed-strategy-comparison"
+    assert comparison["methodologyVersion"] == "fear-flow-v3"
+    assert comparison["dynamicExitControl"] == {
+        "defaultLongExitPercentile": 80,
+        "minimum": 50,
+        "maximum": 94,
+        "step": 1,
+        "shortExitFormula": "100-longExitPercentile",
+        "calculationLocation": "browser_on_server_published_signals_and_prices",
+        "regressionRefit": False,
+    }
+    synthetic = comparison["policyDefinitions"]["longShortCash"]
+    assert synthetic["policyId"] == "long_short_cash"
+    assert synthetic["sameOpenReversal"] is True
+    assert synthetic["shortAccounting"] == (
+        "post_entry_cost_available_equity_1x_fixed_quantity_no_rebalance"
+    )
+    assert synthetic["borrowFeeAnnualPct"] == 0
+    assert synthetic["shortabilityModeled"] is False
+    for ticker in ("226490", "069500"):
+        for period in ("fullPeriod", "commonPeriod"):
+            result = comparison["proxies"][ticker][period]["robust_10bp"]
+            assert result["policyId"] == "long_short_cash"
+            assert result["longExitPercentile"] == 80
+            assert result["shortExitPercentile"] == 20
+            metrics = result["metrics"]
+            assert metrics["longExposure"] + metrics["shortExposure"] + metrics[
+                "cashExposure"
+            ] == pytest.approx(1)
+            assert metrics["grossExposure"] == pytest.approx(
+                metrics["longExposure"] + metrics["shortExposure"]
+            )
+            assert metrics["netExposure"] == pytest.approx(
+                metrics["longExposure"] - metrics["shortExposure"]
+            )
+        sensitivity = comparison["exitThresholdSensitivity"]["proxies"][ticker]
+        assert sensitivity["fullPeriod"]["exit50"]["longExitPercentile"] == 50
+        assert sensitivity["fullPeriod"]["exit80"]["longExitPercentile"] == 80
 
 
 def test_pdf_replica_is_isolated_from_primary_signal_and_uses_source_cutoff() -> None:
