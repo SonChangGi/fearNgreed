@@ -26,6 +26,13 @@ SIZE_LIMITS = {
     "data/automation-status.json": 50_000,
     "data/strategy-comparison.json": 500_000,
 }
+BROWSER_SCENARIO_INPUTS = {
+    "lookback": {"default": 252, "minimum": 60, "maximum": 756, "step": 1},
+    "minimumR2": {"default": 0.2, "minimum": 0, "maximum": 0.8, "step": 0.05},
+    "extremeTail": {"default": 5, "minimum": 1, "maximum": 20, "step": 1},
+    "maxHolding": {"default": 20, "minimum": 1, "maximum": 60, "step": 1},
+}
+MINIMUM_TRAINING_OBSERVATIONS_FORMULA = "min(lookback,max(40,min(200,ceil(lookback*0.8))))"
 
 
 def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[str, Any]:
@@ -389,8 +396,14 @@ def _verify_strategy_comparison(
         "maximum": 94,
         "step": 1,
         "shortExitFormula": "100-longExitPercentile",
-        "calculationLocation": "browser_on_server_published_signals_and_prices",
-        "regressionRefit": False,
+        "calculationLocation": "browser_on_server_published_history_and_adjusted_prices",
+        "regressionRefit": True,
+        "signalEngineVersion": "browser-past-only-rolling-v1",
+        "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
+        "configurableInputs": BROWSER_SCENARIO_INPUTS,
+        "minimumTrainingObservationsFormula": MINIMUM_TRAINING_OBSERVATIONS_FORMULA,
+        "pastOnly": True,
+        "evaluationRangeSeparate": True,
     }:
         raise ValueError("dynamic exit-control contract is invalid")
     _verify_history_strategy_scenario(history, control)
@@ -477,13 +490,19 @@ def _verify_history_strategy_scenario(history: dict[str, Any], control: dict[str
     scenario = history.get("strategyScenario")
     expected = {
         "engineVersion": "signed-fixed-quantity-v1",
+        "signalEngineVersion": "browser-past-only-rolling-v1",
         "defaultLongExitPercentile": 80,
         "customLongExitMinimum": 50,
         "customLongExitMaximum": 94,
         "customLongExitStep": 1,
         "shortExitFormula": "100-longExitPercentile",
         "signalInputsAreServerPublished": True,
-        "browserMayRefitRegression": False,
+        "browserMayRefitRegression": True,
+        "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
+        "configurableInputs": BROWSER_SCENARIO_INPUTS,
+        "minimumTrainingObservationsFormula": MINIMUM_TRAINING_OBSERVATIONS_FORMULA,
+        "pastOnly": True,
+        "evaluationRangeSeparate": True,
     }
     if not isinstance(scenario, dict) or scenario != expected:
         raise ValueError("history strategy-scenario contract is invalid")
@@ -494,6 +513,13 @@ def _verify_history_strategy_scenario(history: dict[str, Any], control: dict[str
         or scenario["customLongExitStep"] != control["step"]
         or scenario["shortExitFormula"] != control["shortExitFormula"]
         or scenario["browserMayRefitRegression"] is not control["regressionRefit"]
+        or scenario["signalEngineVersion"] != control["signalEngineVersion"]
+        or scenario["scenarioAuthority"] != control["scenarioAuthority"]
+        or scenario["configurableInputs"] != control["configurableInputs"]
+        or scenario["minimumTrainingObservationsFormula"]
+        != control["minimumTrainingObservationsFormula"]
+        or scenario["pastOnly"] is not control["pastOnly"]
+        or scenario["evaluationRangeSeparate"] is not control["evaluationRangeSeparate"]
     ):
         raise ValueError("history and strategy exit-control contracts do not match")
 

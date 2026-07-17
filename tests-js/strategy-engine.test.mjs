@@ -225,6 +225,31 @@ test('custom range is snapped and rebased after the full path while preserving c
   assert.equal(ranged.range.pathMode, 'full_history_then_window');
 });
 
+test('historical end date is an information cutoff and future prices cannot invalidate the result', () => {
+  const throughCutoff = [
+    row({date: '2026-01-01', state: 'extreme_greed', percentile: 99, open: 100}),
+    row({date: '2026-01-02', state: 'greed', percentile: 90, open: 100}),
+    row({date: '2026-01-03', state: 'greed', percentile: 90, open: 100}),
+  ];
+  const options = {
+    period: 'full',
+    costBps: 0,
+    policyId: 'long_short_cash',
+    longExitPercentile: 80,
+    endDate: '2026-01-03',
+  };
+  const baseline = runStrategyScenario({historyRows: throughCutoff, ...options});
+  const withDestructiveFuture = runStrategyScenario({
+    historyRows: [...throughCutoff, row({date: '2026-01-04', state: 'greed', percentile: 90, open: 300, close: 300})],
+    ...options,
+  });
+
+  assert.equal(baseline.position, 'short');
+  assert.deepEqual(withDestructiveFuture.equity, baseline.equity);
+  assert.deepEqual(withDestructiveFuture.actions, baseline.actions);
+  assert.deepEqual(withDestructiveFuture.metrics, baseline.metrics);
+});
+
 test('unsupported short disparity policy and malformed public inputs fail closed', () => {
   const historyRows = [
     row({date: '2026-04-01'}),

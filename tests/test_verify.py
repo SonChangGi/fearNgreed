@@ -35,7 +35,7 @@ def test_verify_local_reports_hashes_and_headroom() -> None:
     summary = json.loads((root / "data" / "summary.json").read_text(encoding="utf-8"))
     schema = json.loads((root / "schemas" / "summary.schema.json").read_text(encoding="utf-8"))
     if summary.get("methodologyVersion") != schema["properties"]["methodologyVersion"].get("const"):
-        pytest.skip("generated data is updated after the v3 pipeline integration step")
+        pytest.skip("generated data is updated after the v4 pipeline integration step")
     receipt = verify_local(root, minimum_headroom_ratio=0)
     assert receipt["ok"] is True
     assert set(receipt["hashes"]) == {
@@ -53,13 +53,41 @@ def _strategy_contract_fixtures() -> tuple[dict, dict, dict, dict]:
     history = {
         "strategyScenario": {
             "engineVersion": "signed-fixed-quantity-v1",
+            "signalEngineVersion": "browser-past-only-rolling-v1",
             "defaultLongExitPercentile": 80,
             "customLongExitMinimum": 50,
             "customLongExitMaximum": 94,
             "customLongExitStep": 1,
             "shortExitFormula": "100-longExitPercentile",
             "signalInputsAreServerPublished": True,
-            "browserMayRefitRegression": False,
+            "browserMayRefitRegression": True,
+            "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
+            "configurableInputs": {
+                "lookback": {"default": 252, "minimum": 60, "maximum": 756, "step": 1},
+                "minimumR2": {
+                    "default": 0.2,
+                    "minimum": 0,
+                    "maximum": 0.8,
+                    "step": 0.05,
+                },
+                "extremeTail": {
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 20,
+                    "step": 1,
+                },
+                "maxHolding": {
+                    "default": 20,
+                    "minimum": 1,
+                    "maximum": 60,
+                    "step": 1,
+                },
+            },
+            "minimumTrainingObservationsFormula": (
+                "min(lookback,max(40,min(200,ceil(lookback*0.8))))"
+            ),
+            "pastOnly": True,
+            "evaluationRangeSeparate": True,
         }
     }
     strategy = {
@@ -71,8 +99,16 @@ def _strategy_contract_fixtures() -> tuple[dict, dict, dict, dict]:
             "maximum": 94,
             "step": 1,
             "shortExitFormula": "100-longExitPercentile",
-            "calculationLocation": "browser_on_server_published_signals_and_prices",
-            "regressionRefit": False,
+            "calculationLocation": ("browser_on_server_published_history_and_adjusted_prices"),
+            "regressionRefit": True,
+            "signalEngineVersion": "browser-past-only-rolling-v1",
+            "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
+            "configurableInputs": deepcopy(history["strategyScenario"]["configurableInputs"]),
+            "minimumTrainingObservationsFormula": (
+                "min(lookback,max(40,min(200,ceil(lookback*0.8))))"
+            ),
+            "pastOnly": True,
+            "evaluationRangeSeparate": True,
         },
         "policyDefinitions": {
             "longShortCash": {
@@ -178,6 +214,11 @@ def test_strategy_comparison_verifier_checks_long_cash_and_history_contracts() -
     summary, dashboard, history, strategy = _strategy_contract_fixtures()
     history["strategyScenario"]["customLongExitMaximum"] = 95
     with pytest.raises(ValueError, match="strategy-scenario contract"):
+        _verify_strategy_comparison(summary, dashboard, history, strategy)
+
+    summary, dashboard, history, strategy = _strategy_contract_fixtures()
+    strategy["dynamicExitControl"]["pastOnly"] = False
+    with pytest.raises(ValueError, match="dynamic exit-control contract"):
         _verify_strategy_comparison(summary, dashboard, history, strategy)
 
 

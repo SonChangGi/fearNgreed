@@ -11,10 +11,10 @@ from jsonschema.exceptions import ValidationError
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_v3_summary_schema_requires_strategy_comparison_url() -> None:
+def test_v4_summary_schema_requires_strategy_comparison_url() -> None:
     schema = json.loads((ROOT / "schemas" / "summary.schema.json").read_text())
 
-    assert schema["properties"]["methodologyVersion"]["const"] == "fear-flow-v3"
+    assert schema["properties"]["methodologyVersion"]["const"] == "fear-flow-v4"
     payload = schema["properties"]["payload"]
     assert "strategyComparisonUrl" in payload["required"]
     assert payload["properties"]["strategyComparisonUrl"]["const"] == ("./strategy-comparison.json")

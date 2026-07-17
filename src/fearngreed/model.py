@@ -86,9 +86,10 @@ def fit_regression(
     """Fit the OLS baseline or a deterministic Huber IRLS alternative.
 
     ``r2`` is always the ordinary, unweighted coefficient of determination so
-    the two methods remain comparable.  ``fit_score`` is the score used for the
-    quality gate: ordinary R-squared for OLS and weighted R-squared for Huber.
-    No data outside ``xs``/``ys`` is consulted.
+    the two methods remain comparable and is the score used by the signal
+    quality gate. ``fit_score`` additionally exposes ordinary R-squared for OLS
+    and weighted R-squared for Huber as a diagnostic. No data outside
+    ``xs``/``ys`` is consulted.
     """
     if len(xs) != len(ys) or len(xs) < 2:
         raise ValueError("regression requires equal-length samples")

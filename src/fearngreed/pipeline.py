@@ -33,7 +33,14 @@ from .events import (
 from .model import FlowSignal
 from .quality import compare_close_anchors, compare_latest_close
 
-METHODOLOGY_VERSION = "fear-flow-v3"
+METHODOLOGY_VERSION = "fear-flow-v4"
+BROWSER_SCENARIO_INPUTS = {
+    "lookback": {"default": 252, "minimum": 60, "maximum": 756, "step": 1},
+    "minimumR2": {"default": 0.2, "minimum": 0, "maximum": 0.8, "step": 0.05},
+    "extremeTail": {"default": 5, "minimum": 1, "maximum": 20, "step": 1},
+    "maxHolding": {"default": 20, "minimum": 1, "maximum": 60, "step": 1},
+}
+MINIMUM_TRAINING_OBSERVATIONS_FORMULA = "min(lookback,max(40,min(200,ceil(lookback*0.8))))"
 PROXY_TICKERS = {"226490": "226490.KS", "069500": "069500.KS"}
 STOCK_TICKERS = {"000660": "000660.KS", "005930": "005930.KS"}
 PDF_ANNOTATED_EVENTS = {
@@ -269,13 +276,21 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         "flowChannelRoles": _history_flow_channel_roles(),
         "strategyScenario": {
             "engineVersion": "signed-fixed-quantity-v1",
+            "signalEngineVersion": "browser-past-only-rolling-v1",
             "defaultLongExitPercentile": 80,
             "customLongExitMinimum": 50,
             "customLongExitMaximum": 94,
             "customLongExitStep": 1,
             "shortExitFormula": "100-longExitPercentile",
             "signalInputsAreServerPublished": True,
-            "browserMayRefitRegression": False,
+            "browserMayRefitRegression": True,
+            "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
+            "configurableInputs": {
+                name: dict(bounds) for name, bounds in BROWSER_SCENARIO_INPUTS.items()
+            },
+            "minimumTrainingObservationsFormula": (MINIMUM_TRAINING_OBSERVATIONS_FORMULA),
+            "pastOnly": True,
+            "evaluationRangeSeparate": True,
         },
         "seriesEncoding": "columnar-v1",
         "seriesColumns": history_columns,
@@ -1034,8 +1049,16 @@ def _strategy_comparison(
             "maximum": 94,
             "step": 1,
             "shortExitFormula": "100-longExitPercentile",
-            "calculationLocation": "browser_on_server_published_signals_and_prices",
-            "regressionRefit": False,
+            "calculationLocation": ("browser_on_server_published_history_and_adjusted_prices"),
+            "regressionRefit": True,
+            "signalEngineVersion": "browser-past-only-rolling-v1",
+            "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
+            "configurableInputs": {
+                name: dict(bounds) for name, bounds in BROWSER_SCENARIO_INPUTS.items()
+            },
+            "minimumTrainingObservationsFormula": (MINIMUM_TRAINING_OBSERVATIONS_FORMULA),
+            "pastOnly": True,
+            "evaluationRangeSeparate": True,
         },
         "exitThresholdSensitivity": {
             "policyId": "long_cash",

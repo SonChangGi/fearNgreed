@@ -126,13 +126,29 @@ def test_public_outputs_expose_three_models_with_compact_daily_history() -> None
     assert len(outputs.history["seriesRows"][-1]) == len(outputs.history["seriesColumns"])
     assert outputs.history["strategyScenario"] == {
         "engineVersion": "signed-fixed-quantity-v1",
+        "signalEngineVersion": "browser-past-only-rolling-v1",
         "defaultLongExitPercentile": 80,
         "customLongExitMinimum": 50,
         "customLongExitMaximum": 94,
         "customLongExitStep": 1,
         "shortExitFormula": "100-longExitPercentile",
         "signalInputsAreServerPublished": True,
-        "browserMayRefitRegression": False,
+        "browserMayRefitRegression": True,
+        "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
+        "configurableInputs": {
+            "lookback": {"default": 252, "minimum": 60, "maximum": 756, "step": 1},
+            "minimumR2": {
+                "default": 0.2,
+                "minimum": 0,
+                "maximum": 0.8,
+                "step": 0.05,
+            },
+            "extremeTail": {"default": 5, "minimum": 1, "maximum": 20, "step": 1},
+            "maxHolding": {"default": 20, "minimum": 1, "maximum": 60, "step": 1},
+        },
+        "minimumTrainingObservationsFormula": ("min(lookback,max(40,min(200,ceil(lookback*0.8))))"),
+        "pastOnly": True,
+        "evaluationRangeSeparate": True,
     }
     roles = outputs.history["flowChannelRoles"]
     assert roles["primaryChannel"] == "retail"
@@ -489,11 +505,11 @@ def test_scatter_helpers_are_empty_safe() -> None:
     assert _scatter_meta(frame)["pointCount"] == 0
 
 
-def test_v3_outputs_separate_operations_signal_and_publish_strategy_comparison() -> None:
+def test_v4_outputs_separate_operations_signal_and_publish_strategy_comparison() -> None:
     outputs = build_outputs(_pipeline_inputs())
     entity = outputs.summary["primaryEntities"][0]
 
-    assert outputs.summary["methodologyVersion"] == "fear-flow-v3"
+    assert outputs.summary["methodologyVersion"] == "fear-flow-v4"
     assert outputs.summary["status"]["label"] in {"데이터 정상", "데이터 저하"}
     assert entity["signalLabel"] in {
         "극단적 공포",
@@ -562,15 +578,31 @@ def test_v3_outputs_separate_operations_signal_and_publish_strategy_comparison()
 
     comparison = outputs.strategy_comparison
     assert comparison["contract"] == "fearngreed-strategy-comparison"
-    assert comparison["methodologyVersion"] == "fear-flow-v3"
+    assert comparison["methodologyVersion"] == "fear-flow-v4"
     assert comparison["dynamicExitControl"] == {
         "defaultLongExitPercentile": 80,
         "minimum": 50,
         "maximum": 94,
         "step": 1,
         "shortExitFormula": "100-longExitPercentile",
-        "calculationLocation": "browser_on_server_published_signals_and_prices",
-        "regressionRefit": False,
+        "calculationLocation": "browser_on_server_published_history_and_adjusted_prices",
+        "regressionRefit": True,
+        "signalEngineVersion": "browser-past-only-rolling-v1",
+        "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
+        "configurableInputs": {
+            "lookback": {"default": 252, "minimum": 60, "maximum": 756, "step": 1},
+            "minimumR2": {
+                "default": 0.2,
+                "minimum": 0,
+                "maximum": 0.8,
+                "step": 0.05,
+            },
+            "extremeTail": {"default": 5, "minimum": 1, "maximum": 20, "step": 1},
+            "maxHolding": {"default": 20, "minimum": 1, "maximum": 60, "step": 1},
+        },
+        "minimumTrainingObservationsFormula": ("min(lookback,max(40,min(200,ceil(lookback*0.8))))"),
+        "pastOnly": True,
+        "evaluationRangeSeparate": True,
     }
     synthetic = comparison["policyDefinitions"]["longShortCash"]
     assert synthetic["policyId"] == "long_short_cash"

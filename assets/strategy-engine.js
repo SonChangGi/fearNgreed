@@ -264,10 +264,16 @@ export function runStrategyScenario({
   if (!Number.isInteger(maxHolding) || maxHolding <= 0) throw new Error("최대 보유기간이 올바르지 않습니다.");
   const dates = historyRows.map((row) => row.date);
   if (dates.some((date, index) => typeof date !== "string" || (index && date <= dates[index - 1]))) throw new Error("공개 전략 입력 날짜가 오름차순 고유값이 아닙니다.");
-  const bars = selectedBars(historyRows, proxy, period);
+  // The evaluation end is also the information cutoff. Keep every row before
+  // it so carry-in positions are reproduced, but never let later prices decide
+  // whether a historical scenario is available.
+  const simulationRows = requestedEndDate
+    ? historyRows.filter((row) => row.date <= requestedEndDate)
+    : historyRows;
+  const bars = selectedBars(simulationRows, proxy, period);
   if (bars.length < 2) throw new Error("선택한 ETF·기간의 가격 이력이 부족합니다.");
-  const longEntryDates = extremeEntryDates(historyRows, fields, "extreme_fear");
-  const shortEntryDates = policyId === "long_short_cash" ? extremeEntryDates(historyRows, fields, "extreme_greed") : new Set();
+  const longEntryDates = extremeEntryDates(simulationRows, fields, "extreme_fear");
+  const shortEntryDates = policyId === "long_short_cash" ? extremeEntryDates(simulationRows, fields, "extreme_greed") : new Set();
   const cost = Number(costBps) / 10_000;
   let cash = 1;
   let units = 0;

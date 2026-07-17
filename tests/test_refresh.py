@@ -92,7 +92,7 @@ def test_incremental_seed_freezes_everything_before_latest_five_sessions(tmp_pat
     assert seed.etf_reconciliation["226490"]["filledCount"] == 29
 
 
-def test_v3_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
+def test_v4_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     dates = pd.bdate_range("2025-01-02", periods=260)
@@ -122,7 +122,7 @@ def test_v3_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
         for index, timestamp in enumerate(dates)
     ]
     history = {
-        "methodologyVersion": "fear-flow-v3",
+        "methodologyVersion": "fear-flow-v4",
         "dataAsOf": rows[-1][0],
         "fixture": False,
         "seriesEncoding": "columnar-v1",
@@ -142,7 +142,7 @@ def test_v3_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
     (data_dir / "strategy-comparison.json").write_text(
         json.dumps(
             {
-                "methodologyVersion": "fear-flow-v3",
+                "methodologyVersion": "fear-flow-v4",
                 "dataAsOf": rows[-1][0],
                 "contract": "fearngreed-strategy-comparison",
             }
@@ -152,7 +152,7 @@ def test_v3_incremental_seed_requires_strategy_comparison_artifact(tmp_path):
     seed = _load_incremental_seed(tmp_path, dates[-1].date())
 
     assert seed is not None
-    assert seed.methodology_version == "fear-flow-v3"
+    assert seed.methodology_version == "fear-flow-v4"
     assert len(seed.history_rows) == 260
 
 

@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const q=new URLSearchParams(location.search).get("theme");const s=localStorage.getItem("quant-calm-theme");const p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=q==="dark"||q==="light"?q:(s||p)}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260717-release-v4">
+  <link rel="stylesheet" href="assets/styles.css?v=20260717-release-v6">
 </head>
 <body id="top">
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -59,8 +59,8 @@
 
     <section class="analysis-config" aria-labelledby="analysis-config-title">
       <div class="analysis-config-head">
-        <div><p class="eyebrow">ONE APPLIED SCENARIO</p><h2 id="analysis-config-title">분석 설정</h2><p>연구 트랙은 현재 신호·차트·전략에 공통 적용하고, 포지션 정책·청산선·기간은 통합 차트와 과거검증에 적용합니다. 사건 연구는 결과 재선택을 막기 위해 같은 트랙의 전체 이력 사전 계산 표본으로 따로 표시합니다.</p></div>
-        <span class="scope-badge practical">신호·전략 연동</span>
+        <div><p class="eyebrow">ONE APPLIED SCENARIO</p><h2 id="analysis-config-title">분석 설정</h2><p>연구 트랙은 현재 신호·차트·전략에 공통 적용하고, 신호 학습값은 과거 정보만 사용하는 롤링 워크포워드 계산에 적용합니다. 한 번 적용하면 사건 연구까지 같은 조건으로 다시 계산합니다.</p></div>
+        <span class="scope-badge practical">학습·신호·전략 연동</span>
       </div>
       <div class="analysis-config-grid">
         <fieldset class="config-field config-track">
@@ -86,9 +86,24 @@
         <div class="config-field config-rule linked-rule" aria-live="polite"><span class="control-label">전략 신호</span><strong id="linked-strategy-rule">연구 트랙과 자동 연동</strong><small>강건 회귀→실전, 규모보정 OLS→기준선, 절대 수급→원문 근사</small></div>
         <form id="exit-threshold-form" class="exit-threshold-form config-exit" novalidate><label for="exit-threshold-input"><span>사용자 청산 기준</span><small>롱은 입력값 이상, 숏은 대칭값 이하</small></label><div class="exit-threshold-entry"><input id="exit-threshold-input" name="exit-threshold" type="number" min="50" max="94" step="1" value="80" inputmode="numeric" aria-describedby="exit-threshold-help exit-threshold-status"><button type="submit">적용</button></div><p id="exit-threshold-help">현재: 롱 ≥<strong id="exit-threshold-value">80</strong> · 숏 ≤<strong id="short-exit-threshold-value">20</strong>. 입력 범위 50~94.</p><p id="exit-threshold-status" class="history-range-status" role="status" aria-live="polite"></p></form>
       </div>
+      <form id="signal-settings-form" class="signal-learning-panel" aria-labelledby="signal-learning-title" novalidate>
+        <div class="signal-learning-head">
+          <div><span class="control-kicker">PAST-ONLY WALK-FORWARD</span><strong id="signal-learning-title">신호 학습 설정</strong><p>각 거래일은 그날 이전 관측치만 학습합니다. 평가 기간과 분리해 시장 체제에 맞는 학습창을 비교하세요.</p></div>
+          <span class="signal-learning-scope">현재 신호 · 사건 연구 · 전략 재실행</span>
+        </div>
+        <div class="signal-learning-grid">
+          <label for="signal-lookback-input"><span>롤링 학습창</span><small>거래일 · 60~756</small><input id="signal-lookback-input" name="lookback" type="number" min="60" max="756" step="1" value="252" list="signal-lookback-presets" inputmode="numeric" required aria-describedby="signal-lookback-help signal-settings-status"><em id="signal-lookback-help">약 1년</em></label>
+          <datalist id="signal-lookback-presets"><option value="63" label="3개월"></option><option value="126" label="6개월"></option><option value="252" label="1년"></option><option value="504" label="2년"></option><option value="756" label="3년"></option></datalist>
+          <label for="signal-min-r2-input"><span>최소 회귀 R²</span><small>0~0.80</small><input id="signal-min-r2-input" name="min-r2" type="number" min="0" max="0.8" step="0.05" value="0.20" inputmode="decimal" required aria-describedby="signal-min-r2-help signal-settings-status"><em id="signal-min-r2-help">미달 시 신규 진입 차단</em></label>
+          <label for="signal-tail-input"><span>극단 꼬리</span><small>백분위 · 1~20</small><input id="signal-tail-input" name="extreme-tail" type="number" min="1" max="20" step="1" value="5" inputmode="numeric" required aria-describedby="signal-tail-help signal-settings-status"><em id="signal-tail-help">공포 ≤5 · 탐욕 ≥95</em></label>
+          <label for="signal-max-holding-input"><span>최대 보유</span><small>거래일 · 1~60</small><input id="signal-max-holding-input" name="max-holding" type="number" min="1" max="60" step="1" value="20" inputmode="numeric" required aria-describedby="signal-max-holding-help signal-settings-status"><em id="signal-max-holding-help">회복이 없을 때 시간 청산</em></label>
+          <button id="apply-signal-settings" class="signal-settings-apply" type="submit"><span>학습 설정 적용</span><small>전체 분석 다시 계산</small></button>
+        </div>
+        <p id="signal-settings-status" class="signal-settings-status" role="status" aria-live="polite">기본값 적용 중 · 학습창 252일 · 최소 R² 0.20 · 극단 꼬리 5% · 최대 보유 20일</p>
+      </form>
       <div class="analysis-date-panel" aria-labelledby="analysis-date-label">
-        <div class="analysis-date-copy"><strong id="analysis-date-label">분석 기간</strong><span>빠른 기간 또는 시작·종료일을 선택하면 통합 차트와 전략 결과에 같은 구간을 적용합니다.</span></div>
-        <div class="history-range-toolbar" aria-label="분석 기간 설정">
+        <div class="analysis-date-copy"><strong id="analysis-date-label">성과 평가 기간</strong><span>학습창과 별개입니다. 빠른 기간 또는 시작·종료일을 선택하면 다시 계산된 신호·통합 차트·사건 연구·전략 결과를 이 구간에서 평가합니다.</span></div>
+        <div class="history-range-toolbar" aria-label="성과 평가 기간 설정">
           <div class="chart-actions segmented" role="group" aria-label="빠른 표시 기간"><button type="button" data-window="1m" aria-pressed="false">1개월</button><button type="button" data-window="3m" aria-pressed="false">3개월</button><button type="button" data-window="6m" aria-pressed="false">6개월</button><button type="button" data-window="ytd" aria-pressed="false">YTD</button><button type="button" data-window="1y" aria-pressed="false">1년</button><button type="button" data-window="3y" aria-pressed="true">3년</button><button type="button" data-window="all" aria-pressed="false">전체</button></div>
           <form id="history-range-form" class="history-custom-range" aria-label="사용자 지정 기간">
             <label for="history-start">시작일<input id="history-start" name="history-start" type="date"></label>
@@ -99,8 +114,8 @@
         </div>
         <p id="history-range-status" class="history-range-status" role="status" aria-live="polite"></p>
       </div>
-      <p id="model-selection-note" class="analysis-track-note">선택 연구 트랙을 현재값·해석 브리지·산점도·사건 검증과 전략 신호에 함께 적용합니다.</p>
-      <p id="backtest-selection-note" class="analysis-selection-note" role="status" aria-live="polite">공개된 사전 계산 결과를 선택합니다.</p>
+      <p id="model-selection-note" class="analysis-track-note">선택 연구 트랙과 학습 설정을 현재값·해석 브리지·산점도·사건 검증과 전략 신호에 함께 적용합니다.</p>
+      <p id="backtest-selection-note" class="analysis-selection-note" role="status" aria-live="polite">설정을 적용해 분석을 계산하는 중입니다.</p>
     </section>
 
     <section id="conclusion" class="conclusion-section" aria-labelledby="conclusion-title">
@@ -112,18 +127,18 @@
 
     <section id="signal" aria-labelledby="signal-title">
       <div class="section-head">
-        <div><p class="eyebrow">CURRENT RESEARCH SIGNAL</p><h2 id="signal-title">현재 측정값</h2></div>
+        <div><p class="eyebrow">SELECTED-DATE RESEARCH SIGNAL</p><h2 id="signal-title">선택 기준일 측정값</h2></div>
         <p class="source-line">숫자 최신성은 generatedAt보다 dataAsOf 우선</p>
       </div>
       <div id="metrics" class="metric-grid" aria-live="polite"></div>
       <article class="signal-bridge-card" aria-labelledby="signal-bridge-title">
-        <div class="bridge-head"><div><h3 id="signal-bridge-title">오늘 신호가 만들어지는 과정</h3><p>실제 수급을 같은 날 수익률에서 기대되는 수급과 비교해 상태로 변환한다.</p></div><span id="bridge-model-scope" class="scope-badge">현재값 모형</span></div>
+        <div class="bridge-head"><div><h3 id="signal-bridge-title">선택 기준일 신호가 만들어지는 과정</h3><p>실제 수급을 같은 날 수익률에서 기대되는 수급과 비교해 상태로 변환한다.</p></div><span id="bridge-model-scope" class="scope-badge">선택값 모형</span></div>
         <div id="signal-bridge" class="signal-bridge" aria-live="polite"></div>
         <p id="bridge-explanation" class="bridge-explanation"></p>
       </article>
       <div id="quality-strip" class="quality-strip" aria-live="polite"></div>
       <article class="flow-channel-card" aria-labelledby="flow-channel-title">
-        <div class="card-head"><div><h3 id="flow-channel-title">수급 채널 확장 상태</h3><p>현재 개인 수급을 1차 신호로 사용하며, 외국인·기관 수급은 별도 검증 후 새 방법론 버전에서 활성화한다.</p></div><span class="tag">Extensible inputs</span></div>
+        <div class="card-head"><div><h3 id="flow-channel-title">수급 채널 확장 상태</h3><p>개인 수급은 선택한 설정·기준일을 따릅니다. 외국인·기관 수급은 기준일을 따로 표시한 최신 공개 진단이며 새 방법론 버전 전에는 전략에 쓰지 않습니다.</p></div><span class="tag">Extensible inputs</span></div>
         <div id="flow-channels" class="flow-channels" aria-live="polite"></div>
         <p class="chart-note">외국인·기관 카드에 수치가 보여도 진단 결과일 뿐입니다. 시점 정합성·규모 보정·표본외 계획을 통과하고 방법론 버전을 올리기 전에는 전략 신호에 합산하지 않습니다.</p>
       </article>
@@ -135,16 +150,16 @@
           <div><div class="title-with-scope"><h2>KOSPI · 신호 · 선택 전략 결과</h2><span id="history-model-scope" class="scope-badge practical">분석 설정 연동</span></div><p>같은 날짜축에서 종가 신호, 다음 시가 실행, 전략 누적가치와 보유 상태를 함께 확인합니다.</p></div>
           <button class="latest-button" type="button" data-chart-latest="history-chart">최신으로</button>
         </div>
-        <div class="legend unified-chart-legend"><span><i class="legend-line price"></i>KOSPI 종가</span><span><i class="legend-line strategy"></i>롱 / 현금</span><span><i class="legend-line longshort"></i>롱 / 숏 / 현금</span><span><i class="legend-line buyhold"></i>매수·보유</span><span><i class="legend-dot fear"></i>종가 공포 신호</span><span><i class="legend-dot greed"></i>종가 탐욕 신호</span><span><i class="legend-entry"></i>다음 시가 실제 롱 진입</span><span><i class="legend-entry short"></i>다음 시가 숏 진입</span><span><i class="legend-action exit"></i>다음 시가 청산</span><span><i class="legend-action reversal"></i>다음 시가 반전</span></div>
+        <div class="legend unified-chart-legend"><span><i class="legend-line price"></i>KOSPI 종가</span><span id="history-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="history-legend-long-short"><i class="legend-line longshort"></i>롱 / 숏 / 현금</span><span><i class="legend-line buyhold"></i>매수·보유</span><span><i class="legend-dot fear"></i>종가 공포 신호</span><span><i class="legend-dot greed"></i>종가 탐욕 신호</span><span id="history-legend-long-entry"><i class="legend-entry"></i>다음 시가 실제 롱 진입</span><span id="history-legend-short-entry"><i class="legend-entry short"></i>다음 시가 숏 진입</span><span id="history-legend-exit"><i class="legend-action exit"></i>다음 시가 청산</span><span id="history-legend-reversal"><i class="legend-action reversal"></i>다음 시가 반전</span></div>
         <div id="history-chart" class="chart chart-large unified-strategy-chart" role="img" aria-roledescription="대화형 통합 시계열 차트" aria-label="KOSPI 가격, 종가 신호, 다음 시가 실행과 선택 전략 결과" aria-describedby="history-help" tabindex="0"></div>
         <div id="history-exposure-note" class="history-exposure-note" aria-live="polite"></div>
-        <p id="history-help" class="chart-help">공포 원은 상태 관측이지 모두 매수 주문은 아닙니다. 신호는 종가 확인 시점, 주문은 다음 유효 거래일 시가 시점에 분리해 표시합니다. 같은 시가의 청산과 반대 포지션 진입은 하나의 반전 실행입니다. 좁은 화면에서는 좌우로 밀어 탐색하고, 키보드는 좌우 화살표·Home·End를 사용합니다.</p>
+        <p id="history-help" class="chart-help">공포 원은 상태 관측이지 모두 매수 주문은 아닙니다. 신호는 종가 확인 시점, 주문은 다음 유효 거래일 시가 시점에 분리해 표시합니다. 같은 시가의 청산과 반대 포지션 진입은 하나의 반전 실행입니다. 비교 모드의 두 정책 체결은 서로 다른 세로 레인에 표시합니다. 1개월·3개월로 좁히면 체결일을 더 정확히 볼 수 있고, 좁은 화면에서는 좌우로 밀어 탐색합니다. 키보드는 좌우 화살표·Home·End를 사용합니다.</p>
         <details class="data-alternative"><summary>차트 값 표로 보기</summary><div class="table-scroll" id="history-data-table"></div></details>
       </article>
 
       <article class="card">
-        <div class="card-head"><div><div class="title-with-scope"><h2 id="scatter-title">수익률 × 거래대금 대비 개인 순매수 비율</h2><span id="scatter-model-scope" class="scope-badge">선택 모형</span></div><p id="scatter-subtitle">직전 252거래일 · 회귀선과 현재 잔차</p></div><span class="tag">Relationship</span></div>
-        <div class="legend"><span><i class="legend-dot observation"></i>학습 관측</span><span><i class="legend-dot current"></i>현재 관측</span><span><i class="legend-line regression"></i>회귀선</span><span id="scatter-zone-legend-fear"><i class="legend-zone fear"></i>극단적 공포 영역</span><span id="scatter-zone-legend-greed"><i class="legend-zone greed"></i>극단적 탐욕 영역</span></div>
+        <div class="card-head"><div><div class="title-with-scope"><h2 id="scatter-title">수익률 × 거래대금 대비 개인 순매수 비율</h2><span id="scatter-model-scope" class="scope-badge">선택 모형</span></div><p id="scatter-subtitle">선택한 과거 전용 학습창 · 회귀선과 현재 잔차</p></div><span class="tag">Relationship</span></div>
+        <div class="legend"><span><i class="legend-dot observation"></i>학습 관측</span><span><i class="legend-dot current"></i>선택 기준일 관측</span><span><i class="legend-line regression"></i>회귀선</span><span id="scatter-zone-legend-fear"><i class="legend-zone fear"></i>극단적 공포 영역</span><span id="scatter-zone-legend-greed"><i class="legend-zone greed"></i>극단적 탐욕 영역</span></div>
         <div id="scatter-chart" class="chart" role="img" aria-roledescription="대화형 산점도" aria-label="KOSPI 수익률과 개인 순매수 산점도" aria-describedby="scatter-help" tabindex="0"></div>
         <p id="scatter-note" class="chart-note"></p>
         <p id="scatter-help" class="chart-help">포인터는 가장 가까운 실제 관측점을 선택합니다. 키보드는 날짜 순서로 좌우 화살표·Home·End를 지원합니다.</p>
@@ -152,9 +167,9 @@
       </article>
 
       <article class="card">
-        <div class="card-head"><div><div class="title-with-scope"><h2>선택 트랙 잔차 백분위</h2><span id="residual-model-scope" class="scope-badge practical">분석 설정 연동</span></div><p>선택 기간 · 5·20·80·95 경계 · 거래 차단 구간은 선을 끊음</p></div><button class="latest-button" type="button" data-chart-latest="residual-chart">최신으로</button></div>
+        <div class="card-head"><div><div class="title-with-scope"><h2>선택 트랙 잔차 백분위</h2><span id="residual-model-scope" class="scope-badge practical">분석 설정 연동</span></div><p>선택 평가 기간 · 사용자 극단 경계 · 낮은 적합도는 회색 점선과 거래 차단으로 구분</p></div><button class="latest-button" type="button" data-chart-latest="residual-chart">최신으로</button></div>
         <div id="residual-chart" class="chart" role="img" aria-roledescription="대화형 시계열 차트" aria-label="규모보정 회귀 잔차의 과거 분포 백분위 시계열" aria-describedby="residual-help" tabindex="0"></div>
-        <p id="residual-help" class="chart-help">상단 연구 트랙과 분석 기간을 그대로 따릅니다. 좁은 화면에서는 좌우로 밀어 날짜별 백분위를 확인합니다.</p>
+        <p id="residual-help" class="chart-help">상단 연구 트랙·신호 학습 설정·성과 평가 기간을 그대로 따릅니다. 좁은 화면에서는 좌우로 밀어 날짜별 백분위를 확인합니다.</p>
         <details class="data-alternative"><summary>최근 백분위 표로 보기</summary><div class="table-scroll" id="residual-data-table"></div></details>
       </article>
     </section>
@@ -164,12 +179,13 @@
       <div class="control-panel" aria-label="사건 연구 결과 선택">
         <div class="control-group"><span class="control-label">수익률 자산</span><div class="segmented" role="group" aria-label="사건 연구 자산"><button type="button" data-event-asset="KOSPI" aria-pressed="true">KOSPI</button><button type="button" data-event-asset="226490" aria-pressed="false">226490</button><button type="button" data-event-asset="069500" aria-pressed="false">069500</button></div></div>
         <div class="control-group"><span class="control-label">사건 표본</span><div class="segmented" role="group" aria-label="사건 표본"><button type="button" data-event-sample="nonOverlapping20d" aria-pressed="true">20일 비중첩</button><button type="button" data-event-sample="all" aria-pressed="false">전체 사건</button></div></div>
-        <p class="control-note">상단 연구 트랙과 이 자산·표본 선택은 공개된 사전 계산 사건 결과만 바꾸며 임계값을 다시 고르지 않습니다.</p>
+        <p class="control-note">상단 연구 트랙·학습창·품질 기준·극단 경계·평가 기간으로 사건을 다시 만들고, 이곳에서는 수익률 자산과 중첩 처리만 선택합니다.</p>
       </div>
       <article class="card event-visual-card">
         <div class="card-head"><div><h3>평균 선행수익률과 95% 신뢰구간</h3><p id="event-visual-subtitle">0% 기준선 · 공급된 경우 벤치마크와 초과수익 포함</p></div><span class="tag">Uncertainty</span></div>
-        <div class="legend"><span><i class="legend-dot fear"></i>극단 공포 평균</span><span><i class="legend-dot greed"></i>극단 탐욕 평균</span><span><i class="legend-line interval"></i>95% CI</span><span><i class="legend-dot benchmark"></i>비교 벤치마크</span></div>
-        <div id="event-ci-chart" class="chart event-ci-chart" role="img" aria-label="극단 상태 이후 평균 선행수익률과 95% 신뢰구간" tabindex="0"></div>
+        <div class="legend"><span><i class="legend-dot fear"></i>극단 공포 평균</span><span><i class="legend-dot greed"></i>극단 탐욕 평균</span><span><i class="legend-line interval"></i>95% CI</span><span id="event-benchmark-legend"><i class="legend-dot benchmark"></i>비교 벤치마크</span></div>
+        <div id="event-ci-chart" class="chart event-ci-chart" role="img" aria-roledescription="대화형 사건 신뢰구간 차트" aria-label="극단 상태 이후 평균 선행수익률과 95% 신뢰구간" aria-describedby="event-chart-help event-benchmark-note" tabindex="0"></div>
+        <p id="event-chart-help" class="chart-help">포인터로 사건 요약을 확인하고, 키보드는 좌우 화살표·Home·End를 사용합니다.</p>
         <p id="event-benchmark-note" class="chart-note"></p>
       </article>
       <article class="card table-card">
@@ -180,13 +196,13 @@
     </section>
 
     <section id="strategy" class="section-block" aria-labelledby="strategy-title">
-      <div class="section-head"><div><p class="eyebrow">PRACTICAL BASELINE + SYNTHETIC COMPARISON</p><div class="title-with-scope"><h2 id="strategy-title">롱 / 현금 · 롱 / 숏 과거검증</h2><span id="strategy-model-scope" class="scope-badge fixed">실전 신호</span></div></div><p class="source-line">익일 시가 · 최대 20일 · 현금·담보 수익률 0%</p></div>
+      <div class="section-head"><div><p class="eyebrow">PRACTICAL BASELINE + SYNTHETIC COMPARISON</p><div class="title-with-scope"><h2 id="strategy-title">롱 / 현금 · 롱 / 숏 과거검증</h2><span id="strategy-model-scope" class="scope-badge fixed">실전 신호</span></div></div><p class="source-line">익일 시가 · 사용자 최대 보유일 · 현금·담보 수익률 0%</p></div>
       <aside id="short-method-warning" class="method-warning"><strong>합성 숏 연구 모형</strong><p>같은 ETF를 진입비용 차감 후 가용자본 1배로 숏하고 수량을 유지한다고 가정합니다. 조정 총수익 가격의 배당 경제효과는 반영하지만 대차 가능 수량·대차료·리콜·증거금·강제청산·공매도 주문 규칙은 반영하지 않아 실제 실행성과보다 낙관적일 수 있습니다. 역ETF 성과나 투자 추천이 아닙니다.</p></aside>
       <div class="strategy-grid">
         <article class="card secondary-detail-card"><div class="card-head"><div><span class="detail-kicker">SECONDARY DETAIL</span><h3 id="equity-title">보조 상세 · 선택 모형 누적가치와 낙폭</h3><p id="equity-subtitle">통합 차트에서 선택한 전략의 낙폭을 확대해 봅니다.</p></div><button class="latest-button" type="button" data-chart-latest="equity-chart">최신으로</button></div><div class="legend"><span id="equity-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="equity-legend-long-short"><i class="legend-line longshort"></i>롱 / 숏 / 현금</span><span><i class="legend-line buyhold"></i>매수·보유</span></div><div id="equity-chart" class="chart chart-stack" role="img" aria-roledescription="대화형 보조 성과 차트" aria-label="선택 ETF의 롱 현금, 롱 숏 현금, 매수 보유 누적가치 및 낙폭 상세" aria-describedby="equity-help" tabindex="0"></div><p id="equity-help" class="chart-help">위 통합 차트와 같은 설정을 사용하며 누적가치와 고점 대비 낙폭을 분리해 확대합니다. 좌우 화살표·Home·End로 날짜를 확인할 수 있습니다.</p><details class="data-alternative"><summary>차트 끝값 표로 보기</summary><div class="table-scroll" id="equity-data-table"></div></details></article>
         <article class="card"><div class="card-head"><div><h3>선택 결과 핵심 지표</h3><p id="backtest-card-subtitle">전체 가능 기간 · 기본 10bp</p></div></div><div id="backtest-cards" class="backtest-cards" aria-live="polite"></div></article>
       </div>
-      <article id="policy-comparison-card" class="card proxy-comparison-card" hidden><div class="card-head"><div><h3>포지션 정책 나란히 비교</h3><p id="policy-comparison-subtitle">같은 ETF·신호·비용·기간에서 정책만 바꿉니다.</p></div><span class="tag">Same inputs</span></div><div id="policy-comparison" class="proxy-comparison" aria-live="polite"></div><div id="strategy-exposure" class="strategy-exposure" aria-label="정책별 롱 숏 현금 노출도"></div><div id="exit-sensitivity" class="exit-sensitivity"></div><p class="chart-note">비교 모드에서는 정책만 달라지고 데이터·신호·ETF·비용·기간은 같습니다. 사용자 청산값은 회귀를 재적합하지 않고 공개 신호 경로에만 적용합니다.</p></article>
+      <article id="policy-comparison-card" class="card proxy-comparison-card" hidden><div class="card-head"><div><h3>포지션 정책 나란히 비교</h3><p id="policy-comparison-subtitle">같은 ETF·신호·비용·기간에서 정책만 바꿉니다.</p></div><span class="tag">Same inputs</span></div><div id="policy-comparison" class="proxy-comparison" aria-live="polite"></div><div id="strategy-exposure" class="strategy-exposure" aria-label="정책별 롱 숏 현금 노출도"></div><div id="exit-sensitivity" class="exit-sensitivity"></div><p class="chart-note">비교 모드에서는 정책만 달라지고 데이터·학습 설정·ETF·비용·평가 기간은 같습니다. 롤링 회귀부터 사건과 거래 경로까지 같은 입력으로 다시 계산합니다.</p></article>
       <article id="proxy-comparison-card" class="card proxy-comparison-card" hidden>
         <div class="card-head"><div><h3>ETF 공통기간 나란히 비교</h3><p id="proxy-comparison-subtitle">같은 진입 규칙·비용·기간으로 226490과 069500을 비교한다.</p></div><span class="tag">Common period</span></div>
         <div id="proxy-comparison" class="proxy-comparison" aria-live="polite"></div>
@@ -221,6 +237,6 @@
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260717-release-v4"></script>
+  <script type="module" src="assets/app.js?v=20260717-release-v6"></script>
 </body>
 </html>

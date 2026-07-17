@@ -23,7 +23,7 @@
     "schemaVersion": {"const": 1},
     "contract": {"const": "quant-research-summary"},
     "projectId": {"const": "fearngreed"},
-    "methodologyVersion": {"const": "fear-flow-v3"},
+    "methodologyVersion": {"const": "fear-flow-v4"},
     "generatedAt": {"type": "string", "format": "date-time"},
     "dataAsOf": {"type": "string", "format": "date"},
     "status": {

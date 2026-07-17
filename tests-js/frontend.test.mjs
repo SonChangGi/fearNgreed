@@ -17,7 +17,8 @@ test('dashboard exposes one unified scenario control surface with pressed state'
   ]) assert.match(html,new RegExp(token));
   assert.ok((html.match(/aria-pressed=/g)||[]).length>=17);
   assert.match(html,/연구 트랙은 현재 신호·차트·전략에 공통 적용/);
-  assert.match(html,/사건 연구는 결과 재선택을 막기 위해 같은 트랙의 전체 이력 사전 계산 표본/);
+  assert.match(html,/한 번 적용하면 사건 연구까지 같은 조건으로 다시 계산/);
+  for(const id of ['signal-settings-form','signal-lookback-input','signal-min-r2-input','signal-tail-input','signal-max-holding-input','signal-settings-status']) assert.match(html,new RegExp(`id="${id}"`));
   assert.match(html,/id="linked-strategy-rule"/);
   assert.match(app,/robust: "scaled_huber"/);
   assert.match(app,/scaled: "scaled_ols"/);
@@ -183,13 +184,14 @@ test('MU Hynix relative spread keeps its published index-point unit',async()=>{
   assert.doesNotMatch(app,/fmt\.pct\(latest\.muHynixRelativeSpread\)/);
 });
 
-test('source replica and practical signal are separate, scoped research tracks',async()=>{
+test('source replica and practical signal are selectable tracks inside one dynamic scenario',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   assert.match(html,/실전 신호 · 강건 회귀/);
   assert.match(html,/PDF 원문 근사 · 절대 수급/);
   for(const id of ['history-model-scope','scatter-model-scope','residual-model-scope','event-model-scope','strategy-model-scope']) assert.match(html,new RegExp(`id="${id}"`));
   assert.match(app,/function primaryModelKind/);
-  assert.match(app,/eventsByModel\?\.\[store\.model\]/);
+  assert.match(app,/runDynamicEventStudy/);
+  assert.match(app,/function eventModelKind\(\)[\s\S]*?return store\.model/);
   assert.match(html,/SELECTED RESEARCH TRACK · EVENT STUDY/);
   assert.match(html,/신호일 종가→h일 종가/);
   assert.match(app,/사건: \$\{esc\(store\.eventAsset\)\} \$\{esc\(compactModelName\(eventModelKind\(\)\)\)\}/);
@@ -258,8 +260,8 @@ test('controls persist to URL and localStorage and charts expose an explicit lat
   assert.match(html,/id="reset-controls"/);
   assert.match(html,/id="share-view"/);
   assert.ok((html.match(/data-chart-latest=/g)||[]).length>=4);
-  assert.match(app,/localStorage\.setItem\("fearngreed-controls-v4"/);
-  assert.match(app,/getItem\("fearngreed-controls-v4"\) \|\| localStorage\.getItem\("fearngreed-controls-v3"\)/);
+  assert.match(app,/localStorage\.setItem\("fearngreed-controls-v5"/);
+  assert.match(app,/getItem\("fearngreed-controls-v5"\) \|\| localStorage\.getItem\("fearngreed-controls-v4"\)/);
   assert.match(app,/history\.replaceState/);
   assert.match(app,/navigator\.clipboard\.writeText/);
   assert.match(app,/longExitPercentile:\s*"exit"/);
@@ -300,7 +302,7 @@ test('integrated history separates close signals from next-open atomic actions a
   assert.match(html,/같은 시가의 청산과 반대 포지션 진입은 하나의 반전 실행입니다/);
   assert.match(app,/function extremeSignalMap/);
   assert.match(app,/function scenarioActions/);
-  assert.match(app,/class="execution-action"/);
+  assert.match(app,/class="execution-action (entry|exit|reversal)/);
   assert.match(app,/primary\.metrics/);
   assert.match(app,/m\.grossExposure/);
   assert.match(app,/excludedCarryInClosedTrades/);
@@ -308,17 +310,17 @@ test('integrated history separates close signals from next-open atomic actions a
   assert.match(css,/\.holding-zone\.short/);
 });
 
-test('scatter renders only published latest-fit empirical state boundaries and fails closed without them',async()=>{
+test('scatter refits the selected historical session and renders exact empirical state boundaries',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
   assert.match(html,/극단적 공포 영역/);
   assert.match(html,/극단적 탐욕 영역/);
-  assert.match(app,/scatterMetaByModel\?\.\[store\.model\]\?\.stateBoundaries/);
-  assert.match(app,/empirical_cdf_transition_order_statistic/);
-  assert.match(app,/current_fit_on_prior_window/);
+  assert.match(app,/function selectedScatterFit/);
+  assert.match(app,/fitDynamicSignalAt/);
+  assert.match(app,/fit\?\.residualCuts/);
   assert.match(app,/typeof value !== "number"/);
   for(const field of ['extremeFearUpper','fearUpper','greedLower','extremeGreedLower']) assert.match(app,new RegExp(field));
   assert.match(app,/clipPath id="scatter-plot-clip"/);
-  assert.match(app,/브라우저 재추정 없음/);
+  assert.match(app,/선택 종료일의 과거 전용 회귀/);
   assert.doesNotMatch(app,/function empiricalExtremeResidualCutoffs/);
   assert.match(app,/당시 롤링 상태/);
   assert.match(css,/\.scatter-zone-extreme-fear/);
@@ -332,7 +334,39 @@ test('frontend decodes compact columnar history and scatter pointer uses nearest
   assert.match(app,/seriesRows/);
   assert.match(app,/function attachScatterNavigation/);
   assert.match(app,/\(item\.plotX - pointerX\) \*\* 2 \+ \(item\.plotY - pointerY\) \*\* 2/);
-  assert.match(app,/scatterByModel\?\.\[store\.model\]/);
+  assert.match(app,/selectedScatterFit\(\)/);
+  assert.match(app,/fit\.trainingRows/);
+});
+
+test('signal settings atomically refit signals, events and strategy with bounded inputs',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  assert.match(html,/id="signal-lookback-input"[^>]+min="60"[^>]+max="756"/);
+  assert.match(html,/id="signal-min-r2-input"[^>]+min="0"[^>]+max="0\.8"[^>]+step="0\.05"/);
+  assert.match(html,/id="signal-tail-input"[^>]+min="1"[^>]+max="20"/);
+  assert.match(html,/id="signal-max-holding-input"[^>]+min="1"[^>]+max="60"/);
+  assert.match(app,/function recomputeDynamicResearch/);
+  assert.match(app,/computeDynamicSignals/);
+  assert.match(app,/recomputeDynamicResearch\(\);[\s\S]*?resultsForPolicySelection/);
+  assert.match(app,/maxHolding: store\.signalMaxHolding/);
+  assert.match(app,/runDynamicEventStudy/);
+  assert.match(app,/information cutoff|정보만으로 전체 신호/);
+});
+
+test('integrated controls fail closed before load and keep selected-date diagnostics consistent',async()=>{
+  const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
+  assert.match(html,/id="signal-min-r2-input"[^>]+required/);
+  assert.match(app,/function setResearchControlsEnabled/);
+  assert.match(app,/setResearchControlsEnabled\(false\)/);
+  assert.match(app,/setResearchControlsEnabled\(true\)[\s\S]*?renderAll\(\)/);
+  assert.match(app,/function selectedModelAgreement/);
+  assert.match(app,/절대수급·규모보정 방향 혼재/);
+  assert.match(app,/const selectedModel = modelPayload\(\)/);
+  assert.match(app,/basisDate: selectedDate/);
+  assert.match(app,/latestEventError/);
+  assert.match(app,/사건 연구 계산 오류로 결과를 표시하지 않습니다/);
+  assert.match(app,/const form = event\.currentTarget/);
+  assert.doesNotMatch(app,/event\.currentTarget\.setAttribute/);
+  assert.match(css,/@media \(max-width: 900px\)[\s\S]*?\.chart-grid \{ grid-template-columns: 1fr; \}/);
 });
 
 test('normalized benchmark equity and future flow channels remain explicit and fail closed',async()=>{

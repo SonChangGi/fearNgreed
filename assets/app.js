@@ -2,19 +2,28 @@ import {
   DEFAULT_LONG_EXIT_PERCENTILE,
   normalizeLongExitPercentile,
   runStrategyScenario
-} from "./strategy-engine.js?v=20260717-release-v4";
+} from "./strategy-engine.js?v=20260717-release-v6";
+import {
+  DEFAULT_SIGNAL_CONFIG,
+  normalizeSignalConfig,
+  computeDynamicSignals,
+  computeDynamicSignalsAsync,
+  fitDynamicSignalAt,
+  runDynamicEventStudy
+} from "./signal-engine.js?v=20260717-release-v6";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const labels = {
   extreme_fear: "극단적 공포", fear: "공포", neutral: "중립", greed: "탐욕", extreme_greed: "극단적 탐욕",
-  unavailable: "산출 불가", cash: "현금", long: "롱", short: "숏", recovery: "사용자 청산선 회복", max_holding: "최대 20일", opposite_extreme: "반대 극단 반전",
+  unavailable: "산출 불가", cash: "현금", long: "롱", short: "숏", recovery: "사용자 청산선 회복", max_holding: "사용자 최대 보유기간", opposite_extreme: "반대 극단 반전",
   enter_next_open: "다음 거래일 시가 진입", exit_next_open: "다음 거래일 시가 청산", reverse_next_open: "다음 거래일 시가 반전", extreme_fear_entry: "극단 공포 최초 진입", extreme_greed_entry: "극단 탐욕 최초 진입", hold: "보유 유지"
 };
 
 const qualityLabels = {
   ok: "정상",
+  low_model_fit: "낮은 적합도 · 신규 진입 차단",
   degraded: "주의",
   stale: "갱신 지연",
   unavailable: "산출 불가"
@@ -67,7 +76,11 @@ const DEFAULT_CONTROLS = Object.freeze({
   backtestVariant: "scaled_huber",
   backtestCost: 10,
   backtestPeriod: "common",
-  longExitPercentile: DEFAULT_LONG_EXIT_PERCENTILE
+  longExitPercentile: DEFAULT_LONG_EXIT_PERCENTILE,
+  signalLookback: DEFAULT_SIGNAL_CONFIG.lookback,
+  signalMinimumR2: DEFAULT_SIGNAL_CONFIG.minimumR2,
+  signalExtremeTail: DEFAULT_SIGNAL_CONFIG.extremeTail,
+  signalMaxHolding: 20
 });
 
 const TRACK_VARIANTS = Object.freeze({
@@ -94,7 +107,11 @@ const CONTROL_QUERY = Object.freeze({
   backtestVariant: "strategy",
   backtestCost: "cost",
   backtestPeriod: "period",
-  longExitPercentile: "exit"
+  longExitPercentile: "exit",
+  signalLookback: "lookback",
+  signalMinimumR2: "minR2",
+  signalExtremeTail: "tail",
+  signalMaxHolding: "maxHold"
 });
 
 const CONTROL_ALLOWED = Object.freeze({
@@ -114,6 +131,8 @@ let store = {
   dashboard: null,
   history: null,
   strategyComparison: null,
+  activeSeries: null,
+  activeSignalMeta: null,
   ...DEFAULT_CONTROLS
 };
 
@@ -130,7 +149,7 @@ function validateContracts(summary, dashboard, history, strategyComparison) {
   if (dashboard?.schemaVersion !== 1 || history?.schemaVersion !== 1 || strategyComparison?.schemaVersion !== 1 || strategyComparison?.contract !== "fearngreed-strategy-comparison" || dashboard?.dataAsOf !== summary.dataAsOf || history?.dataAsOf !== summary.dataAsOf || strategyComparison?.dataAsOf !== summary.dataAsOf || strategyComparison?.methodologyVersion !== methodology) throw new Error("공개 데이터 스키마 또는 기준일이 올바르지 않습니다.");
   const dynamicControl = strategyComparison?.dynamicExitControl;
   const historyScenario = history?.strategyScenario;
-  if (dynamicControl?.defaultLongExitPercentile !== DEFAULT_LONG_EXIT_PERCENTILE || dynamicControl?.minimum !== 50 || dynamicControl?.maximum !== 94 || dynamicControl?.shortExitFormula !== "100-longExitPercentile" || dynamicControl?.regressionRefit !== false || historyScenario?.defaultLongExitPercentile !== DEFAULT_LONG_EXIT_PERCENTILE || historyScenario?.browserMayRefitRegression !== false) throw new Error("사용자 청산 시나리오 계약이 올바르지 않습니다.");
+  if (dynamicControl?.defaultLongExitPercentile !== DEFAULT_LONG_EXIT_PERCENTILE || dynamicControl?.minimum !== 50 || dynamicControl?.maximum !== 94 || dynamicControl?.shortExitFormula !== "100-longExitPercentile" || dynamicControl?.regressionRefit !== true || historyScenario?.defaultLongExitPercentile !== DEFAULT_LONG_EXIT_PERCENTILE || historyScenario?.browserMayRefitRegression !== true || historyScenario?.pastOnly !== true || historyScenario?.evaluationRangeSeparate !== true) throw new Error("사용자 동적 연구 시나리오 계약이 올바르지 않습니다.");
   const hasSeries = Array.isArray(history.series) || (Array.isArray(history.seriesColumns) && Array.isArray(history.seriesRows));
   const models = summary.primaryEntities?.[0]?.models || dashboard?.models || {};
   if (!["ok", "degraded", "stale", "unavailable"].includes(summary?.status?.state) || !Array.isArray(summary.primaryEntities) || summary.primaryEntities.length !== 1 || !models.scaled || !models.raw || !hasSeries || summary?.payload?.strategyComparisonUrl !== "./strategy-comparison.json") throw new Error("공개 데이터의 필수 계약이 없습니다.");
@@ -150,11 +169,12 @@ function decodeHistory(history) {
 function stateFromValue(model) {
   if (model?.state || model?.signalState) return model.state || model.signalState;
   const value = model?.percentile ?? model?.sentimentPercentile;
+  const tail = Number(store?.signalExtremeTail ?? 5);
   if (value == null) return "unavailable";
-  if (value <= 5) return "extreme_fear";
+  if (value <= tail) return "extreme_fear";
   if (value <= 20) return "fear";
   if (value < 80) return "neutral";
-  if (value < 95) return "greed";
+  if (value < 100 - tail) return "greed";
   return "extreme_greed";
 }
 
@@ -169,6 +189,91 @@ function entity() {
   return store.summary?.primaryEntities?.[0] || {};
 }
 
+function activeHistoryRows() {
+  return store.activeSeries || store.history?.series || [];
+}
+
+function selectedAnalysisRow() {
+  const rows = activeHistoryRows();
+  if (!rows.length) return null;
+  const endDate = selectedWindowBounds().endDate;
+  if (!endDate) return rows.at(-1);
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (rows[index].date <= endDate) return rows[index];
+  }
+  return null;
+}
+
+function analysisEntity() {
+  const published = entity();
+  const row = selectedAnalysisRow();
+  if (!row) return published;
+  return {
+    ...published,
+    ...row,
+    signalState: row.dynamicSignal?.state ?? published.signalState,
+    sentimentPercentile: row.dynamicSignal?.percentile ?? published.sentimentPercentile,
+    residualZ: row.dynamicSignal?.residualZ ?? published.residualZ,
+    rollingR2: row.dynamicSignal?.rollingR2 ?? published.rollingR2,
+    modelQuality: row.dynamicSignal?.quality ?? published.modelQuality
+  };
+}
+
+function currentSignalConfig() {
+  const signal = normalizeSignalConfig({
+    track: store.model,
+    lookback: store.signalLookback,
+    minimumR2: store.signalMinimumR2,
+    extremeTail: store.signalExtremeTail
+  });
+  const maxHolding = Number(store.signalMaxHolding);
+  if (!Number.isInteger(maxHolding) || maxHolding < 1 || maxHolding > 60) throw new Error("최대 보유기간은 1~60 거래일 사이 정수여야 합니다.");
+  return { ...signal, maxHolding };
+}
+
+function recomputeDynamicResearch() {
+  const baseRows = store.history?.series || [];
+  if (!baseRows.length) {
+    store.activeSeries = null;
+    store.activeSignalMeta = null;
+    return;
+  }
+  const config = currentSignalConfig();
+  const result = computeDynamicSignals({ historyRows: baseRows, track: store.model, ...config });
+  const rows = Array.isArray(result) ? result : result?.rows;
+  if (!Array.isArray(rows) || rows.length !== baseRows.length) throw new Error("동적 신호 이력이 원본 거래일과 일치하지 않습니다.");
+  store.activeSeries = rows;
+  store.activeSignalMeta = Array.isArray(result) ? null : result;
+  scenarioCache.clear();
+  dynamicEventCache.clear();
+  dynamicEventErrors.clear();
+  latestEventError = null;
+}
+
+async function recomputeDynamicResearchAsync({ onProgress = null } = {}) {
+  const baseRows = store.history?.series || [];
+  if (!baseRows.length) {
+    store.activeSeries = null;
+    store.activeSignalMeta = null;
+    return;
+  }
+  const config = currentSignalConfig();
+  const result = await computeDynamicSignalsAsync({
+    historyRows: baseRows,
+    track: store.model,
+    ...config,
+    onProgress
+  });
+  const rows = result?.rows;
+  if (!Array.isArray(rows) || rows.length !== baseRows.length) throw new Error("동적 신호 이력이 원본 거래일과 일치하지 않습니다.");
+  store.activeSeries = rows;
+  store.activeSignalMeta = result;
+  scenarioCache.clear();
+  dynamicEventCache.clear();
+  dynamicEventErrors.clear();
+  latestEventError = null;
+}
+
 function primaryModelKind() {
   const declared = store.dashboard?.primaryModel || store.summary?.payload?.primaryModel || entity().primaryModel;
   if (["robust", "scaled", "raw"].includes(declared)) return declared;
@@ -176,7 +281,9 @@ function primaryModelKind() {
 }
 
 function modelPayload(kind = store.model) {
-  const base = entity();
+  const base = kind === store.model ? analysisEntity() : entity();
+  const dynamic = kind === store.model ? selectedAnalysisRow()?.dynamicSignal : null;
+  if (dynamic) return { ...base, ...dynamic, model: kind, calculationSource: "browser_past_only_refit" };
   const published = store.dashboard?.models?.[kind] || base.models?.[kind] || store.history?.models?.[kind];
   if (published) return { ...base, ...published, model: kind };
   if (kind === "scaled") return {
@@ -193,8 +300,45 @@ function modelPayload(kind = store.model) {
 }
 
 function regressionPayload(kind = store.model) {
+  const dynamic = kind === store.model ? selectedAnalysisRow()?.dynamicSignal : null;
+  if (dynamic) return dynamic;
   const regression = store.dashboard?.regression || {};
   return regression[kind] || store.dashboard?.models?.[kind] || (kind === "scaled" ? regression : modelPayload(kind)) || {};
+}
+
+const modelAgreementCache = new Map();
+
+function selectedModelAgreement() {
+  const rows = store.history?.series || [];
+  const selected = selectedAnalysisRow();
+  if (!rows.length || !selected?.date) return { state: "unavailable", directions: {} };
+  const index = rows.findIndex((row) => row.date === selected.date);
+  if (index < 0) return { state: "unavailable", directions: {} };
+  const key = [selected.date, store.signalLookback, store.signalMinimumR2, store.signalExtremeTail].join("|");
+  if (modelAgreementCache.has(key)) return modelAgreementCache.get(key);
+  const directions = {};
+  for (const track of ["robust", "raw"]) {
+    try {
+      const signal = fitDynamicSignalAt({
+        historyRows: rows,
+        index,
+        track,
+        lookback: store.signalLookback,
+        minimumR2: store.signalMinimumR2,
+        extremeTail: store.signalExtremeTail
+      }).signal;
+      directions[track] = Number(signal?.residual) < 0 ? "fear" : Number(signal?.residual) > 0 ? "greed" : null;
+    } catch (_) {
+      directions[track] = null;
+    }
+  }
+  const comparable = directions.robust && directions.raw;
+  const result = {
+    state: comparable && directions.robust !== directions.raw ? "mixed" : comparable ? "aligned" : "unavailable",
+    directions
+  };
+  modelAgreementCache.set(key, result);
+  return result;
 }
 
 function modelName(kind = store.model) {
@@ -240,7 +384,7 @@ function bridgeStep(step, label, value, note, tone = "") {
 }
 
 function renderSignalBridge() {
-  const base = entity();
+  const base = analysisEntity();
   const model = modelPayload();
   const regression = regressionPayload();
   const state = stateFromValue(model);
@@ -259,7 +403,7 @@ function renderSignalBridge() {
     ${bridgeStep("2", "회귀 예상", unitFormat(expected), `KOSPI ${fmt.signedPct(base.return1d)}일 때`)}
     ${bridgeStep("3", "잔차", unitFormat(residual), "실제 − 예상", residual == null ? "" : Number(residual) < 0 ? "fear" : "greed")}
     ${bridgeStep("4", "과거 백분위", fmt.score(percentile, 1), "직전 학습 잔차 분포")}
-    ${bridgeStep("5", "연구 상태", labels[state] || state, model?.tradeEligible === false ? "신규 거래 신호 차단" : "고정 경계 적용", tone)}
+    ${bridgeStep("5", "연구 상태", labels[state] || state, model?.tradeEligible === false ? "신규 거래 신호 차단" : `사용자 극단 꼬리 ${store.signalExtremeTail}% 적용`, tone)}
   </ol>`;
   const difference = residual == null ? Number.NaN : Number(residual);
   let interpretation = "현재 잔차를 산출할 수 없습니다.";
@@ -272,19 +416,28 @@ function renderSignalBridge() {
 
 function renderHeader() {
   const summary = store.summary;
-  const base = entity();
+  const base = analysisEntity();
   const model = modelPayload();
   const status = effectiveStatus(summary);
   const state = status === "unavailable" ? "unavailable" : stateFromValue(model);
-  $("#current-state-label").textContent = `현재 선택 연구 신호 · ${modelRole()}`;
+  const agreement = selectedModelAgreement();
+  $("#current-state-label").textContent = `선택 종료일 연구 신호 · ${modelRole()}`;
   const badge = $("#status-badge");
   badge.textContent = `데이터 ${qualityLabel(status)}`;
   badge.className = `badge ${status}`;
-  $("#confidence-badge").textContent = `${modelRole()} · 품질 ${qualityLabel(model?.quality || base.modelQuality)}`;
+  const confidence = $("#confidence-badge");
+  const modelQuality = model?.quality || base.modelQuality;
+  if (agreement.state === "mixed") {
+    confidence.textContent = "절대수급·규모보정 방향 혼재 · 주의";
+    confidence.className = "badge degraded";
+  } else {
+    confidence.textContent = `${modelRole()} · 품질 ${qualityLabel(modelQuality)}`;
+    confidence.className = `badge ${modelQuality === "ok" ? "ok" : modelQuality === "low_model_fit" ? "degraded" : "neutral"}`;
+  }
   $("#state").textContent = labels[state] || state;
-  $("#signal-badge").textContent = labels[state] || state;
-  $("#signal-badge").className = `state-badge ${state}`;
-  $("#asof").textContent = `기준일 ${fmt.date(summary.dataAsOf)}`;
+  $("#signal-badge").textContent = model?.tradeEligible === false && state !== "unavailable" ? `${labels[state] || state} · 진입 차단` : labels[state] || state;
+  $("#signal-badge").className = `state-badge ${state}${model?.tradeEligible === false ? " blocked" : ""}`;
+  $("#asof").textContent = `신호일 ${fmt.date(base.date || summary.dataAsOf)} · 데이터 기준 ${fmt.date(summary.dataAsOf)}`;
   const reasons = summary.status.degradedReasons || [];
   $("#status-note").textContent = reasons.length ? `운영 주의: ${reasons.map(degradedReasonLabel).join(" · ")}. 표시 기준일과 공급자 상태를 함께 확인하세요.` : "핵심 공급자와 계산 품질 게이트 통과";
 
@@ -293,9 +446,9 @@ function renderHeader() {
   const inputNote = store.model === "raw" ? "개인 순매수대금 / 1조원" : "개인 순매수대금 ÷ KOSPI 거래대금";
   const position = scenarioPositionSummary();
   $("#metrics").innerHTML = [
-    metric("감정 백분위", fmt.score(percentile), `${modelName()} · 직전 252일 잔차 분포`),
+    metric("감정 백분위", fmt.score(percentile), `${modelName()} · 직전 ${store.signalLookback}일 잔차 분포`),
     metric("잔차 z", fmt.score(model?.residualZ, 2), "median / 1.4826×MAD"),
-    metric("롤링 R²", fmt.score(model?.rollingR2, 3), "현재일 제외 · 품질 기준 0.20"),
+    metric("롤링 R²", fmt.score(model?.rollingR2, 3), `현재일 제외 · 품질 기준 ${Number(store.signalMinimumR2).toFixed(2)}`),
     metric("KOSPI 1일", fmt.signedPct(base.return1d), "종가 대비 전 거래일"),
     metric(store.model === "raw" ? "개인 순매수대금" : "거래대금 대비 개인 순매수 비율", inputValue, inputNote),
     metric("50일 이격도", fmt.score(base.disparity50, 1), "100 = 50일 이동평균"),
@@ -313,9 +466,12 @@ function renderHeader() {
     if (!report) return "";
     return `<span><strong>${ticker} 세션:</strong> ${esc(fmt.compact(report.officialSessionCount))} · 보정 ${esc(report.filledCount)} · 미해결 ${esc(report.unresolvedCount)}</span>`;
   }).filter(Boolean);
+  const selectedEvents = selectedEventSection();
+  const selectedStrategy = selectedScenarioBundle().primary;
   $("#quality-strip").innerHTML = [
     `<span><strong>데이터 기준일:</strong> ${esc(summary.dataAsOf)}</span>`,
     `<span><strong>선택 트랙:</strong> ${esc(modelName())}</span>`,
+    `<span><strong>학습 설정:</strong> ${esc(store.signalLookback)}일 · R²≥${esc(Number(store.signalMinimumR2).toFixed(2))} · 꼬리 ${esc(store.signalExtremeTail)}%</span>`,
     `<span><strong>β:</strong> ${esc(fmt.score(beta, 4))}</span>`,
     `<span><strong>모형 품질:</strong> ${esc(qualityLabel(model?.quality || base.modelQuality))}</span>`,
     `<span><strong>가격:</strong> ${esc(base.sources?.price || base.sourceMode || "KRX")}</span>`,
@@ -323,11 +479,10 @@ function renderHeader() {
     `<span><strong>ETF 조정가:</strong> ${esc(base.sources?.adjustedPrice || adjustedSource)}</span>`,
     ...reconciliationItems,
     `<span><strong>관측치:</strong> ${esc(fmt.compact(summary.coverage.observationCount))}</span>`,
-    `<span><strong>비중첩 사건:</strong> ${esc(summary.coverage.eventCount)}</span>`,
-    `<span><strong>거래:</strong> ${esc(summary.coverage.tradeCount)}</span>`
+    `<span><strong>선택 사건:</strong> ${esc(selectedEvents?.eventCount ?? "—")}</span>`,
+    `<span><strong>선택 완결 거래:</strong> ${esc(selectedStrategy?.metrics?.tradeCount ?? "—")}</span>`
   ].join("");
-  const eventsFollowModel = Boolean(store.dashboard?.eventsByModel?.[store.model]);
-  $("#model-selection-note").textContent = `선택 트랙: ${modelName()}. 현재값·산점도·잔차·전략에 함께 적용합니다.${eventsFollowModel ? " 사건 결과는 같은 트랙의 전체 이력 서버 사전 계산값입니다." : ""}`;
+  $("#model-selection-note").textContent = `통합 사용자 시나리오: ${modelName()} · 과거 ${store.signalLookback}일 · R²≥${Number(store.signalMinimumR2).toFixed(2)} · 극단 ${store.signalExtremeTail}% · 최대 ${store.signalMaxHolding}일. 현재 신호·산점도·잔차·사건·전략을 같은 입력으로 계산합니다.`;
   $("#scatter-model-scope").textContent = modelRole();
   const linkedRule = $("#linked-strategy-rule");
   if (linkedRule) linkedRule.textContent = `${modelName()} → ${variantLabel(variantKey(trackVariant(), store.backtestCost))}`;
@@ -388,7 +543,7 @@ function historyStartForWindow(windowValue, latestDate, firstDate) {
 }
 
 function selectedHistory() {
-  const rows = store.history?.series || [];
+  const rows = activeHistoryRows();
   if (!rows.length) return [];
   const firstDate = rows[0].date;
   const latestDate = rows.at(-1).date;
@@ -403,7 +558,7 @@ function selectedWindowBounds() {
   if (store.window === "custom") {
     return { startDate: store.historyStart || null, endDate: store.historyEnd || null };
   }
-  const rows = store.history?.series || [];
+  const rows = activeHistoryRows();
   const firstDate = rows[0]?.date || null;
   const latestDate = rows.at(-1)?.date || null;
   return {
@@ -433,7 +588,7 @@ function historyWindowLabel(value = store.window) {
 }
 
 function syncHistoryRangeControls(rows) {
-  const allRows = store.history?.series || [];
+  const allRows = activeHistoryRows();
   const firstDate = allRows[0]?.date || "";
   const latestDate = allRows.at(-1)?.date || "";
   const startInput = $("#history-start");
@@ -468,7 +623,7 @@ function applyCustomHistoryRange(event) {
   const endInput = $("#history-end");
   const start = startInput.value;
   const end = endInput.value;
-  const rows = store.history?.series || [];
+  const rows = activeHistoryRows();
   const firstDate = rows[0]?.date;
   const latestDate = rows.at(-1)?.date;
   if (!isIsoDate(start)) return setHistoryRangeError("올바른 시작일을 입력해 주세요.", startInput);
@@ -778,7 +933,7 @@ function extremeSignalMap(rows) {
   const selectedDates = new Set(rows.map((row) => row.date));
   const signals = new Map();
   let previousValidState = null;
-  for (const row of store.history?.series || []) {
+  for (const row of activeHistoryRows()) {
     if (row[fields.eligible] !== true) continue;
     const state = row[fields.state];
     if (selectedDates.has(row.date) && ["extreme_fear", "extreme_greed"].includes(state) && state !== previousValidState) {
@@ -821,6 +976,12 @@ function renderHistory() {
   const modelKind = store.model;
   $("#history-model-scope").textContent = `${modelRole(modelKind)} · ${policyLabel()} · 청산 ${store.longExitPercentile}`;
   $("#history-model-scope").className = `scope-badge ${modelKind === "raw" ? "replica" : modelKind === "robust" ? "practical" : "baseline"}`;
+  const showLongCash = store.backtestPolicy !== "long_short_cash";
+  const showLongShort = store.backtestPolicy !== "long_cash";
+  $("#history-legend-long-cash").hidden = !showLongCash;
+  $("#history-legend-long-short").hidden = !showLongShort;
+  $("#history-legend-short-entry").hidden = !showLongShort;
+  $("#history-legend-reversal").hidden = !showLongShort;
   syncHistoryRangeControls(rows);
   const container = $("#history-chart");
   const { longCash, longShort, primary } = selectedScenarioBundle();
@@ -847,15 +1008,19 @@ function renderHistory() {
   }
   const plotRows = rows.map((row) => {
     const primaryRow = primaryByDate.get(row.date) || {};
+    const longCashRow = longCashByDate.get(row.date) || {};
+    const longShortRow = longShortByDate.get(row.date) || {};
     return {
       ...row,
       trackState: rowTrackValue(row, "state"),
       trackPercentile: rowTrackValue(row, "percentile"),
       position: primaryRow.position || primaryRow.positionAfterOpen || "unavailable",
+      longCashPosition: longCashRow.position || longCashRow.positionAfterOpen || "unavailable",
+      longShortPosition: longShortRow.position || longShortRow.positionAfterOpen || "unavailable",
       primaryValue: primaryRow.value,
       buyHoldValue: primaryRow.buyHoldValue,
-      longCashValue: longCashByDate.get(row.date)?.value,
-      longShortValue: longShortByDate.get(row.date)?.value,
+      longCashValue: longCashRow.value,
+      longShortValue: longShortRow.value,
       signal: signals.get(row.date),
       actions: actionsByDate.get(row.date) || []
     };
@@ -870,42 +1035,78 @@ function renderHistory() {
   const y = scale(min - pad, max + pad, p.priceBottom, p.priceTop);
   const equityY = scale(equityMin0 - equityPad, equityMax0 + equityPad, p.equityBottom, p.equityTop);
   const zones = [];
-  let zoneStart = null;
-  let zoneSide = null;
-  plotRows.forEach((row, index) => {
-    const side = ["long", "short"].includes(row.position) ? row.position : null;
-    if (side !== zoneSide) {
-      if (zoneSide && zoneStart != null) zones.push(`<rect class="holding-zone ${zoneSide === "short" ? "short" : "long"}" x="${x(zoneStart)}" y="${p.priceTop}" width="${Math.max(3, x(Math.max(zoneStart, index - 1)) - x(zoneStart))}" height="${p.priceBottom - p.priceTop}"/>`);
-      zoneStart = side ? index : null;
-      zoneSide = side;
-    }
-    if (index === plotRows.length - 1 && side && zoneStart != null) zones.push(`<rect class="holding-zone ${side}" x="${x(zoneStart)}" y="${p.priceTop}" width="${Math.max(3, x(index) - x(zoneStart))}" height="${p.priceBottom - p.priceTop}"/>`);
-  });
+  const appendHoldingZones = (field, { top, bottom, lane = false, policy = "" }) => {
+    let zoneStart = null;
+    let zoneSide = null;
+    plotRows.forEach((row, index) => {
+      const side = ["long", "short"].includes(row[field]) ? row[field] : null;
+      const closeZone = (endIndex) => {
+        if (!zoneSide || zoneStart == null) return;
+        zones.push(`<rect class="holding-zone ${lane ? "holding-lane" : ""} ${zoneSide} ${policy}" x="${x(zoneStart)}" y="${top}" width="${Math.max(3, x(Math.max(zoneStart, endIndex)) - x(zoneStart))}" height="${bottom - top}"/>`);
+      };
+      if (side !== zoneSide) {
+        closeZone(index - 1);
+        zoneStart = side ? index : null;
+        zoneSide = side;
+      }
+      if (index === plotRows.length - 1) closeZone(index);
+    });
+  };
+  if (store.backtestPolicy === "compare") {
+    appendHoldingZones("longCashPosition", { top: p.priceTop + 4, bottom: p.priceTop + 13, lane: true, policy: "policy-long-cash" });
+    appendHoldingZones("longShortPosition", { top: p.priceTop + 17, bottom: p.priceTop + 26, lane: true, policy: "policy-long-short" });
+  } else {
+    appendHoldingZones("position", { top: p.priceTop, bottom: p.priceBottom });
+  }
+  const pointSpacing = plotRows.length > 1 ? x(1) - x(0) : 12;
+  const signalSize = Math.max(2, Math.min(6, pointSpacing * .42));
   const signalMarks = plotRows.map((row, index) => {
     if (!row.signal) return "";
     const px = x(index), py = y(row.kospiClose ?? row.kospi);
     const title = `${row.date} 종가 · ${labels[row.signal.state]} 최초 진입 · ${fmt.score(row.signal.percentile)}`;
     return row.signal.state === "extreme_greed"
-      ? `<rect class="event-greed signal-close" x="${px - 5}" y="${py - 5}" width="10" height="10" transform="rotate(45 ${px} ${py})"><title>${esc(title)}</title></rect>`
-      : `<circle class="event-fear signal-close" cx="${px}" cy="${py}" r="6"><title>${esc(title)}</title></circle>`;
+      ? `<rect class="event-greed signal-close" x="${px - signalSize}" y="${py - signalSize}" width="${signalSize * 2}" height="${signalSize * 2}" transform="rotate(45 ${px} ${py})"><title>${esc(title)}</title></rect>`
+      : `<circle class="event-fear signal-close" cx="${px}" cy="${py}" r="${signalSize}"><title>${esc(title)}</title></circle>`;
   }).join("");
-  const actionY = p.priceBottom - 13;
   const actionMarks = plotRows.map((row, index) => {
     if (!row.actions.length) return "";
-    const lines = row.actions.map((action) => `${policyLabel(action.policy)}: ${normalizedActionLabel(action)} · 신호 ${action.signalDate || action.sourceSignalDate || "—"} 종가 → ${row.date} 시가`);
     const px = x(index);
-    return `<g class="execution-action"><path d="M ${px} ${actionY - 8} L ${px + 7} ${actionY} L ${px} ${actionY + 8} L ${px - 7} ${actionY} Z"/><text x="${px}" y="${actionY + 3}" text-anchor="middle">${row.actions.some((action) => ["reverse", "reversal"].includes(action.type || action.action || action.executedAction)) ? "↔" : row.actions.length}</text><title>${esc(lines.join(" | "))}</title></g>`;
+    return row.actions.map((action) => {
+      const type = action.type || action.action || action.executedAction;
+      const to = action.toPosition || action.to || action.positionAfterOpen;
+      const actionY = action.policy === "long_short_cash" ? p.priceBottom - 10 : p.priceBottom - 30;
+      const title = `${policyLabel(action.policy)}: ${normalizedActionLabel(action)} · 신호 ${action.signalDate || action.sourceSignalDate || "—"} 종가 → ${row.date} 시가`;
+      if ((type === "enter" || type === "entry") && to === "long") {
+        return `<g class="execution-action entry long"><path d="M ${px} ${actionY - 7} L ${px + 7} ${actionY + 7} L ${px - 7} ${actionY + 7} Z"><title>${esc(title)}</title></path></g>`;
+      }
+      if ((type === "enter" || type === "entry") && to === "short") {
+        return `<g class="execution-action entry short"><path d="M ${px - 7} ${actionY - 7} L ${px + 7} ${actionY - 7} L ${px} ${actionY + 7} Z"><title>${esc(title)}</title></path></g>`;
+      }
+      if (type === "exit") {
+        return `<g class="execution-action exit"><path d="M ${px - 6} ${actionY - 6} L ${px + 6} ${actionY + 6} M ${px + 6} ${actionY - 6} L ${px - 6} ${actionY + 6}"><title>${esc(title)}</title></path></g>`;
+      }
+      return `<g class="execution-action reversal"><path d="M ${px} ${actionY - 8} L ${px + 8} ${actionY} L ${px} ${actionY + 8} L ${px - 8} ${actionY} Z"/><text x="${px}" y="${actionY + 3}" text-anchor="middle">↔</text><title>${esc(title)}</title></g>`;
+    }).join("");
   }).join("");
   const priceTicks = linearTicks(min - pad, max + pad).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 9}" y="${y(value) + 3}" text-anchor="end">${Math.round(value).toLocaleString()}</text>`).join("");
   const equityTicks = linearTicks(equityMin0 - equityPad, equityMax0 + equityPad, 4).map((value) => `<line class="grid-line" x1="${p.l}" y1="${equityY(value)}" x2="${w - p.r}" y2="${equityY(value)}"/><text class="axis-label" x="${p.l - 9}" y="${equityY(value) + 3}" text-anchor="end">${fmt.score(value, 2)}</text>`).join("");
   const longCashLine = store.backtestPolicy === "long_short_cash" ? "" : `<g class="line-strategy">${pathSegments(plotRows, "longCashValue", x, equityY)}</g>`;
   const longShortLine = store.backtestPolicy === "long_cash" ? "" : `<g class="line-longshort">${pathSegments(plotRows, "longShortValue", x, equityY)}</g>`;
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${zones.join("")}${priceTicks}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${w - p.r}" y2="${p.priceBottom}"/><g class="line-price">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g>${signalMarks}${actionMarks}<text class="axis-title" x="${p.l}" y="16">KOSPI 종가 · 신호는 종가, 체결은 다음 ETF 시가</text>${equityTicks}<line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${w - p.r}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="line-buyhold">${pathSegments(plotRows, "buyHoldValue", x, equityY)}</g><text class="axis-title" x="${p.l}" y="${p.equityTop - 12}">선택 구간 누적가치 (첫 평가일=1)</text><text class="axis-label" x="${p.l}" y="${h - 12}">${esc(plotRows[0].date)}</text><text class="axis-label" x="${w - p.r}" y="${h - 12}" text-anchor="end">${esc(plotRows.at(-1).date)}</text></svg>`;
+  const holdingLaneLabels = store.backtestPolicy === "compare"
+    ? `<text class="holding-lane-label long-cash" x="${w - p.r - 4}" y="${p.priceTop + 12}" text-anchor="end">LC</text><text class="holding-lane-label long-short" x="${w - p.r - 4}" y="${p.priceTop + 25}" text-anchor="end">LS</text>`
+    : "";
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${zones.join("")}${holdingLaneLabels}${priceTicks}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${w - p.r}" y2="${p.priceBottom}"/><g class="line-price">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g>${signalMarks}${actionMarks}<text class="axis-title" x="${p.l}" y="16">KOSPI 종가 · 신호는 종가, 체결은 다음 ETF 시가</text>${equityTicks}<line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${w - p.r}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="line-buyhold">${pathSegments(plotRows, "buyHoldValue", x, equityY)}</g><text class="axis-title" x="${p.l}" y="${p.equityTop - 12}">선택 구간 누적가치 (첫 평가일=1)</text><text class="axis-label" x="${p.l}" y="${h - 12}">${esc(plotRows[0].date)}</text><text class="axis-label" x="${w - p.r}" y="${h - 12}" text-anchor="end">${esc(plotRows.at(-1).date)}</text></svg>`;
   container.setAttribute("aria-label", `${plotRows[0].date}부터 ${plotRows.at(-1).date}까지 ${compactModelName()} KOSPI 신호, 다음 시가 체결, ${policyLabel()} 누적가치 통합 차트.`);
   attachChartNavigation(container, plotRows, (row) => {
     const signal = row.signal ? `, ${labels[row.signal.state]} 종가 신호` : "";
     const action = row.actions.length ? `, 시가 체결 ${row.actions.map((item) => `${policyLabel(item.policy)} ${normalizedActionLabel(item)}`).join(" / ")}` : "";
-    return `${row.date}, KOSPI ${Number(row.kospiClose ?? row.kospi).toLocaleString()}, ${labels[row.trackState] || row.trackState}, 포지션 ${labels[row.position] || row.position}${signal}${action}, 전략 ${fmt.score(row.primaryValue, 3)}, 매수·보유 ${fmt.score(row.buyHoldValue, 3)}`;
+    const positions = store.backtestPolicy === "compare"
+      ? `롱/현금 ${labels[row.longCashPosition] || row.longCashPosition}, 롱/숏/현금 ${labels[row.longShortPosition] || row.longShortPosition}`
+      : `포지션 ${labels[row.position] || row.position}`;
+    const values = store.backtestPolicy === "compare"
+      ? `롱/현금 가치 ${fmt.score(row.longCashValue, 3)}, 롱/숏/현금 가치 ${fmt.score(row.longShortValue, 3)}`
+      : `전략 ${fmt.score(row.primaryValue, 3)}`;
+    return `${row.date}, KOSPI ${Number(row.kospiClose ?? row.kospi).toLocaleString()}, ${labels[row.trackState] || row.trackState}, ${positions}${signal}${action}, ${values}, 매수·보유 ${fmt.score(row.buyHoldValue, 3)}`;
   }, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
 
   const m = primary.metrics;
@@ -919,35 +1120,69 @@ function renderHistory() {
     ? `<strong>정책별 총노출</strong><span>롱 / 현금 ${esc(fmt.pct(longCash.metrics.grossExposure, 1))} · 롱 / 숏 / 현금 ${esc(fmt.pct(longShort.metrics.grossExposure, 1))} · 극단 최초 신호 ${signalCount}회 · 시가 체결일 ${actionsByDate.size}일</span>`
     : `<strong>선택 시나리오 총노출 ${esc(fmt.pct(m.grossExposure, 1))}</strong><span>롱 ${esc(fmt.pct(m.longExposure, 1))} · 숏 ${esc(fmt.pct(m.shortExposure, 1))} · 현금 ${esc(fmt.pct(m.cashExposure, 1))} · 극단 최초 신호 ${signalCount}회 · 시가 체결일 ${actionsByDate.size}일</span>`;
   $("#history-exposure-note").innerHTML = `${exposure}<span>요청 ${esc(requested)} · 적용 ETF 세션 ${esc(applied)} · 기준 표시 정책 시작 포지션 ${esc(labels[carry] || carry)} · 구간 내 완결 거래 ${esc(m.tradeCount)}건${carryClosed ? ` · 시작 전 진입한 carry-in 청산 ${esc(carryClosed)}건은 거래 통계에서 분리` : ""}. 전체 선행 경로를 이어받고 선택 구간 첫 평가액을 1로 재기준화했습니다.</span>`;
-  const tableRows = recentRows(plotRows).map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[row.trackState] || row.trackState, labels[row.position] || row.position, row.actions.map((action) => `${policyLabel(action.policy)} ${normalizedActionLabel(action)} (${action.signalDate || action.sourceSignalDate || "—"}→${row.date})`).join(" / ") || "—", fmt.score(row.primaryValue, 3)]);
-  $("#history-data-table").innerHTML = dataTable(["날짜", "KOSPI", "선택 트랙 상태", "포지션", "다음 시가 체결 (신호일→체결일)", "전략가치"], tableRows, `선택 기간의 최근 ${tableRows.length}개 통합 관측값`);
+  const recent = recentRows(plotRows);
+  const tableRows = store.backtestPolicy === "compare"
+    ? recent.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[row.trackState] || row.trackState, labels[row.longCashPosition] || row.longCashPosition, labels[row.longShortPosition] || row.longShortPosition, row.actions.map((action) => `${policyLabel(action.policy)} ${normalizedActionLabel(action)} (${action.signalDate || action.sourceSignalDate || "—"}→${row.date})`).join(" / ") || "—", fmt.score(row.longCashValue, 3), fmt.score(row.longShortValue, 3)])
+    : recent.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[row.trackState] || row.trackState, labels[row.position] || row.position, row.actions.map((action) => `${policyLabel(action.policy)} ${normalizedActionLabel(action)} (${action.signalDate || action.sourceSignalDate || "—"}→${row.date})`).join(" / ") || "—", fmt.score(row.primaryValue, 3)]);
+  const headers = store.backtestPolicy === "compare"
+    ? ["날짜", "KOSPI", "선택 트랙 상태", "롱/현금 포지션", "롱/숏/현금 포지션", "다음 시가 체결 (신호일→체결일)", "롱/현금 가치", "롱/숏/현금 가치"]
+    : ["날짜", "KOSPI", "선택 트랙 상태", "포지션", "다음 시가 체결 (신호일→체결일)", "전략가치"];
+  $("#history-data-table").innerHTML = dataTable(headers, tableRows, `선택 기간의 최근 ${tableRows.length}개 통합 관측값`);
+}
+
+const scatterFitCache = new Map();
+
+function selectedScatterFit() {
+  const anchor = selectedAnalysisRow();
+  const baseRows = store.history?.series || [];
+  if (!anchor || !baseRows.length) return null;
+  const index = baseRows.findIndex((row) => row.date === anchor.date);
+  if (index < 0) return null;
+  const key = [store.summary?.dataAsOf, anchor.date, store.model, store.signalLookback, store.signalMinimumR2, store.signalExtremeTail].join("|");
+  if (scatterFitCache.has(key)) return scatterFitCache.get(key);
+  try {
+    const result = index === baseRows.length - 1 && store.activeSignalMeta?.currentFit
+      ? { currentFit: store.activeSignalMeta.currentFit }
+      : fitDynamicSignalAt({ historyRows: baseRows, index, ...currentSignalConfig() });
+    scatterFitCache.set(key, result.currentFit || null);
+    return result.currentFit || null;
+  } catch (_) {
+    scatterFitCache.set(key, null);
+    return null;
+  }
 }
 
 function scatterPoints() {
-  const published = store.dashboard?.scatterByModel?.[store.model];
-  if (Array.isArray(published)) {
-    const field = store.model === "raw" ? "rawFlowTrillion" : "flowShare";
-    return published.filter((row) => row.return1d != null && (row.y != null || row[field] != null)).map((row, index, rows) => ({ ...row, y: row.y ?? row[field], role: row.role || (index === rows.length - 1 ? "current" : "training") }));
-  }
-  if (store.model === "scaled" && Array.isArray(store.dashboard.scatter)) return store.dashboard.scatter.filter((row) => row.return1d != null && row.flowShare != null).map((row, index, rows) => ({ ...row, y: row.flowShare, role: row.role || (index === rows.length - 1 ? "current" : "training") }));
-  const model = modelPayload(store.model);
-  if (!model) return [];
-  const count = Number(model.trainingCount || 252) + 1;
-  const field = store.model === "raw" ? "rawFlowTrillion" : "flowShare";
-  const rows = (store.history.series || []).filter((row) => row.return1d != null && row[field] != null).slice(-count);
-  return rows.map((row, index) => ({ ...row, y: row[field], role: index === rows.length - 1 ? "current" : "training" }));
+  const fit = selectedScatterFit();
+  if (!fit) return [];
+  const byDate = new Map(activeHistoryRows().map((row) => [row.date, row]));
+  return [...fit.trainingRows, fit.current].map((point) => {
+    const source = byDate.get(point.date) || {};
+    return {
+      ...source,
+      ...point,
+      y: point.observed,
+      state: point.role === "current" ? fit.current.state : rowTrackValue(source, "state")
+    };
+  });
 }
 
 function publishedScatterStateBoundaries() {
-  const boundaries = store.dashboard?.scatterMetaByModel?.[store.model]?.stateBoundaries;
-  const offsets = boundaries?.residualOffsets;
+  const fit = selectedScatterFit();
+  const cuts = fit?.residualCuts;
+  const offsets = cuts ? {
+    extremeFearUpper: cuts[String(store.signalExtremeTail)],
+    fearUpper: cuts["20"],
+    greedLower: cuts["80"],
+    extremeGreedLower: cuts[String(100 - store.signalExtremeTail)]
+  } : null;
   const required = [offsets?.extremeFearUpper, offsets?.fearUpper, offsets?.greedLower, offsets?.extremeGreedLower];
   if (required.some((value) => typeof value !== "number")) return null;
   const numeric = required.map(Number);
   const ordered = numeric.every((value, index) => index === 0 || value >= numeric[index - 1]);
-  if (boundaries?.method !== "empirical_cdf_transition_order_statistic" || boundaries?.fitScope !== "current_fit_on_prior_window" || !numeric.every(Number.isFinite) || !ordered || Number(boundaries.trainingCount) < 20) return null;
+  if (!numeric.every(Number.isFinite) || !ordered || Number(fit.trainingCount) < 20) return null;
   return {
-    count: Number(boundaries.trainingCount),
+    count: Number(fit.trainingCount),
     extremeFearUpper: Number(offsets.extremeFearUpper),
     fearUpper: Number(offsets.fearUpper),
     greedLower: Number(offsets.greedLower),
@@ -963,7 +1198,7 @@ function renderScatter() {
     $("#scatter-zone-legend-greed").hidden = true;
     $("#scatter-title").textContent = "수익률 × 개인 수급";
     $("#scatter-subtitle").textContent = `${modelName()} 산점도 입력이 공개되지 않았습니다.`;
-    $("#scatter-note").textContent = "사용할 수 없는 모형을 브라우저에서 추정해 대체하지 않습니다.";
+    $("#scatter-note").textContent = "선택 종료일 이전의 유효 학습 관측치가 부족하거나 회귀를 적합할 수 없습니다.";
     return showEmpty(container, "산점도 관측치가 부족합니다.");
   }
   const regression = regressionPayload();
@@ -993,7 +1228,7 @@ function renderScatter() {
     const fearLeft = lineY(stateBoundaries.fearUpper, xmin), fearRight = lineY(stateBoundaries.fearUpper, xmax);
     const greedLeft = lineY(stateBoundaries.greedLower, xmin), greedRight = lineY(stateBoundaries.greedLower, xmax);
     const greedExtremeLeft = lineY(stateBoundaries.extremeGreedLower, xmin), greedExtremeRight = lineY(stateBoundaries.extremeGreedLower, xmax);
-    return `<g clip-path="url(#scatter-plot-clip)"><polygon class="scatter-zone scatter-zone-extreme-fear" points="${x(xmin)},${fearExtremeLeft} ${x(xmax)},${fearExtremeRight} ${x(xmax)},${h - p.b} ${x(xmin)},${h - p.b}"/><polygon class="scatter-zone scatter-zone-fear" points="${x(xmin)},${fearLeft} ${x(xmax)},${fearRight} ${x(xmax)},${fearExtremeRight} ${x(xmin)},${fearExtremeLeft}"/><polygon class="scatter-zone scatter-zone-greed" points="${x(xmin)},${greedExtremeLeft} ${x(xmax)},${greedExtremeRight} ${x(xmax)},${greedRight} ${x(xmin)},${greedLeft}"/><polygon class="scatter-zone scatter-zone-extreme-greed" points="${x(xmin)},${p.t} ${x(xmax)},${p.t} ${x(xmax)},${greedExtremeRight} ${x(xmin)},${greedExtremeLeft}"/>${[[stateBoundaries.extremeFearUpper, "fear extreme"], [stateBoundaries.fearUpper, "fear"], [stateBoundaries.greedLower, "greed"], [stateBoundaries.extremeGreedLower, "greed extreme"]].map(([offset, cls]) => `<line class="scatter-boundary ${cls}" x1="${x(xmin)}" y1="${lineY(offset, xmin)}" x2="${x(xmax)}" y2="${lineY(offset, xmax)}"/>`).join("")}</g><text class="scatter-zone-label fear" x="${p.l + 8}" y="${h - p.b - 10}">극단적 공포 ≤5%</text><text class="scatter-zone-label greed" x="${p.l + 8}" y="${p.t + 16}">극단적 탐욕 ≥95%</text>`;
+    return `<g clip-path="url(#scatter-plot-clip)"><polygon class="scatter-zone scatter-zone-extreme-fear" points="${x(xmin)},${fearExtremeLeft} ${x(xmax)},${fearExtremeRight} ${x(xmax)},${h - p.b} ${x(xmin)},${h - p.b}"/><polygon class="scatter-zone scatter-zone-fear" points="${x(xmin)},${fearLeft} ${x(xmax)},${fearRight} ${x(xmax)},${fearExtremeRight} ${x(xmin)},${fearExtremeLeft}"/><polygon class="scatter-zone scatter-zone-greed" points="${x(xmin)},${greedExtremeLeft} ${x(xmax)},${greedExtremeRight} ${x(xmax)},${greedRight} ${x(xmin)},${greedLeft}"/><polygon class="scatter-zone scatter-zone-extreme-greed" points="${x(xmin)},${p.t} ${x(xmax)},${p.t} ${x(xmax)},${greedExtremeRight} ${x(xmin)},${greedExtremeLeft}"/>${[[stateBoundaries.extremeFearUpper, "fear extreme"], [stateBoundaries.fearUpper, "fear"], [stateBoundaries.greedLower, "greed"], [stateBoundaries.extremeGreedLower, "greed extreme"]].map(([offset, cls]) => `<line class="scatter-boundary ${cls}" x1="${x(xmin)}" y1="${lineY(offset, xmin)}" x2="${x(xmax)}" y2="${lineY(offset, xmax)}"/>`).join("")}</g><text class="scatter-zone-label fear" x="${p.l + 8}" y="${h - p.b - 10}">극단적 공포 ≤${esc(store.signalExtremeTail)}%</text><text class="scatter-zone-label greed" x="${p.l + 8}" y="${p.t + 16}">극단적 탐욕 ≥${esc(100 - store.signalExtremeTail)}%</text>`;
   })() : "";
   const pointGeometry = points.map((row) => ({ row, plotX: x(row.return1d), plotY: y(row.y) }));
   const marks = pointGeometry.map(({ row, plotX, plotY }) => `<circle class="scatter-point ${row.role === "current" ? "current" : ""}" cx="${plotX}" cy="${plotY}" r="${row.role === "current" ? 6 : 3}"><title>${esc(`${row.date} · 수익률 ${fmt.pct(row.return1d)} · ${store.model === "raw" ? `순매수 ${fmt.score(row.y, 3)}조원` : `거래대금 대비 순매수 ${fmt.pct(row.y, 3)}`}`)}</title></circle>`).join("");
@@ -1004,16 +1239,16 @@ function renderScatter() {
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><defs><clipPath id="scatter-plot-clip"><rect x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/></clipPath></defs>${extremeZones}${xTicks}${yTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/>${regressionLine}${residual}${marks}<text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 7}" text-anchor="middle">KOSPI 1일 수익률 (%)</text><text class="axis-title" x="${p.l}" y="13">${store.model === "raw" ? "개인 순매수대금 (조원)" : "순매수대금 ÷ KOSPI 거래대금 (%)"}</text></svg>`;
   const inputLabel = store.model === "raw" ? "개인 순매수대금" : "거래대금 대비 개인 순매수 비율";
   $("#scatter-title").textContent = `수익률 × ${inputLabel}`;
-  $("#scatter-subtitle").textContent = `${modelName()} · 직전 ${regression.trainingCount || regression.window || points.length - 1}거래일과 현재 관측`;
-  const zoneAria = stateBoundaries ? "회귀선 대비 최신 학습 잔차의 경험적 5% 이하 극단 공포와 95% 이상 극단 탐욕 영역을 표시합니다." : "정확한 최신 회귀 상태 경계가 없어 극단 영역은 표시하지 않습니다.";
-  container.setAttribute("aria-label", `${points.length}개 관측치 ${modelName()} 산점도. ${zoneAria} 현재 수익률 ${fmt.pct(current.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(current.y, 3)}조원` : fmt.pct(current.y, 3)}.`);
+  $("#scatter-subtitle").textContent = `${modelName()} · ${current.date} 기준 · 직전 ${regression.trainingCount || regression.window || points.length - 1}거래일 학습`;
+  const zoneAria = stateBoundaries ? `회귀선 대비 선택 학습 잔차의 경험적 ${store.signalExtremeTail}% 이하 극단 공포와 ${100 - store.signalExtremeTail}% 이상 극단 탐욕 영역을 표시합니다.` : "정확한 선택 회귀 상태 경계가 없어 극단 영역은 표시하지 않습니다.";
+  container.setAttribute("aria-label", `${points.length}개 관측치 ${modelName()} 산점도. ${zoneAria} 선택 기준일 ${current.date} 수익률 ${fmt.pct(current.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(current.y, 3)}조원` : fmt.pct(current.y, 3)}.`);
   const cutoffFormat = store.model === "raw" ? (value) => `${fmt.score(value, 3)}조원` : (value) => `${(Number(value) * 100).toFixed(2)}%p`;
   const zoneNote = stateBoundaries
-    ? ` · 최신 회귀 학습 잔차 경계: 5% ${cutoffFormat(stateBoundaries.extremeFearUpper)}, 20% ${cutoffFormat(stateBoundaries.fearUpper)}, 80% ${cutoffFormat(stateBoundaries.greedLower)}, 95% ${cutoffFormat(stateBoundaries.extremeGreedLower)} (n=${stateBoundaries.count})`
-    : " · 정확한 최신-fit 상태 경계가 공개되지 않아 영역을 표시하지 않음 (브라우저 재추정 없음)";
+    ? ` · 선택 회귀 학습 잔차 경계: ${store.signalExtremeTail}% ${cutoffFormat(stateBoundaries.extremeFearUpper)}, 20% ${cutoffFormat(stateBoundaries.fearUpper)}, 80% ${cutoffFormat(stateBoundaries.greedLower)}, ${100 - store.signalExtremeTail}% ${cutoffFormat(stateBoundaries.extremeGreedLower)} (n=${stateBoundaries.count})`
+    : " · 선택 종료일의 과거 전용 회귀를 적합할 수 없어 영역을 표시하지 않음";
   $("#scatter-note").textContent = `학습 n=${points.filter((row) => row.role !== "current").length} · 현재 n=${points.filter((row) => row.role === "current").length} · β=${fmt.score(regression.beta, 4)} · R²=${fmt.score(modelPayload()?.rollingR2, 3)}${zoneNote}`;
-  attachScatterNavigation(container, pointGeometry, (row) => `${row.date}, KOSPI ${fmt.signedPct(row.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3)}, 당시 롤링 상태 ${labels[row.state] || row.state || "미확인"}${row.role === "current" ? ", 현재 관측" : ", 학습 관측"}`, { width: w, height: h });
-  const tableRows = recentRows(points).map((row) => [row.date, fmt.signedPct(row.return1d), store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3), labels[row.state] || row.state || "—", row.role === "current" ? "현재" : "학습"]);
+  attachScatterNavigation(container, pointGeometry, (row) => `${row.date}, KOSPI ${fmt.signedPct(row.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3)}, 당시 롤링 상태 ${labels[row.state] || row.state || "미확인"}${row.role === "current" ? ", 선택 기준일 관측" : ", 학습 관측"}`, { width: w, height: h });
+  const tableRows = recentRows(points).map((row) => [row.date, fmt.signedPct(row.return1d), store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3), labels[row.state] || row.state || "—", row.role === "current" ? "선택 기준일" : "학습"]);
   $("#scatter-data-table").innerHTML = dataTable(["날짜", "KOSPI 1일", inputLabel, "당시 롤링 상태", "역할"], tableRows, `${modelName()} 최근 ${tableRows.length}개 산점도 관측`);
 }
 
@@ -1032,9 +1267,13 @@ function renderResidual() {
   if (rows.length < 8) return showEmpty(container, "잔차 시계열이 부족합니다.");
   const w = 600, h = 340, p = { l: 50, r: 18, t: 20, b: 40 };
   const x = scale(0, rows.length - 1, p.l, w - p.r), y = scale(0, 100, h - p.b, p.t);
-  const boundaries = [5, 20, 50, 80, 95].map((value) => `<line class="grid-line ${value === 50 ? "midline" : ""}" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 7}" y="${y(value) + 3}" text-anchor="end">${value}</text>`).join("");
-  const cleanRows = rows.map((row) => row.selectedEligible !== true ? { ...row, selectedPercentile: null } : row);
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="residual-band-fear" x="${p.l}" y="${y(20)}" width="${w - p.l - p.r}" height="${y(0) - y(20)}"/><rect class="residual-band-greed" x="${p.l}" y="${y(100)}" width="${w - p.l - p.r}" height="${y(80) - y(100)}"/>${boundaries}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-primary">${pathSegments(cleanRows, "selectedPercentile", x, y)}</g><text class="axis-title" x="${p.l}" y="13">백분위 (0–100)</text><text class="axis-label" x="${p.l}" y="${h - 10}">${esc(rows[0].date)}</text><text class="axis-label" text-anchor="end" x="${w - p.r}" y="${h - 10}">${esc(rows.at(-1).date)}</text></svg>`;
+  const lowerExtreme = Number(store.signalExtremeTail);
+  const upperExtreme = 100 - lowerExtreme;
+  const boundaries = [...new Set([lowerExtreme, 20, 50, 80, upperExtreme])].sort((a, b) => a - b).map((value) => `<line class="grid-line ${value === 50 ? "midline" : ""}" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 7}" y="${y(value) + 3}" text-anchor="end">${value}</text>`).join("");
+  const eligibleRows = rows.map((row) => row.selectedEligible === true ? row : { ...row, selectedPercentile: null });
+  const blockedRows = rows.map((row) => row.selectedEligible !== true ? row : { ...row, selectedPercentile: null });
+  const blockedMarks = rows.map((row, index) => row.selectedEligible !== true && Number.isFinite(Number(row.selectedPercentile)) ? `<circle class="residual-blocked-point" cx="${x(index)}" cy="${y(row.selectedPercentile)}" r="2.5"><title>${esc(`${row.date} · 낮은 적합도, 거래 차단`)}</title></circle>` : "").join("");
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="residual-band-fear" x="${p.l}" y="${y(lowerExtreme)}" width="${w - p.l - p.r}" height="${y(0) - y(lowerExtreme)}"/><rect class="residual-band-greed" x="${p.l}" y="${y(100)}" width="${w - p.l - p.r}" height="${y(upperExtreme) - y(100)}"/>${boundaries}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-primary">${pathSegments(eligibleRows, "selectedPercentile", x, y)}</g><g class="line-blocked">${pathSegments(blockedRows, "selectedPercentile", x, y)}</g>${blockedMarks}<text class="axis-title" x="${p.l}" y="13">백분위 (0–100) · 극단 ≤${esc(lowerExtreme)} / ≥${esc(upperExtreme)} · 회색 점선은 거래 차단</text><text class="axis-label" x="${p.l}" y="${h - 10}">${esc(rows[0].date)}</text><text class="axis-label" text-anchor="end" x="${w - p.r}" y="${h - 10}">${esc(rows.at(-1).date)}</text></svg>`;
   const validRows = rows.filter((row) => Number.isFinite(Number(row.selectedPercentile)));
   const latest = validRows.at(-1);
   container.setAttribute("aria-label", `${compactModelName(kind)} 잔차 백분위 ${rows[0].date}부터 ${rows.at(-1).date}. 최신 ${latest ? fmt.score(latest.selectedPercentile) : "산출 불가"}.`);
@@ -1044,12 +1283,35 @@ function renderResidual() {
 }
 
 function selectedEventSection() {
-  const byModel = store.dashboard.eventsByModel?.[store.model];
-  return (byModel || store.dashboard.events)?.[store.eventAsset]?.[store.eventSample];
+  if (!store.history || !activeHistoryRows().length) return null;
+  const { startDate, endDate } = selectedWindowBounds();
+  const key = [store.summary?.dataAsOf, store.model, store.signalLookback, store.signalMinimumR2, store.signalExtremeTail, store.eventAsset, store.eventSample, startDate, endDate].join("|");
+  if (dynamicEventCache.has(key)) {
+    latestEventError = dynamicEventErrors.get(key) || null;
+    return dynamicEventCache.get(key);
+  }
+  try {
+    const result = runDynamicEventStudy({
+      historyRows: activeHistoryRows(),
+      track: store.model,
+      asset: store.eventAsset,
+      sample: store.eventSample,
+      startDate,
+      endDate
+    });
+    latestEventError = null;
+    dynamicEventCache.set(key, result);
+    return result;
+  } catch (error) {
+    latestEventError = error instanceof Error ? error : new Error("사건 연구를 계산할 수 없습니다.");
+    dynamicEventErrors.set(key, latestEventError);
+    dynamicEventCache.set(key, null);
+    return null;
+  }
 }
 
 function eventModelKind() {
-  return store.dashboard.eventsByModel?.[store.model] ? store.model : primaryModelKind();
+  return store.model;
 }
 
 function eventBenchmark(row) {
@@ -1062,12 +1324,13 @@ function eventExcess(row) {
 
 function renderEventVisual(section) {
   const container = $("#event-ci-chart");
-  const rows = section?.summary || [];
+  const rows = (section?.summary || []).filter((row) => row.mean != null && Number.isFinite(Number(row.mean)));
   if (!rows.length) {
+    $("#event-benchmark-legend").hidden = true;
     $("#event-benchmark-note").textContent = "선택 표본이 없어 불확실성 차트를 표시하지 않습니다.";
     return showEmpty(container, "사건 신뢰구간 없음");
   }
-  const values = rows.flatMap((row) => [row.mean, ...(row.meanCi95 || []), eventBenchmark(row), eventExcess(row), ...(row.meanExcessReturnCi95 || row.excessCi95 || row.excessMeanCi95 || [])]).map(Number).filter(Number.isFinite);
+  const values = rows.flatMap((row) => [row.mean, ...(row.meanCi95 || []), eventBenchmark(row), eventExcess(row), ...(row.meanExcessReturnCi95 || row.excessCi95 || row.excessMeanCi95 || [])]).filter((value) => value != null).map(Number).filter(Number.isFinite);
   const min0 = Math.min(0, ...values), max0 = Math.max(0, ...values), pad = (max0 - min0 || .01) * .12;
   const min = min0 - pad, max = max0 + pad;
   const w = 880, rowHeight = 37, h = Math.max(330, rows.length * rowHeight + 78), p = { l: 154, r: 72, t: 24, b: 48 };
@@ -1084,12 +1347,12 @@ function renderEventVisual(section) {
   const marks = rows.map((row, index) => {
     const y = rowY(index);
     const mean = Number(row.mean);
-    const [low, high] = (row.meanCi95 || []).map(Number);
+    const [low, high] = (row.meanCi95 || []).map((value) => value == null ? Number.NaN : Number(value));
     const benchmarkValue = eventBenchmark(row);
     const excessValue = eventExcess(row);
     const benchmark = benchmarkValue == null ? Number.NaN : Number(benchmarkValue);
     const excess = excessValue == null ? Number.NaN : Number(excessValue);
-    const excessCi = (row.meanExcessReturnCi95 || row.excessCi95 || row.excessMeanCi95 || []).map(Number);
+    const excessCi = (row.meanExcessReturnCi95 || row.excessCi95 || row.excessMeanCi95 || []).map((value) => value == null ? Number.NaN : Number(value));
     const greed = String(row.state).includes("greed");
     const stateLabel = labels[row.state] || row.state;
     geometry.push({ row, plotX: x(mean), plotY: y });
@@ -1110,6 +1373,7 @@ function renderEventVisual(section) {
     : benchmarkTreatments.has("paired_event_returns")
       ? " 초과수익 95% CI는 사건별 벤치마크 수익률을 함께 재표집한 구간입니다."
       : "";
+  $("#event-benchmark-legend").hidden = !hasBenchmark;
   $("#event-benchmark-note").textContent = hasBenchmark ? `비교 벤치마크와의 차이를 연결선과 Δ로 표시합니다.${hasExcess ? " 초과수익은 서버가 발행한 값입니다." : " 초과수익 수치는 아직 별도 발행되지 않았습니다."}${conditionalCiNote}` : "비교 벤치마크·초과수익이 공개 계약에 없어 0% 기준선만 표시합니다. 평균수익률 자체를 시장 대비 초과성과로 해석하지 마세요.";
 }
 
@@ -1120,21 +1384,27 @@ function renderEvents() {
   const sampleLabel = store.eventSample === "all" ? "전체 사건" : "20일 비중첩";
   $("#event-table caption").textContent = `${store.eventAsset} ${sampleLabel} 신호일 종가 기준 선행수익률`;
   const modelKind = eventModelKind();
-  const bootstrap = section?.summary?.[0]?.bootstrapMethod;
-  const blockLength = section?.summary?.[0]?.bootstrapBlockLength;
-  const bootstrapLabel = bootstrap === "moving_block" ? `이동블록 bootstrap 10,000회${blockLength ? ` · 블록 ${blockLength}` : ""}` : "bootstrap 10,000회";
+  const bootstrap = section?.bootstrap || {};
+  const bootstrapLabel = `${bootstrap.samples || 10_000}회 결정론적 iid bootstrap`;
   $("#event-model-scope").textContent = `${modelRole(modelKind)} · ${compactModelName(modelKind)}`;
   $("#event-model-scope").className = `scope-badge ${modelKind === "raw" ? "replica" : modelKind === "robust" ? "practical" : "baseline"}`;
   $("#event-source-line").textContent = `${store.eventAsset} · 신호일 종가→h일 종가 · ${sampleLabel} · ${compactModelName(modelKind)} · ${bootstrapLabel}`;
   $("#event-visual-subtitle").textContent = `${store.eventAsset} · 종가 기준 사건 수익률(실제 익일 시가 체결수익률 아님) · ${sampleLabel}`;
+  if (latestEventError) {
+    $("#event-benchmark-legend").hidden = true;
+    body.innerHTML = `<tr><td colspan="7">사건 연구 계산 오류로 결과를 표시하지 않습니다.</td></tr>`;
+    $("#event-note").textContent = latestEventError.message;
+    $("#event-benchmark-note").textContent = "계산 오류를 빈 표본이나 0% 수익률로 대체하지 않습니다.";
+    return showEmpty($("#event-ci-chart"), "사건 연구 산출 불가");
+  }
   if (!section?.summary?.length) {
-    body.innerHTML = `<tr><td colspan="7">선택한 사전 계산 사건 표본이 없습니다.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7">선택 설정과 평가 기간에 해당하는 사건 표본이 없습니다.</td></tr>`;
     $("#event-note").textContent = "사건 수가 없을 때 성과를 강조하지 않습니다.";
     renderEventVisual(section);
     return;
   }
   body.innerHTML = section.summary.map((row) => `<tr class="${row.smallSample ? "small-sample" : ""}"><td><span class="state-mark ${row.state.includes("greed") ? "greed" : ""}">${esc(labels[row.state] || row.state)}</span></td><td>${esc(row.horizon)}일</td><td>${esc(row.eventCount)}${row.smallSample ? "*" : ""}</td><td>${esc(fmt.pct(row.mean))}</td><td>${esc(fmt.pct(row.median))}</td><td>${esc(fmt.pct(row.positiveRate, 1))}</td><td>${esc(fmt.pct(row.meanCi95?.[0]))} ~ ${esc(fmt.pct(row.meanCi95?.[1]))}</td></tr>`).join("");
-  $("#event-note").textContent = `${sampleLabel} ${section.eventCount}개. * 20개 미만 표본은 소표본으로 흐리게 표시하며 통계적 확정으로 해석하지 않습니다.`;
+  $("#event-note").textContent = `${sampleLabel} ${section.eventCount}개 · 평가 ${section.startDate || "전체 시작"}–${section.endDate || "최신"}. ${store.eventSample === "all" ? "겹치는 사건의 iid 구간은 상관을 반영하지 못하므로 탐색용입니다. " : "20일 비중첩 표본의 iid 구간입니다. "}* 각 기간 완결 사건이 20개 미만이면 소표본으로 흐리게 표시하며 통계적 확정으로 해석하지 않습니다.`;
   renderEventVisual(section);
 }
 
@@ -1182,22 +1452,26 @@ function publishedLongShortResultFor({ proxy, period, variant, cost }) {
 }
 
 const scenarioCache = new Map();
+const dynamicEventCache = new Map();
+const dynamicEventErrors = new Map();
 let latestScenarioError = null;
+let latestEventError = null;
 
 function scenarioResultFor(policyId, { proxy, period, variant, cost }) {
   if (policyId === "long_short_cash" && variant === "disparity") return null;
   const { startDate, endDate } = selectedWindowBounds();
-  const key = [store.summary?.dataAsOf, policyId, proxy, period, variant, cost, store.longExitPercentile, startDate, endDate].join("|");
+  const key = [store.summary?.dataAsOf, policyId, proxy, period, variant, cost, store.longExitPercentile, store.signalLookback, store.signalMinimumR2, store.signalExtremeTail, store.signalMaxHolding, startDate, endDate].join("|");
   if (scenarioCache.has(key)) return scenarioCache.get(key);
   try {
     const result = runStrategyScenario({
-      historyRows: store.history?.series,
+      historyRows: activeHistoryRows(),
       proxy,
       period,
       variant,
       costBps: cost,
       policyId,
       longExitPercentile: store.longExitPercentile,
+      maxHolding: store.signalMaxHolding,
       startDate,
       endDate
     });
@@ -1284,7 +1558,7 @@ function renderProxyComparison() {
 }
 
 function resultSourceLabel(result) {
-  return result?.calculationSource === "server_verified_default" ? "서버 검증 기본 80" : "브라우저 사용자 시나리오";
+  return result?.calculationSource === "server_verified_default" ? "서버 검증 기본값" : "브라우저 과거전용 사용자 시나리오";
 }
 
 function renderPolicyComparison(longCash, longShort) {
@@ -1348,7 +1622,7 @@ function renderBacktests() {
   $("#strategy-model-scope").className = `scope-badge ${strategyRole[1]}`;
   $("#backtest-card-subtitle").textContent = selectionLabel;
   $("#equity-title").textContent = `${store.backtestProxy} 누적가치와 낙폭`;
-  $("#equity-subtitle").textContent = `${variantLabel(key)} · ${periodLabel} · 롱 ≥${store.longExitPercentile}${store.backtestPolicy === "long_cash" ? "" : ` · 숏 ≤${100 - store.longExitPercentile}`} · 전체 경로 carry-in`;
+  $("#equity-subtitle").textContent = `${variantLabel(key)} · 학습 ${store.signalLookback}일 · 극단 ${store.signalExtremeTail}% · 최대 ${store.signalMaxHolding}일 · ${periodLabel} · 롱 ≥${store.longExitPercentile}${store.backtestPolicy === "long_cash" ? "" : ` · 숏 ≤${100 - store.longExitPercentile}`} · 전체 경로 carry-in`;
   $("#backtest-table caption").textContent = `${selectionLabel} 성과·위험 상세`;
   $("#trade-table caption").textContent = `${selectionLabel} 최근 거래내역`;
   if (!selected.length) {
@@ -1517,7 +1791,7 @@ function renderPdfSnapshot() {
 }
 
 function renderDiagnostics() {
-  const base = entity();
+  const base = analysisEntity();
   const diag = store.dashboard.diagnostics || {};
   const latest = diag.latest || {};
   $("#diagnostic-list").innerHTML = [
@@ -1552,11 +1826,28 @@ function renderDiagnostics() {
 
 function renderFlowChannels() {
   const published = store.dashboard?.flowChannels?.channels;
-  const channels = Array.isArray(published) && published.length ? published : [
+  const publishedChannels = Array.isArray(published) && published.length ? published : [
     { channelId: "retail", participant: "individual", availability: "active", state: stateFromValue(modelPayload(primaryModelKind())), strategyUse: "primary", source: "pykrx" },
     { channelId: "foreign", participant: "foreign", availability: "planned", state: "unavailable", strategyUse: "future_extension" },
     { channelId: "institutional", participant: "institutional", availability: "planned", state: "unavailable", strategyUse: "future_extension" }
   ];
+  const selected = analysisEntity();
+  const selectedModel = modelPayload();
+  const selectedDate = selected.date || store.summary?.dataAsOf;
+  const channels = publishedChannels.map((channel) => {
+    if (channel.strategyUse !== "primary" && !["individual", "retail"].includes(channel.participant)) {
+      return { ...channel, basisDate: channel.dataAsOf || store.dashboard?.dataAsOf || store.summary?.dataAsOf };
+    }
+    return {
+      ...channel,
+      availability: "active",
+      state: stateFromValue(selectedModel),
+      percentile: selectedModel?.percentile ?? selectedModel?.sentimentPercentile,
+      quality: selectedModel?.quality ?? selectedModel?.modelQuality,
+      basisDate: selectedDate,
+      source: channel.source || "authenticated_pykrx"
+    };
+  });
   const participantLabel = { individual: "개인", retail: "개인", foreign: "외국인", foreigner: "외국인", institutional: "기관", institution: "기관" };
   const useLabel = { primary: "현재 1차 신호", diagnostic_only: "진단 전용", future_extension: "향후 확장" };
   const qualityLabel = { ok: "정상", low_model_fit: "낮음 · 거래 미사용", unavailable: "산출 불가", not_activated: "미활성" };
@@ -1571,7 +1862,7 @@ function renderFlowChannels() {
     const coverage = collecting ? `<div><dt>수집 표본</dt><dd>${esc(channel.observationCount ?? 0)}일</dd></div>` : "";
     return `<section class="flow-channel ${active ? "active" : "planned"}">
       <div><span class="channel-status ${active ? "active" : "planned"}">${availabilityLabel}</span><strong>${esc(participantLabel[channel.participant] || participantLabel[channel.channelId] || channel.participant || channel.channelId)}</strong></div>
-      <dl><div><dt>역할</dt><dd>${esc(useLabel[channel.strategyUse] || channel.strategyUse || "—")}</dd></div><div><dt>상태</dt><dd>${esc(stateLabel)}</dd></div><div><dt>모형 품질</dt><dd>${esc(modelQuality)}</dd></div><div><dt>백분위</dt><dd>${esc(active ? fmt.score(channel.percentile, 1) : "—")}</dd></div>${coverage}<div><dt>출처</dt><dd>${esc(channel.source || "활성화 전")}</dd></div></dl>
+      <dl><div><dt>역할</dt><dd>${esc(useLabel[channel.strategyUse] || channel.strategyUse || "—")}</dd></div><div><dt>상태</dt><dd>${esc(stateLabel)}</dd></div><div><dt>모형 품질</dt><dd>${esc(modelQuality)}</dd></div><div><dt>백분위</dt><dd>${esc(active ? fmt.score(channel.percentile, 1) : "—")}</dd></div>${coverage}<div><dt>기준일</dt><dd>${esc(channel.basisDate || "—")}</dd></div><div><dt>출처</dt><dd>${esc(channel.source || "활성화 전")}</dd></div></dl>
     </section>`;
   }).join("");
 }
@@ -1588,6 +1879,25 @@ function updatePressed(selector, value, key) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
+}
+
+function syncSignalSettingControls() {
+  const values = {
+    "#signal-lookback-input": store.signalLookback,
+    "#signal-min-r2-input": store.signalMinimumR2,
+    "#signal-tail-input": store.signalExtremeTail,
+    "#signal-max-holding-input": store.signalMaxHolding
+  };
+  Object.entries(values).forEach(([selector, value]) => {
+    const input = $(selector);
+    if (input && document.activeElement !== input) input.value = String(value);
+  });
+  const lookbackHelp = $("#signal-lookback-help");
+  if (lookbackHelp) lookbackHelp.textContent = `${Math.round(Number(store.signalLookback) / 21)}개월 상당 · 최소 ${Math.min(store.signalLookback, Math.max(40, Math.min(200, Math.ceil(store.signalLookback * .8))))}개 관측`;
+  const tailHelp = $("#signal-tail-help");
+  if (tailHelp) tailHelp.textContent = `공포 ≤${store.signalExtremeTail} · 탐욕 ≥${100 - store.signalExtremeTail}`;
+  const holdingHelp = $("#signal-max-holding-help");
+  if (holdingHelp) holdingHelp.textContent = `회복이 없으면 ${store.signalMaxHolding}번째 보유 세션 종가 확인 후 다음 시가 청산`;
 }
 
 function updateBacktestControls() {
@@ -1610,15 +1920,16 @@ function updateBacktestControls() {
   const available = resultFor();
   const bounds = available?.window || available?.range || {};
   const applied = bounds.appliedStartDate && bounds.appliedEndDate ? ` · 적용 ${bounds.appliedStartDate}–${bounds.appliedEndDate}` : "";
-  $("#backtest-selection-note").textContent = available ? `공개 입력 기반 동적 시나리오 · ${modelName()} · 롱 청산 ${store.longExitPercentile}, 숏 청산 ${100 - store.longExitPercentile}${applied}. 전체 선행 경로의 포지션과 예약 주문을 이어받습니다.` : "선택 조합의 결과가 없습니다.";
+  $("#backtest-selection-note").textContent = available ? `브라우저 과거전용 재적합 · ${modelName()} · 학습 ${store.signalLookback}일 · 극단 ${store.signalExtremeTail}% · 롱 청산 ${store.longExitPercentile}, 숏 청산 ${100 - store.longExitPercentile} · 최대 ${store.signalMaxHolding}일${applied}. 전체 선행 경로의 포지션과 예약 주문을 이어받습니다.` : "선택 조합의 결과가 없습니다.";
   $("#exit-threshold-value").textContent = `${store.longExitPercentile}`;
   $("#short-exit-threshold-value").textContent = `${100 - store.longExitPercentile}`;
   $("#exit-threshold-input").value = String(store.longExitPercentile);
+  syncSignalSettingControls();
 }
 
 function initializeControlState() {
   let saved = {};
-  try { saved = JSON.parse(localStorage.getItem("fearngreed-controls-v4") || localStorage.getItem("fearngreed-controls-v3") || localStorage.getItem("fearngreed-controls-v2") || "{}"); } catch (_) { saved = {}; }
+  try { saved = JSON.parse(localStorage.getItem("fearngreed-controls-v5") || localStorage.getItem("fearngreed-controls-v4") || localStorage.getItem("fearngreed-controls-v3") || localStorage.getItem("fearngreed-controls-v2") || "{}"); } catch (_) { saved = {}; }
   const params = new URLSearchParams(location.search);
   Object.entries(CONTROL_QUERY).forEach(([key, param]) => {
     const candidate = params.has(param) ? params.get(param) : saved[key];
@@ -1630,18 +1941,28 @@ function initializeControlState() {
       try { store.longExitPercentile = normalizeLongExitPercentile(candidate ?? DEFAULT_LONG_EXIT_PERCENTILE); } catch (_) { store.longExitPercentile = DEFAULT_LONG_EXIT_PERCENTILE; }
       return;
     }
+    if (["signalLookback", "signalMinimumR2", "signalExtremeTail", "signalMaxHolding"].includes(key)) {
+      if (candidate != null && candidate !== "" && Number.isFinite(Number(candidate))) store[key] = Number(candidate);
+      return;
+    }
     let normalized = key === "backtestVariant" && candidate === "base" ? "scaled_ols" : String(candidate ?? "");
     if (key === "window") normalized = ({ "252": "1y", "756": "3y" })[normalized] || normalized;
     if (CONTROL_ALLOWED[key]?.includes(normalized)) store[key] = key === "backtestCost" ? Number(normalized) : normalized;
   });
   if (store.window === "custom" && (!isIsoDate(store.historyStart) || !isIsoDate(store.historyEnd) || store.historyStart > store.historyEnd)) store.window = "3y";
   if (!params.has("window") && saved.window == null && matchMedia("(max-width: 520px)").matches) store.window = "1y";
+  try { currentSignalConfig(); } catch (_) {
+    store.signalLookback = DEFAULT_CONTROLS.signalLookback;
+    store.signalMinimumR2 = DEFAULT_CONTROLS.signalMinimumR2;
+    store.signalExtremeTail = DEFAULT_CONTROLS.signalExtremeTail;
+    store.signalMaxHolding = DEFAULT_CONTROLS.signalMaxHolding;
+  }
   syncStrategyTrack();
 }
 
 function ensureHistoryRangeAvailable() {
   if (store.window !== "custom") return true;
-  const rows = store.history?.series || [];
+  const rows = activeHistoryRows();
   const firstDate = rows[0]?.date;
   const latestDate = rows.at(-1)?.date;
   const valid = firstDate && latestDate && isIsoDate(store.historyStart) && isIsoDate(store.historyEnd) && store.historyStart <= store.historyEnd && store.historyStart >= firstDate && store.historyEnd <= latestDate && rows.some((row) => row.date >= store.historyStart && row.date <= store.historyEnd);
@@ -1654,7 +1975,7 @@ function ensureHistoryRangeAvailable() {
 
 function persistControlState({ replaceUrl = true } = {}) {
   const values = Object.fromEntries(Object.keys(CONTROL_QUERY).map((key) => [key, store[key]]));
-  try { localStorage.setItem("fearngreed-controls-v4", JSON.stringify(values)); } catch (_) { /* URL remains shareable */ }
+  try { localStorage.setItem("fearngreed-controls-v5", JSON.stringify(values)); } catch (_) { /* URL remains shareable */ }
   if (!replaceUrl) return;
   const url = new URL(location.href);
   Object.entries(CONTROL_QUERY).forEach(([key, param]) => {
@@ -1674,6 +1995,28 @@ function scrollChartLatest(chartId) {
 
 function announceViewAction(message) {
   $("#view-action-status").textContent = message;
+}
+
+const researchControlDisabledState = new WeakMap();
+
+function setResearchControlsEnabled(enabled) {
+  const selector = [
+    "[data-window]", "[data-model]", "[data-event-asset]", "[data-event-sample]",
+    "[data-backtest-proxy]", "[data-backtest-policy]", "[data-backtest-variant]",
+    "[data-backtest-cost]", "[data-backtest-period]", "#history-range-form input",
+    "#history-range-form button", "#signal-settings-form input", "#signal-settings-form button",
+    "#exit-threshold-form input", "#exit-threshold-form button", "#reset-controls"
+  ].join(",");
+  $$(selector).forEach((control) => {
+    if (!enabled) {
+      if (!researchControlDisabledState.has(control)) researchControlDisabledState.set(control, control.disabled);
+      control.disabled = true;
+      return;
+    }
+    control.disabled = researchControlDisabledState.get(control) ?? false;
+    researchControlDisabledState.delete(control);
+  });
+  $(".analysis-config")?.setAttribute("aria-busy", String(!enabled));
 }
 
 async function shareCurrentView() {
@@ -1697,7 +2040,7 @@ async function shareCurrentView() {
 function resetControls() {
   Object.assign(store, DEFAULT_CONTROLS);
   syncStrategyTrack();
-  scenarioCache.clear();
+  recomputeDynamicResearch();
   const exitInput = $("#exit-threshold-input");
   const exitStatus = $("#exit-threshold-status");
   exitInput?.removeAttribute("aria-invalid");
@@ -1705,6 +2048,12 @@ function resetControls() {
     delete exitStatus.dataset.state;
     exitStatus.textContent = "";
   }
+  const signalStatus = $("#signal-settings-status");
+  if (signalStatus) {
+    signalStatus.dataset.state = "ok";
+    signalStatus.textContent = "기본값 적용 · 학습창 252일 · 최소 R² 0.20 · 극단 꼬리 5% · 최대 보유 20일";
+  }
+  ["#signal-lookback-input", "#signal-min-r2-input", "#signal-tail-input", "#signal-max-holding-input"].forEach((selector) => $(selector)?.removeAttribute("aria-invalid"));
   if (!modelPayload("robust")) store.model = modelPayload("scaled") ? "scaled" : "raw";
   ensureBacktestSelection();
   persistControlState();
@@ -1720,13 +2069,37 @@ function bindControls() {
     updatePressed("[data-window]", store.window, "window");
     renderAll();
   }));
-  $$('[data-model]').forEach((button) => button.addEventListener("click", () => {
+  $$('[data-model]').forEach((button) => button.addEventListener("click", async () => {
     if (button.disabled) return;
+    const previous = store.model;
     store.model = button.dataset.model;
     syncStrategyTrack();
-    scenarioCache.clear();
-    persistControlState();
-    renderAll();
+    const status = $("#signal-settings-status");
+    const form = $("#signal-settings-form");
+    setResearchControlsEnabled(false);
+    form.setAttribute("aria-busy", "true");
+    status.dataset.state = "pending";
+    status.textContent = `${modelName()} 신호 이력을 과거 정보만으로 다시 계산하는 중입니다…`;
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    try {
+      await recomputeDynamicResearchAsync({ onProgress: ({ ratio }) => {
+        status.textContent = `${modelName()} 신호 이력을 과거 정보만으로 다시 계산하는 중입니다… ${Math.round(ratio * 100)}%`;
+      } });
+      persistControlState();
+      renderAll();
+      status.dataset.state = "ok";
+      status.textContent = `적용됨 · ${modelName()} · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail}`;
+    } catch (error) {
+      store.model = previous;
+      syncStrategyTrack();
+      recomputeDynamicResearch();
+      renderAll();
+      status.dataset.state = "error";
+      status.textContent = error instanceof Error ? error.message : "연구 트랙을 다시 계산할 수 없습니다.";
+    } finally {
+      setResearchControlsEnabled(true);
+      form.setAttribute("aria-busy", "false");
+    }
   }));
   $$('[data-event-asset]').forEach((button) => button.addEventListener("click", () => {
     store.eventAsset = button.dataset.eventAsset;
@@ -1779,6 +2152,56 @@ function bindControls() {
   }));
   $$('[data-chart-latest]').forEach((button) => button.addEventListener("click", () => scrollChartLatest(button.dataset.chartLatest)));
   $("#history-range-form").addEventListener("submit", applyCustomHistoryRange);
+  $("#signal-settings-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const inputs = {
+      signalLookback: $("#signal-lookback-input"),
+      signalMinimumR2: $("#signal-min-r2-input"),
+      signalExtremeTail: $("#signal-tail-input"),
+      signalMaxHolding: $("#signal-max-holding-input")
+    };
+    const status = $("#signal-settings-status");
+    const button = $("#apply-signal-settings");
+    const previous = Object.fromEntries(Object.keys(inputs).map((key) => [key, store[key]]));
+    try {
+      if (Object.values(inputs).some((input) => input.value.trim() === "")) throw new Error("신호 학습 설정의 모든 값을 입력해 주세요.");
+      Object.entries(inputs).forEach(([key, input]) => {
+        store[key] = Number(input.value);
+        input.removeAttribute("aria-invalid");
+      });
+      currentSignalConfig();
+      button.disabled = true;
+      form.setAttribute("aria-busy", "true");
+      status.dataset.state = "pending";
+      status.textContent = "과거 정보만으로 전체 신호·사건·전략을 다시 계산하는 중입니다…";
+      setResearchControlsEnabled(false);
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      await recomputeDynamicResearchAsync({ onProgress: ({ ratio }) => {
+        status.textContent = `과거 정보만으로 전체 신호·사건·전략을 다시 계산하는 중입니다… ${Math.round(ratio * 100)}%`;
+      } });
+      latestScenarioError = null;
+      const expectedCount = store.backtestPolicy === "compare" ? 2 : 1;
+      if (resultsForPolicySelection().filter(({ result }) => result?.metrics).length !== expectedCount || latestScenarioError) {
+        throw latestScenarioError || new Error("선택 설정의 전략 경로를 계산할 수 없습니다.");
+      }
+      if (!selectedEventSection() && latestEventError) throw latestEventError;
+      persistControlState();
+      renderAll();
+      status.dataset.state = "ok";
+      status.textContent = `적용됨 · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail} · 최대 ${store.signalMaxHolding}일`;
+    } catch (error) {
+      Object.assign(store, previous);
+      try { recomputeDynamicResearch(); } catch (_) { /* retain last display if rollback refit fails */ }
+      Object.values(inputs).forEach((input) => input.setAttribute("aria-invalid", "true"));
+      status.dataset.state = "error";
+      status.textContent = error instanceof Error ? error.message : "신호 학습 설정을 적용할 수 없습니다.";
+    } finally {
+      setResearchControlsEnabled(true);
+      button.disabled = false;
+      form.setAttribute("aria-busy", "false");
+    }
+  });
   $("#exit-threshold-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const input = $("#exit-threshold-input");
@@ -1868,17 +2291,22 @@ initializeControlState();
 bindControls();
 bindTableTools();
 initializeSectionNav();
+setResearchControlsEnabled(false);
 
 Promise.all([loadJson("data/summary.json"), loadJson("data/dashboard.json"), loadJson("data/history.json"), loadJson("data/strategy-comparison.json")])
   .then(([summary, dashboard, history, strategyComparison]) => {
     validateContracts(summary, dashboard, history, strategyComparison);
     store = { ...store, summary, dashboard, history: decodeHistory(history), strategyComparison };
-    scenarioCache.clear();
+    recomputeDynamicResearch();
     if (!modelPayload(store.model)) store.model = modelPayload("robust") ? "robust" : "scaled";
     ensureBacktestSelection();
     const rangeAvailable = ensureHistoryRangeAvailable();
     persistControlState({ replaceUrl: !rangeAvailable });
+    setResearchControlsEnabled(true);
     renderAll();
+    const signalStatus = $("#signal-settings-status");
+    signalStatus.dataset.state = "ok";
+    signalStatus.textContent = `적용됨 · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail} · 최대 ${store.signalMaxHolding}일`;
     if (!rangeAvailable) announceViewAction("저장된 사용자 기간이 공개 이력 밖이어서 최근 3년으로 복원했습니다.");
   })
   .catch((error) => {
