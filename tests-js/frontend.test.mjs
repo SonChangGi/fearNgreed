@@ -4,20 +4,24 @@ import {readFile} from 'node:fs/promises';
 
 const read=path=>readFile(new URL(`../${path}`,import.meta.url),'utf8');
 
-test('dashboard exposes all precomputed research selectors with pressed state',async()=>{
-  const html=await read('index.html');
+test('dashboard exposes one unified scenario control surface with pressed state',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   for(const token of [
     'data-model="robust"','data-model="scaled"','data-model="raw"',
     'data-event-asset="KOSPI"','data-event-asset="226490"','data-event-asset="069500"',
     'data-event-sample="all"','data-event-sample="nonOverlapping20d"',
     'data-backtest-policy="compare"','data-backtest-policy="long_cash"','data-backtest-policy="long_short_cash"',
     'data-backtest-proxy="226490"','data-backtest-proxy="069500"',
-    'data-backtest-variant="scaled_huber"','data-backtest-variant="scaled_ols"','data-backtest-variant="raw_ols"','data-backtest-variant="disparity"',
     'data-backtest-cost="0"','data-backtest-cost="5"','data-backtest-cost="10"','data-backtest-cost="20"',
     'data-backtest-period="full"','data-backtest-period="common"'
   ]) assert.match(html,new RegExp(token));
-  assert.ok((html.match(/aria-pressed=/g)||[]).length>=21);
-  assert.match(html,/현재값·해석 브리지·산점도/);
+  assert.ok((html.match(/aria-pressed=/g)||[]).length>=17);
+  assert.match(html,/연구 트랙은 현재 신호·차트·전략에 공통 적용/);
+  assert.match(html,/사건 연구는 결과 재선택을 막기 위해 같은 트랙의 전체 이력 사전 계산 표본/);
+  assert.match(html,/id="linked-strategy-rule"/);
+  assert.match(app,/robust: "scaled_huber"/);
+  assert.match(app,/scaled: "scaled_ols"/);
+  assert.match(app,/raw: "raw_ols"/);
 });
 
 test('first-party context and every public operational artifact are linked',async()=>{
@@ -54,7 +58,9 @@ test('position policy comparison discloses short-model limitations and side-awar
   assert.match(app,/shortExposure/);
   assert.match(app,/cashExposure/);
   assert.match(app,/trade\.side/);
-  assert.match(app,/이격도 변형에는 숏 규칙이 정의되지 않았습니다/);
+  assert.match(app,/entry_signal_date/);
+  assert.match(app,/exit_signal_date/);
+  assert.match(app,/normalizedActionLabel/);
 });
 
 test('compare mode names both policy results in the key cards and conclusion',async()=>{
@@ -185,7 +191,7 @@ test('source replica and practical signal are separate, scoped research tracks',
   assert.match(app,/function primaryModelKind/);
   assert.match(app,/eventsByModel\?\.\[store\.model\]/);
   assert.match(html,/SELECTED RESEARCH TRACK · EVENT STUDY/);
-  assert.match(html,/선택 연구 트랙의 사전 계산 사건 표본/);
+  assert.match(html,/신호일 종가→h일 종가/);
   assert.match(app,/사건: \$\{esc\(store\.eventAsset\)\} \$\{esc\(compactModelName\(eventModelKind\(\)\)\)\}/);
 });
 
@@ -252,8 +258,8 @@ test('controls persist to URL and localStorage and charts expose an explicit lat
   assert.match(html,/id="reset-controls"/);
   assert.match(html,/id="share-view"/);
   assert.ok((html.match(/data-chart-latest=/g)||[]).length>=4);
-  assert.match(app,/localStorage\.setItem\("fearngreed-controls-v3"/);
-  assert.match(app,/getItem\("fearngreed-controls-v3"\) \|\| localStorage\.getItem\("fearngreed-controls-v2"\)/);
+  assert.match(app,/localStorage\.setItem\("fearngreed-controls-v4"/);
+  assert.match(app,/getItem\("fearngreed-controls-v4"\) \|\| localStorage\.getItem\("fearngreed-controls-v3"\)/);
   assert.match(app,/history\.replaceState/);
   assert.match(app,/navigator\.clipboard\.writeText/);
   assert.match(app,/longExitPercentile:\s*"exit"/);
@@ -282,19 +288,24 @@ test('KOSPI history supports calendar presets and validated shareable custom dat
   assert.match(app,/historyEnd:\s*"end"/);
   assert.match(app,/url\.searchParams\.delete\(param\)/);
   assert.match(app,/\{ "252": "1y", "756": "3y" \}/);
-  assert.match(app,/\(store\.history\?\.series \|\| \[\]\)\.slice\(-756\)/);
+  assert.match(app,/function renderResidual\(\)[\s\S]*?const rows = selectedHistory\(\)/);
+  assert.match(app,/store\.window === "custom"[\s\S]*?startDate: store\.historyStart/);
   assert.match(css,/\.history-custom-range/);
   assert.match(css,/\.history-range-status\[data-state="error"\]/);
 });
 
-test('history distinguishes state observations from actual entries and computes exposure on available positions only',async()=>{
+test('integrated history separates close signals from next-open atomic actions and uses scenario exposure',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
   assert.match(html,/공포 원은 상태 관측이지 모두 매수 주문은 아닙니다/);
-  assert.match(html,/실제 롱 진입/);
-  assert.match(app,/\["long", "cash"\]\.includes\(row\.position\)/);
-  assert.match(app,/포지션 산출 전\/불가/);
-  assert.match(app,/class="entry-long"/);
-  assert.match(css,/\.entry-long/);
+  assert.match(html,/같은 시가의 청산과 반대 포지션 진입은 하나의 반전 실행입니다/);
+  assert.match(app,/function extremeSignalMap/);
+  assert.match(app,/function scenarioActions/);
+  assert.match(app,/class="execution-action"/);
+  assert.match(app,/primary\.metrics/);
+  assert.match(app,/m\.grossExposure/);
+  assert.match(app,/excludedCarryInClosedTrades/);
+  assert.match(css,/\.execution-action path/);
+  assert.match(css,/\.holding-zone\.short/);
 });
 
 test('scatter renders only published latest-fit empirical state boundaries and fails closed without them',async()=>{

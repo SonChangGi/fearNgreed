@@ -519,6 +519,37 @@ def test_v3_outputs_separate_operations_signal_and_publish_strategy_comparison()
     assert full_equity[-1]["date"] == outputs.summary["dataAsOf"]
     assert {"buyHoldValue", "buyHoldDrawdown"}.issubset(full_equity[-1])
     assert proxy["commonBenchmarkEquity"]
+    default_full = proxy["fullPeriod"]["robust_10bp"]
+    default_common = proxy["commonPeriod"]["robust_10bp"]
+    assert "actions" in default_full
+    assert "actionHistoryTruncated" in default_full
+    assert "pendingSignalDate" in default_full
+    assert "actions" in default_common
+    assert "actionHistoryTruncated" in default_common
+    assert "pendingSignalDate" in default_common
+    assert "actions" not in proxy["fullPeriod"]["raw_20bp"]
+    for action in default_full["actions"]:
+        assert {
+            "actionId",
+            "signalDate",
+            "executionDate",
+            "signalPhase",
+            "executionPhase",
+            "type",
+            "fromPosition",
+            "toPosition",
+            "reason",
+        }.issubset(action)
+        assert action["signalDate"] < action["executionDate"]
+    assert all(
+        {
+            "entry_signal_date",
+            "entry_reason",
+            "exit_signal_date",
+            "exit_reason",
+        }.issubset(trade)
+        for trade in default_common["trades"]
+    )
     summary_row = outputs.dashboard["eventsByModel"]["robust"]["KOSPI"]["nonOverlapping20d"][
         "summary"
     ][0]
@@ -565,6 +596,10 @@ def test_v3_outputs_separate_operations_signal_and_publish_strategy_comparison()
             assert metrics["netExposure"] == pytest.approx(
                 metrics["longExposure"] - metrics["shortExposure"]
             )
+            if ticker == "226490":
+                assert "actions" in result
+                assert "actionHistoryTruncated" in result
+                assert "pendingSignalDate" in result
         sensitivity = comparison["exitThresholdSensitivity"]["proxies"][ticker]
         assert sensitivity["fullPeriod"]["exit50"]["longExitPercentile"] == 50
         assert sensitivity["fullPeriod"]["exit80"]["longExitPercentile"] == 80

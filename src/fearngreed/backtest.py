@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from math import isfinite, sqrt
 from typing import Any
@@ -31,6 +31,25 @@ class Trade:
     transaction_cost: float
     borrow_cost: float
     net_return: float
+    entry_signal_date: date | None = None
+    entry_reason: str | None = None
+    exit_signal_date: date | None = None
+    exit_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class StrategyAction:
+    action_id: str
+    signal_date: date
+    execution_date: date
+    action_type: str
+    from_position: str
+    to_position: str
+    reason: str
+    price: float
+    transaction_cost_amount: float
+    signal_phase: str = "after_close"
+    execution_phase: str = "open"
 
 
 @dataclass(frozen=True)
@@ -53,6 +72,8 @@ class BacktestResult:
     open_trade: dict[str, Any] | None = None
     long_exit_percentile: float = 80
     short_exit_percentile: float = 20
+    actions: list[StrategyAction] = field(default_factory=list)
+    pending_signal_date: date | None = None
 
 
 def run_long_cash(
@@ -132,21 +153,42 @@ def run_backtest(
     entry_price = 0.0
     entry_equity = 0.0
     entry_cost_amount = 0.0
+    entry_signal_date: date | None = None
+    entry_reason: str | None = None
     pending_entry_side: str | None = None
+    pending_entry_signal_date: date | None = None
     pending_exit_reason: str | None = None
+    pending_exit_signal_date: date | None = None
     pending_reversal_side: str | None = None
     trades: list[Trade] = []
+    actions: list[StrategyAction] = []
     equity_values: list[float] = []
     exposure_values: list[float] = []
     transaction_cost_total = 0.0
+    action_sequence = 0
 
-    def enter(side: str, index: int, open_price: float) -> None:
+    def entry_reason_for(side: str) -> str:
+        return "extreme_fear_entry" if side == "long" else "extreme_greed_entry"
+
+    def enter(
+        side: str,
+        index: int,
+        open_price: float,
+        *,
+        signal_date: date,
+        reason: str,
+    ) -> float:
         nonlocal cash, units, position_side, entry_index, entry_price
-        nonlocal entry_equity, entry_cost_amount, transaction_cost_total
+        nonlocal entry_equity, entry_cost_amount, entry_signal_date, entry_reason
+        nonlocal transaction_cost_total
         if side not in {"long", "short"} or position_side is not None:
             raise ValueError("invalid position entry")
+        if signal_date >= clean.index[index].date():
+            raise ValueError("entry signal must precede next-open execution")
         entry_equity = cash
         entry_price = open_price
+        entry_signal_date = signal_date
+        entry_reason = reason
         trading_capital = cash * (1 - one_way_cost)
         entry_cost_amount = cash - trading_capital
         direction = 1.0 if side == "long" else -1.0
@@ -155,12 +197,28 @@ def run_backtest(
         position_side = side
         entry_index = index
         transaction_cost_total += entry_cost_amount
+        return entry_cost_amount
 
-    def exit_position(index: int, timestamp: pd.Timestamp, open_price: float, reason: str) -> None:
+    def exit_position(
+        index: int,
+        timestamp: pd.Timestamp,
+        open_price: float,
+        reason: str,
+        *,
+        signal_date: date,
+    ) -> float:
         nonlocal cash, units, position_side, entry_index, entry_price
-        nonlocal entry_equity, entry_cost_amount, transaction_cost_total
-        if position_side is None or entry_index is None:
+        nonlocal entry_equity, entry_cost_amount, entry_signal_date, entry_reason
+        nonlocal transaction_cost_total
+        if (
+            position_side is None
+            or entry_index is None
+            or entry_signal_date is None
+            or entry_reason is None
+        ):
             raise ValueError("invalid position exit")
+        if signal_date >= timestamp.date():
+            raise ValueError("exit signal must precede next-open execution")
         exit_cost_amount = abs(units) * open_price * one_way_cost
         ending_equity = cash + units * open_price - exit_cost_amount
         if not isfinite(ending_equity) or ending_equity <= 0:
@@ -180,6 +238,10 @@ def run_backtest(
                 transaction_cost=(entry_cost_amount + exit_cost_amount) / entry_equity,
                 borrow_cost=0.0,
                 net_return=ending_equity / entry_equity - 1,
+                entry_signal_date=entry_signal_date,
+                entry_reason=entry_reason,
+                exit_signal_date=signal_date,
+                exit_reason=reason,
             )
         )
         transaction_cost_total += exit_cost_amount
@@ -190,20 +252,116 @@ def run_backtest(
         entry_price = 0.0
         entry_equity = 0.0
         entry_cost_amount = 0.0
+        entry_signal_date = None
+        entry_reason = None
+        return exit_cost_amount
+
+    def record_action(
+        *,
+        signal_date: date,
+        execution_date: date,
+        action_type: str,
+        from_position: str,
+        to_position: str,
+        reason: str,
+        price: float,
+        transaction_cost_amount: float,
+    ) -> None:
+        nonlocal action_sequence
+        if signal_date >= execution_date:
+            raise ValueError("action signal must precede next-open execution")
+        action_sequence += 1
+        actions.append(
+            StrategyAction(
+                action_id=(
+                    f"{policy_id}:{ticker}:{execution_date.isoformat()}:"
+                    f"{action_sequence:04d}:{action_type}"
+                ),
+                signal_date=signal_date,
+                execution_date=execution_date,
+                action_type=action_type,
+                from_position=from_position,
+                to_position=to_position,
+                reason=reason,
+                price=price,
+                transaction_cost_amount=transaction_cost_amount,
+            )
+        )
 
     for index, (timestamp, row) in enumerate(clean.iterrows()):
         open_price = float(row["open"])
         if pending_exit_reason is not None and position_side is not None:
+            if pending_exit_signal_date is None:
+                raise ValueError("pending exit signal date is missing")
+            signal_date = pending_exit_signal_date
+            reason = pending_exit_reason
+            from_position = position_side
             reversal_side = pending_reversal_side
-            exit_position(index, timestamp, open_price, pending_exit_reason)
+            exit_cost_amount = exit_position(
+                index,
+                timestamp,
+                open_price,
+                reason,
+                signal_date=signal_date,
+            )
             pending_exit_reason = None
+            pending_exit_signal_date = None
             pending_reversal_side = None
             if reversal_side is not None:
-                enter(reversal_side, index, open_price)
+                entry_cost = enter(
+                    reversal_side,
+                    index,
+                    open_price,
+                    signal_date=signal_date,
+                    reason=entry_reason_for(reversal_side),
+                )
+                record_action(
+                    signal_date=signal_date,
+                    execution_date=timestamp.date(),
+                    action_type="reverse",
+                    from_position=from_position,
+                    to_position=reversal_side,
+                    reason=reason,
+                    price=open_price,
+                    transaction_cost_amount=exit_cost_amount + entry_cost,
+                )
+            else:
+                record_action(
+                    signal_date=signal_date,
+                    execution_date=timestamp.date(),
+                    action_type="exit",
+                    from_position=from_position,
+                    to_position="cash",
+                    reason=reason,
+                    price=open_price,
+                    transaction_cost_amount=exit_cost_amount,
+                )
 
         if pending_entry_side is not None and position_side is None:
-            enter(pending_entry_side, index, open_price)
+            if pending_entry_signal_date is None:
+                raise ValueError("pending entry signal date is missing")
+            side = pending_entry_side
+            signal_date = pending_entry_signal_date
+            reason = entry_reason_for(side)
+            entry_cost = enter(
+                side,
+                index,
+                open_price,
+                signal_date=signal_date,
+                reason=reason,
+            )
+            record_action(
+                signal_date=signal_date,
+                execution_date=timestamp.date(),
+                action_type="enter",
+                from_position="cash",
+                to_position=side,
+                reason=reason,
+                price=open_price,
+                transaction_cost_amount=entry_cost,
+            )
             pending_entry_side = None
+            pending_entry_signal_date = None
 
         signal = aligned_signals[index]
         if position_side is not None and entry_index is not None:
@@ -222,6 +380,7 @@ def run_backtest(
             )
             if opposite_side is not None:
                 pending_exit_reason = "opposite_extreme"
+                pending_exit_signal_date = signal.date
                 pending_reversal_side = opposite_side
             elif (
                 position_side == "long"
@@ -233,12 +392,16 @@ def run_backtest(
                 and percentile <= short_exit_percentile
             ):
                 pending_exit_reason = "recovery"
+                pending_exit_signal_date = signal.date
             elif held_sessions >= max_holding:
                 pending_exit_reason = "max_holding"
+                pending_exit_signal_date = timestamp.date()
         elif signal is not None and signal.date in long_entry_dates:
             pending_entry_side = "long"
+            pending_entry_signal_date = signal.date
         elif signal is not None and signal.date in short_entry_dates:
             pending_entry_side = "short"
+            pending_entry_signal_date = signal.date
 
         marked_equity = cash + units * float(row["close"])
         if not isfinite(marked_equity) or marked_equity <= 0:
@@ -262,20 +425,23 @@ def run_backtest(
     )
     pending_action: str | None = None
     pending_reason: str | None = None
+    pending_signal_date: date | None = None
     if pending_exit_reason is not None and entry_index is not None:
         pending_action = "reverse_next_open" if pending_reversal_side else "exit_next_open"
         pending_reason = pending_exit_reason
+        pending_signal_date = pending_exit_signal_date
     elif pending_entry_side is not None and entry_index is None:
         pending_action = "enter_next_open"
-        pending_reason = (
-            "extreme_fear_entry" if pending_entry_side == "long" else "extreme_greed_entry"
-        )
+        pending_reason = entry_reason_for(pending_entry_side)
+        pending_signal_date = pending_entry_signal_date
     open_trade = None
     if position_side is not None and entry_index is not None:
         current_equity = equity_values[-1]
         open_trade = {
             "side": position_side,
             "entryDate": clean.index[entry_index].date().isoformat(),
+            "entrySignalDate": entry_signal_date.isoformat() if entry_signal_date else None,
+            "entryReason": entry_reason,
             "entryPrice": entry_price,
             "holdingSessions": len(clean) - entry_index,
             "unrealizedReturn": current_equity / entry_equity - 1,
@@ -298,6 +464,8 @@ def run_backtest(
         open_trade=open_trade,
         long_exit_percentile=long_exit_percentile,
         short_exit_percentile=short_exit_percentile,
+        actions=actions,
+        pending_signal_date=pending_signal_date,
     )
 
 
@@ -562,6 +730,9 @@ def result_to_public(result: BacktestResult) -> dict[str, Any]:
         "openPosition": result.open_position,
         "pendingAction": result.pending_action,
         "pendingReason": result.pending_reason,
+        "pendingSignalDate": (
+            result.pending_signal_date.isoformat() if result.pending_signal_date else None
+        ),
         "pendingSide": result.pending_side,
         "openTrade": _public_value(result.open_trade),
         "longExitPercentile": result.long_exit_percentile,
@@ -575,9 +746,33 @@ def result_to_public(result: BacktestResult) -> dict[str, Any]:
                     **asdict(trade),
                     "entry_date": trade.entry_date.isoformat(),
                     "exit_date": trade.exit_date.isoformat(),
+                    "entry_signal_date": (
+                        trade.entry_signal_date.isoformat() if trade.entry_signal_date else None
+                    ),
+                    "exit_signal_date": (
+                        trade.exit_signal_date.isoformat() if trade.exit_signal_date else None
+                    ),
                 }
             )
             for trade in result.trades
+        ],
+        "actions": [
+            _public_value(
+                {
+                    "actionId": action.action_id,
+                    "signalDate": action.signal_date.isoformat(),
+                    "executionDate": action.execution_date.isoformat(),
+                    "signalPhase": action.signal_phase,
+                    "executionPhase": action.execution_phase,
+                    "type": action.action_type,
+                    "fromPosition": action.from_position,
+                    "toPosition": action.to_position,
+                    "reason": action.reason,
+                    "price": action.price,
+                    "transactionCostAmount": action.transaction_cost_amount,
+                }
+            )
+            for action in result.actions
         ],
         "equity": [
             _public_value(

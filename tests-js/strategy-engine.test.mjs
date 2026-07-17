@@ -122,6 +122,109 @@ test('opposite extreme reverses long to short at one next open without a cash ga
   assert.equal(result.equity.find((item) => item.date === '2026-03-05')?.value > 0, true);
 });
 
+test('June 8 fear and June 9 greed produce one atomic June 10 reversal with explicit signal dates', () => {
+  const historyRows = [
+    row({date: '2026-06-05', state: 'neutral', percentile: 40, open: 100}),
+    row({date: '2026-06-08', state: 'extreme_fear', percentile: 1, open: 96, close: 98}),
+    row({date: '2026-06-09', state: 'extreme_greed', percentile: 99, open: 101, close: 106}),
+    row({date: '2026-06-10', state: 'neutral', percentile: 72, open: 104, close: 102}),
+    row({date: '2026-06-11', state: 'greed', percentile: 85, open: 103, close: 101}),
+  ];
+  const result = runStrategyScenario({
+    historyRows,
+    period: 'full',
+    costBps: 10,
+    policyId: 'long_short_cash',
+    longExitPercentile: 80,
+  });
+
+  const june10 = result.actions.filter((action) => action.date === '2026-06-10');
+  assert.equal(june10.length, 1);
+  assert.deepEqual(
+    {
+      type: june10[0].type,
+      from: june10[0].fromPosition,
+      to: june10[0].toPosition,
+      signalDate: june10[0].signalDate,
+      signalPhase: june10[0].signalPhase,
+      executionPhase: june10[0].executionPhase,
+    },
+    {
+      type: 'reverse',
+      from: 'long',
+      to: 'short',
+      signalDate: '2026-06-09',
+      signalPhase: 'after_close',
+      executionPhase: 'open',
+    },
+  );
+  assert.ok(june10[0].signalDate < june10[0].executionDate);
+  assert.equal(result.trades[0].entry_signal_date, '2026-06-08');
+  assert.equal(result.trades[0].entry_reason, 'extreme_fear_entry');
+  assert.equal(result.actions.find((action) => action.executionDate === '2026-06-09')?.type, 'enter');
+  assert.equal(result.trades[0].exit_signal_date, '2026-06-09');
+  assert.equal(result.trades[0].exit_reason, 'opposite_extreme');
+  assert.equal(result.trades[0].reason, result.trades[0].exit_reason);
+  assert.equal(result.signals.find((signal) => signal.date === '2026-06-10')?.state, 'neutral');
+  assert.equal(result.ledger.find((item) => item.date === '2026-06-10')?.position, 'short');
+});
+
+test('custom range is snapped and rebased after the full path while preserving carry-in and pending action', () => {
+  const historyRows = [
+    row({date: '2026-06-05', state: 'neutral', percentile: 40, open: 100}),
+    row({date: '2026-06-08', state: 'extreme_fear', percentile: 1, open: 96, close: 98}),
+    row({date: '2026-06-09', state: 'extreme_greed', percentile: 99, open: 101, close: 106}),
+    row({date: '2026-06-10', state: 'neutral', percentile: 72, open: 104, close: 102}),
+    row({date: '2026-06-11', state: 'greed', percentile: 85, open: 103, close: 101}),
+    row({date: '2026-06-12', state: 'neutral', percentile: 60, open: 100, close: 99}),
+  ];
+  const options = {
+    historyRows,
+    period: 'full',
+    costBps: 10,
+    policyId: 'long_short_cash',
+    longExitPercentile: 80,
+  };
+  const full = runStrategyScenario(options);
+  const ranged = runStrategyScenario({...options, startDate: '2026-06-10', endDate: '2026-06-14'});
+
+  assert.deepEqual(
+    {
+      appliedStart: ranged.range.appliedStartDate,
+      appliedEnd: ranged.range.appliedEndDate,
+      startSnapped: ranged.range.startSnapped,
+      endSnapped: ranged.range.endSnapped,
+      baseline: ranged.range.baselinePhase,
+    },
+    {
+      appliedStart: '2026-06-10',
+      appliedEnd: '2026-06-12',
+      startSnapped: false,
+      endSnapped: true,
+      baseline: 'applied_start_close',
+    },
+  );
+  assert.deepEqual(ranged.range.carryIn, {
+    position: 'long',
+    pendingAction: 'reverse_next_open',
+    pendingReason: 'opposite_extreme',
+    pendingSide: 'short',
+    signalDate: '2026-06-09',
+  });
+  assert.equal(ranged.equity[0].value, 1);
+  assert.equal(ranged.equity[0].buyHoldValue, 1);
+  assert.equal(ranged.actions.filter((action) => action.date === '2026-06-10').length, 1);
+  assert.equal(ranged.actions[0].type, 'reverse');
+  assert.equal(ranged.actions[0].includedInWindowMetrics, false);
+  assert.deepEqual(
+    ranged.ledger.map(({date, position}) => ({date, position})),
+    full.ledger.filter((item) => item.date >= '2026-06-10' && item.date <= '2026-06-12').map(({date, position}) => ({date, position})),
+  );
+  assert.equal(ranged.metrics.start, '2026-06-10');
+  assert.equal(ranged.metrics.end, '2026-06-12');
+  assert.equal(ranged.range.pathMode, 'full_history_then_window');
+});
+
 test('unsupported short disparity policy and malformed public inputs fail closed', () => {
   const historyRows = [
     row({date: '2026-04-01'}),
@@ -134,5 +237,9 @@ test('unsupported short disparity policy and malformed public inputs fail closed
   assert.throws(
     () => runStrategyScenario({historyRows: [historyRows[1], historyRows[0]], period: 'full'}),
     /오름차순 고유값/,
+  );
+  assert.throws(
+    () => runStrategyScenario({historyRows, period: 'full', startDate: '2026-04-03', endDate: '2026-04-01'}),
+    /시작일은 종료일보다 늦을 수 없습니다/,
   );
 });

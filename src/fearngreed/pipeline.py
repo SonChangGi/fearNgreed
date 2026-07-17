@@ -899,6 +899,8 @@ def _public_backtests(
                     include_trades=False,
                     equity_step=252,
                     include_benchmark=True,
+                    include_execution_audit=(ticker == "226490" and name == "robust_10bp"),
+                    include_actions=(ticker == "226490" and name == "robust_10bp"),
                 )
                 for name, value in variants.items()
             },
@@ -907,6 +909,9 @@ def _public_backtests(
                     value,
                     include_equity=True,
                     include_trades=name.endswith("10bp"),
+                    equity_step=84,
+                    include_execution_audit=(ticker == "226490" and name == "robust_10bp"),
+                    include_actions=(ticker == "226490" and name == "robust_10bp"),
                 )
                 for name, value in common_variants.items()
             }
@@ -944,6 +949,8 @@ def _strategy_comparison(
                     include_equity=True,
                     include_trades=name == "robust_10bp",
                     equity_step=252,
+                    include_execution_audit=(ticker == "226490" and name == "robust_10bp"),
+                    include_actions=(ticker == "226490" and name == "robust_10bp"),
                 )
                 for name, value in variants.items()
             },
@@ -952,7 +959,9 @@ def _strategy_comparison(
                     value,
                     include_equity=True,
                     include_trades=name == "robust_10bp",
-                    equity_step=60,
+                    equity_step=84,
+                    include_execution_audit=(ticker == "226490" and name == "robust_10bp"),
+                    include_actions=(ticker == "226490" and name == "robust_10bp"),
                 )
                 for name, value in common_variants.items()
             }
@@ -1052,7 +1061,14 @@ def _compact_result(
     include_trades: bool = True,
     equity_step: int = 60,
     include_benchmark: bool = False,
+    include_execution_audit: bool = False,
+    include_actions: bool = False,
+    action_limit: int = 4,
 ) -> dict[str, Any]:
+    if include_actions and not include_execution_audit:
+        raise ValueError("actions require the execution-audit contract")
+    if action_limit <= 0:
+        raise ValueError("action_limit must be positive")
     public = result_to_public(result)
     if include_equity:
         public["equity"] = [
@@ -1075,7 +1091,42 @@ def _compact_result(
         public.pop("equity", None)
     trade_count = len(public.get("trades", []))
     public["trades"] = public.get("trades", [])[-12:] if include_trades else []
+    if not include_execution_audit:
+        public.pop("pendingSignalDate", None)
+        if isinstance(public.get("openTrade"), dict):
+            public["openTrade"].pop("entrySignalDate", None)
+            public["openTrade"].pop("entryReason", None)
+        for trade in public["trades"]:
+            for field in (
+                "entry_signal_date",
+                "entry_reason",
+                "exit_signal_date",
+                "exit_reason",
+            ):
+                trade.pop(field, None)
     public["tradeHistoryTruncated"] = trade_count > len(public["trades"])
+    action_count = len(public.get("actions", []))
+    if include_actions:
+        public["actions"] = [
+            {
+                field: action[field]
+                for field in (
+                    "actionId",
+                    "signalDate",
+                    "executionDate",
+                    "signalPhase",
+                    "executionPhase",
+                    "type",
+                    "fromPosition",
+                    "toPosition",
+                    "reason",
+                )
+            }
+            for action in public.get("actions", [])[-action_limit:]
+        ]
+        public["actionHistoryTruncated"] = action_count > len(public["actions"])
+    else:
+        public.pop("actions", None)
     return public
 
 

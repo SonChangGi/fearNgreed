@@ -65,6 +65,10 @@ def test_next_open_entry_and_recovery_exit_with_costs() -> None:
     assert trade.entry_date == bars[1].date
     assert trade.exit_date == bars[3].date
     assert trade.reason == "recovery"
+    assert trade.entry_signal_date == signals[0].date
+    assert trade.entry_reason == "extreme_fear_entry"
+    assert trade.exit_signal_date == signals[2].date
+    assert trade.exit_reason == "recovery"
     assert trade.net_return == pytest.approx((130 / 110) * 0.999 * 0.999 - 1)
 
 
@@ -118,6 +122,7 @@ def test_final_extreme_entry_is_reported_for_next_open_without_false_reentry() -
     assert result.open_position is False
     assert result.pending_action == "enter_next_open"
     assert result.pending_reason == "extreme_fear_entry"
+    assert result.pending_signal_date == signals[-1].date
 
     same_regime = [signal(index, "extreme_fear", 2) for index in range(25)]
     same_bars = pd.DataFrame(
@@ -145,6 +150,7 @@ def test_final_recovery_is_reported_as_next_open_exit() -> None:
     assert result.open_position is True
     assert result.pending_action == "exit_next_open"
     assert result.pending_reason == "recovery"
+    assert result.pending_signal_date == signals[-1].date
 
 
 def test_default_long_recovery_boundary_is_80_and_executes_next_open() -> None:
@@ -226,6 +232,16 @@ def test_opposite_extreme_reverses_on_one_open_and_charges_four_sides() -> None:
         ("short", "recovery"),
     ]
     assert result.trades[0].exit_date == result.trades[1].entry_date == bars.index[2].date()
+    assert result.trades[0].exit_signal_date == signals[1].date
+    assert result.trades[1].entry_signal_date == signals[1].date
+    reversal = [action for action in result.actions if action.action_type == "reverse"]
+    assert len(reversal) == 1
+    assert reversal[0].signal_date == signals[1].date
+    assert reversal[0].execution_date == bars.index[2].date()
+    assert reversal[0].signal_phase == "after_close"
+    assert reversal[0].execution_phase == "open"
+    assert reversal[0].from_position == "long"
+    assert reversal[0].to_position == "short"
     assert result.metrics["reversalCount"] == 1
     assert result.metrics["longTradeCount"] == 1
     assert result.metrics["shortTradeCount"] == 1
@@ -236,6 +252,61 @@ def test_opposite_extreme_reverses_on_one_open_and_charges_four_sides() -> None:
     assert result.metrics["longExposure"] == pytest.approx(0.25)
     assert result.metrics["shortExposure"] == pytest.approx(0.25)
     assert result.metrics["cashExposure"] == pytest.approx(0.50)
+
+
+def test_2026_06_10_is_one_atomic_reversal_from_the_prior_close_signal() -> None:
+    days = [date(2026, 6, 8), date(2026, 6, 9), date(2026, 6, 10)]
+    states = [
+        ("extreme_fear", 2),
+        ("extreme_greed", 98),
+        ("neutral", 50),
+    ]
+    signals = [
+        FlowSignal(day, 0, -1, 0.7, 0, 0, percentile, state, "ok", 252, True)
+        for day, (state, percentile) in zip(days, states, strict=True)
+    ]
+    bars = pd.DataFrame(
+        {"open": [100.0, 101.0, 102.0], "close": [100.0, 101.0, 102.0]},
+        index=pd.to_datetime(days),
+    )
+
+    result = run_backtest(
+        signals,
+        bars,
+        ticker="226490",
+        policy_id="long_short_cash",
+        one_way_cost_bps=10,
+    )
+
+    on_june_10 = [action for action in result.actions if action.execution_date == days[2]]
+    assert len(on_june_10) == 1
+    assert on_june_10[0].action_type == "reverse"
+    assert on_june_10[0].signal_date == days[1]
+    assert on_june_10[0].from_position == "long"
+    assert on_june_10[0].to_position == "short"
+    assert not [action for action in result.actions if action.signal_date == days[2]]
+    assert result.trades[0].entry_signal_date == days[0]
+    assert result.trades[0].entry_date == days[1]
+    assert result.trades[0].exit_signal_date == days[1]
+    assert result.trades[0].exit_date == days[2]
+
+    public = result_to_public(result)
+    public_reversal = [action for action in public["actions"] if action["type"] == "reverse"]
+    assert len(public_reversal) == 1
+    expected = {
+        "actionId": "long_short_cash:226490:2026-06-10:0002:reverse",
+        "signalDate": "2026-06-09",
+        "executionDate": "2026-06-10",
+        "signalPhase": "after_close",
+        "executionPhase": "open",
+        "type": "reverse",
+        "fromPosition": "long",
+        "toPosition": "short",
+        "reason": "opposite_extreme",
+        "price": 102.0,
+    }
+    assert {key: public_reversal[0][key] for key in expected} == expected
+    assert public_reversal[0]["transactionCostAmount"] > 0
 
 
 def test_event_returns_include_external_benchmark_and_paired_excess() -> None:
