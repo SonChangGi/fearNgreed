@@ -317,6 +317,25 @@ test('integrated history separates close signals from next-open actual ETF actio
   assert.match(css,/\.holding-zone\.short, \.holding-zone\.inverse/);
 });
 
+test('integrated history uses readable axes, explicit policy lanes, and only visible series for its performance domain',async()=>{
+  const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
+  assert.match(html,/id="history-chart-meta"/);
+  for(const group of ['시장','성과','종가 신호','다음 시가 체결']) assert.match(html,new RegExp(`<strong>${group}<\\/strong>`));
+  assert.match(app,/function niceTicks/);
+  assert.match(app,/function chartDateAxis/);
+  assert.match(app,/const visibleReturnFields = \[[\s\S]*showLongCash[\s\S]*showLongShort[\s\S]*"buyHoldReturn"/);
+  assert.match(app,/strategyValues = plotRows\.flatMap\(\(row\) => visibleReturnFields\.map/);
+  assert.match(app,/label: "롱 \/ 현금"[\s\S]*label: "롱 \/ 인버스"/);
+  assert.match(app,/성과 · 비용 후 누적수익률/);
+  assert.match(app,/날짜 \(KRX 거래일 · KST\)/);
+  assert.match(app,/includedInWindowMetrics === false \? " boundary-context"/);
+  assert.match(css,/\.chart-meta-strip/);
+  assert.match(css,/\.date-grid-line/);
+  assert.match(css,/\.line-end-label/);
+  assert.match(css,/white-space:\s*pre-line/);
+  assert.match(css,/\.chart svg \{[^}]*overflow:\s*hidden/s);
+});
+
 test('scatter refits the selected historical session and renders exact empirical state boundaries',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
   assert.match(html,/극단적 공포 영역/);
