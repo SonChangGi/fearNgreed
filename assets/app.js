@@ -550,6 +550,54 @@ function linearTicks(min, max, count = 5) {
   return Array.from({ length: count }, (_, index) => min + (max - min) * index / (count - 1));
 }
 
+function niceTicks(min, max, count = 5) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
+  if (min === max) return [min];
+  const rawStep = Math.abs(max - min) / Math.max(1, count - 1);
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / magnitude;
+  const factor = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
+  const step = factor * magnitude;
+  const first = Math.ceil(min / step - 1e-9) * step;
+  const last = Math.floor(max / step + 1e-9) * step;
+  const ticks = [];
+  for (let value = first, guard = 0; value <= last + step * 1e-6 && guard < 24; value += step, guard += 1) {
+    ticks.push(Number(value.toPrecision(12)));
+  }
+  return ticks.length >= 2 ? ticks : linearTicks(min, max, count);
+}
+
+function chartDateTickIndices(rows, maxTicks = 7) {
+  if (!rows.length) return [];
+  const count = Math.min(rows.length, Math.max(2, maxTicks));
+  return [...new Set(Array.from({ length: count }, (_, index) => Math.round(index * (rows.length - 1) / Math.max(1, count - 1))))];
+}
+
+function chartDateLabel(value, firstDate, lastDate) {
+  if (!isIsoDate(value)) return value || "—";
+  const [year, month, day] = value.split("-").map(Number);
+  const duration = isIsoDate(firstDate) && isIsoDate(lastDate)
+    ? (new Date(`${lastDate}T00:00:00Z`) - new Date(`${firstDate}T00:00:00Z`)) / 86_400_000
+    : 0;
+  if (duration <= 120) return `${month}.${String(day).padStart(2, "0")}`;
+  return `${year}.${String(month).padStart(2, "0")}`;
+}
+
+function chartDateAxis(rows, x, { top, bottom, labelY, maxTicks = 7 } = {}) {
+  if (!rows.length) return "";
+  const firstDate = rows[0].date;
+  const lastDate = rows.at(-1).date;
+  return chartDateTickIndices(rows, maxTicks).map((index, tickIndex, indices) => {
+    const px = x(index);
+    const anchor = tickIndex === 0 ? "start" : tickIndex === indices.length - 1 ? "end" : "middle";
+    return `<line class="date-grid-line" x1="${px}" y1="${top}" x2="${px}" y2="${bottom}"/><text class="axis-label date-axis-label" x="${px}" y="${labelY}" text-anchor="${anchor}">${esc(chartDateLabel(rows[index].date, firstDate, lastDate))}</text>`;
+  }).join("");
+}
+
+function equityReturn(value) {
+  return value == null || !Number.isFinite(Number(value)) ? null : Number(value) - 1;
+}
+
 function isIsoDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return false;
   const date = new Date(`${value}T00:00:00Z`);
@@ -1021,10 +1069,13 @@ function renderHistory() {
   $("#history-legend-long-inverse").hidden = !showLongShort;
   $("#history-legend-inverse-entry").hidden = !showLongShort;
   $("#history-legend-reversal").hidden = !showLongShort;
+  const pair = pairMeta();
+  $("#history-legend-buyhold").innerHTML = `<i class="legend-line buyhold"></i>${esc(pair.longTicker)} ${esc(pair.longName)} 매수·보유`;
   syncHistoryRangeControls(rows);
   const container = $("#history-chart");
   const { longCash, longShort, primary } = selectedScenarioBundle();
   if (rows.length < 8 || !primary?.metrics) {
+    $("#history-chart-meta").innerHTML = `<span><strong>표시 상태</strong><b>유효 거래일 부족</b></span><span><strong>필요 조건</strong><b>8거래일 이상</b></span>`;
     $("#history-exposure-note").innerHTML = "<strong>기간을 넓혀 주세요.</strong><span>통합 차트와 과거검증은 최소 8개 유효 거래일이 필요합니다.</span>";
     const tableRows = rows.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[rowTrackValue(row, "state")] || rowTrackValue(row, "state"), "—", "—"]);
     $("#history-data-table").innerHTML = dataTable(["날짜", "KOSPI", "선택 트랙 상태", "포지션", "체결"], tableRows, `선택 기간 ${tableRows.length}개 관측값`);
@@ -1065,23 +1116,45 @@ function renderHistory() {
     };
   });
 
-  const priceValues = plotRows.map((row) => Number(row.kospiClose ?? row.kospi));
-  const strategyValues = plotRows.flatMap((row) => [row.longCashValue, row.longShortValue, row.buyHoldValue]).map(Number).filter(Number.isFinite);
-  const w = 1040, h = 650, p = { l: 66, r: 22, priceTop: 26, priceBottom: 356, equityTop: 414, equityBottom: 610 };
+  plotRows.forEach((row) => {
+    row.longCashReturn = equityReturn(row.longCashValue);
+    row.longShortReturn = equityReturn(row.longShortValue);
+    row.buyHoldReturn = equityReturn(row.buyHoldValue);
+  });
+  const visibleReturnFields = [
+    ...(showLongCash ? ["longCashReturn"] : []),
+    ...(showLongShort ? ["longShortReturn"] : []),
+    "buyHoldReturn"
+  ];
+  const priceValues = plotRows.map((row) => Number(row.kospiClose ?? row.kospi)).filter(Number.isFinite);
+  const strategyValues = plotRows.flatMap((row) => visibleReturnFields.map((field) => row[field])).map(Number).filter(Number.isFinite);
+  const w = 1120, h = 700;
+  const p = { l: 120, r: 132, priceTop: 48, priceBottom: 330, laneTitle: 360, equityTop: 482, equityBottom: 634, dateLabel: 661, xTitle: 688 };
+  const plotRight = w - p.r;
   const min = Math.min(...priceValues), max = Math.max(...priceValues), pad = (max - min || 1) * .08;
   const equityMin0 = Math.min(...strategyValues), equityMax0 = Math.max(...strategyValues), equityPad = (equityMax0 - equityMin0 || .1) * .08;
-  const x = scale(0, plotRows.length - 1, p.l, w - p.r);
+  const x = scale(0, plotRows.length - 1, p.l, plotRight);
   const y = scale(min - pad, max + pad, p.priceBottom, p.priceTop);
   const equityY = scale(equityMin0 - equityPad, equityMax0 + equityPad, p.equityBottom, p.equityTop);
+  const laneDefs = store.backtestPolicy === "compare"
+    ? [
+      { policy: "long_cash", label: "롱 / 현금", field: "longCashPosition", top: 380, bottom: 404 },
+      { policy: "long_inverse_cash", label: "롱 / 인버스", field: "longShortPosition", top: 416, bottom: 440 }
+    ]
+    : [{ policy: store.backtestPolicy, label: store.backtestPolicy === "long_cash" ? "롱 / 현금" : "롱 / 인버스", field: "position", top: 392, bottom: 424 }];
+  const laneByPolicy = new Map(laneDefs.map((lane) => [lane.policy, lane]));
+  const pointSpacing = plotRows.length > 1 ? x(1) - x(0) : 12;
   const zones = [];
-  const appendHoldingZones = (field, { top, bottom, lane = false, policy = "" }) => {
+  const appendHoldingZones = ({ field, top, bottom, policy }) => {
     let zoneStart = null;
     let zoneSide = null;
     plotRows.forEach((row, index) => {
       const side = ["long", "inverse"].includes(row[field]) ? row[field] : null;
       const closeZone = (endIndex) => {
         if (!zoneSide || zoneStart == null) return;
-        zones.push(`<rect class="holding-zone ${lane ? "holding-lane" : ""} ${zoneSide} ${policy}" x="${x(zoneStart)}" y="${top}" width="${Math.max(3, x(Math.max(zoneStart, endIndex)) - x(zoneStart))}" height="${bottom - top}"/>`);
+        const zoneLeft = Math.max(p.l, x(zoneStart) - pointSpacing / 2);
+        const zoneRight = Math.min(plotRight, x(Math.max(zoneStart, endIndex)) + pointSpacing / 2);
+        zones.push(`<rect class="holding-zone holding-lane ${zoneSide} policy-${policy}" x="${zoneLeft}" y="${top + 2}" width="${Math.max(3, zoneRight - zoneLeft)}" height="${bottom - top - 4}"><title>${esc(`${laneByPolicy.get(policy)?.label || policy} · ${positionWithTicker(zoneSide)}`)}</title></rect>`);
       };
       if (side !== zoneSide) {
         closeZone(index - 1);
@@ -1091,61 +1164,82 @@ function renderHistory() {
       if (index === plotRows.length - 1) closeZone(index);
     });
   };
-  if (store.backtestPolicy === "compare") {
-    appendHoldingZones("longCashPosition", { top: p.priceTop + 4, bottom: p.priceTop + 13, lane: true, policy: "policy-long-cash" });
-    appendHoldingZones("longShortPosition", { top: p.priceTop + 17, bottom: p.priceTop + 26, lane: true, policy: "policy-long-short" });
-  } else {
-    appendHoldingZones("position", { top: p.priceTop, bottom: p.priceBottom });
-  }
-  const pointSpacing = plotRows.length > 1 ? x(1) - x(0) : 12;
-  const signalSize = Math.max(2, Math.min(6, pointSpacing * .42));
+  laneDefs.forEach(appendHoldingZones);
+  const signalSize = Math.max(2.4, Math.min(5, pointSpacing * .38));
   const signalMarks = plotRows.map((row, index) => {
     if (!row.signal) return "";
     const px = x(index), py = y(row.kospiClose ?? row.kospi);
-    const title = `${row.date} 종가 · ${labels[row.signal.state]} 최초 진입 · ${fmt.score(row.signal.percentile)}`;
+    const title = `${row.date} 종가 · ${labels[row.signal.state]} 상태 첫 관측 · 백분위 ${fmt.score(row.signal.percentile)}`;
     return row.signal.state === "extreme_greed"
       ? `<rect class="event-greed signal-close" x="${px - signalSize}" y="${py - signalSize}" width="${signalSize * 2}" height="${signalSize * 2}" transform="rotate(45 ${px} ${py})"><title>${esc(title)}</title></rect>`
       : `<circle class="event-fear signal-close" cx="${px}" cy="${py}" r="${signalSize}"><title>${esc(title)}</title></circle>`;
   }).join("");
+  const rowIndexByDate = new Map(plotRows.map((row, index) => [row.date, index]));
+  const executionConnectors = plotRows.length > 120 ? "" : plotRows.map((row, index) => row.actions.map((action) => {
+    const signalIndex = rowIndexByDate.get(action.signalDate || action.sourceSignalDate);
+    const lane = laneByPolicy.get(action.policy);
+    const signalRow = signalIndex == null ? null : plotRows[signalIndex];
+    const signalPrice = signalRow == null ? null : Number(signalRow.kospiClose ?? signalRow.kospi);
+    if (!lane || !Number.isFinite(signalPrice)) return "";
+    const startX = x(signalIndex), endX = x(index), startY = y(signalPrice) + signalSize + 2;
+    const boundaryClass = action.includedInWindowMetrics === false ? " boundary-context" : "";
+    const boundaryText = action.includedInWindowMetrics === false ? " · 선택 구간 첫 평가액 재기준화 이전 체결" : "";
+    return `<path class="execution-connector${boundaryClass}" d="M ${startX} ${startY} L ${startX} ${lane.top - 7} L ${endX} ${lane.top - 7} L ${endX} ${(lane.top + lane.bottom) / 2}"><title>${esc(`${action.signalDate || action.sourceSignalDate} 종가 신호 → ${row.date} 시가 체결${boundaryText}`)}</title></path>`;
+  }).join("")).join("");
   const actionMarks = plotRows.map((row, index) => {
     if (!row.actions.length) return "";
     const px = x(index);
     return row.actions.map((action) => {
       const type = action.type || action.action || action.executedAction;
       const to = action.toPosition || action.to || action.positionAfterOpen;
-      const actionY = action.policy === "long_inverse_cash" ? p.priceBottom - 10 : p.priceBottom - 30;
-      const title = `${policyLabel(action.policy)}: ${normalizedActionLabel(action)} · 신호 ${action.signalDate || action.sourceSignalDate || "—"} 종가 → ${row.date} 시가`;
+      const lane = laneByPolicy.get(action.policy);
+      if (!lane) return "";
+      const actionY = (lane.top + lane.bottom) / 2;
+      const boundaryClass = action.includedInWindowMetrics === false ? " boundary-context" : "";
+      const boundaryText = action.includedInWindowMetrics === false ? " · 선택 구간 첫 평가액 재기준화 이전 체결, 구간 성과 제외" : "";
+      const title = `${policyLabel(action.policy)}: ${normalizedActionLabel(action)} · 신호 ${action.signalDate || action.sourceSignalDate || "—"} 종가 → ${row.date} 시가${boundaryText}`;
       if ((type === "enter" || type === "entry") && to === "long") {
-        return `<g class="execution-action entry long"><path d="M ${px} ${actionY - 7} L ${px + 7} ${actionY + 7} L ${px - 7} ${actionY + 7} Z"><title>${esc(title)}</title></path></g>`;
+        return `<g class="execution-action entry long${boundaryClass}"><path d="M ${px} ${actionY - 7} L ${px + 7} ${actionY + 7} L ${px - 7} ${actionY + 7} Z"><title>${esc(title)}</title></path></g>`;
       }
       if ((type === "enter" || type === "entry") && to === "inverse") {
-        return `<g class="execution-action entry inverse"><path d="M ${px - 7} ${actionY - 7} L ${px + 7} ${actionY - 7} L ${px} ${actionY + 7} Z"><title>${esc(title)}</title></path></g>`;
+        return `<g class="execution-action entry inverse${boundaryClass}"><path d="M ${px - 7} ${actionY - 7} L ${px + 7} ${actionY - 7} L ${px} ${actionY + 7} Z"><title>${esc(title)}</title></path></g>`;
       }
       if (type === "exit") {
-        return `<g class="execution-action exit"><path d="M ${px - 6} ${actionY - 6} L ${px + 6} ${actionY + 6} M ${px + 6} ${actionY - 6} L ${px - 6} ${actionY + 6}"><title>${esc(title)}</title></path></g>`;
+        return `<g class="execution-action exit${boundaryClass}"><path d="M ${px - 6} ${actionY - 6} L ${px + 6} ${actionY + 6} M ${px + 6} ${actionY - 6} L ${px - 6} ${actionY + 6}"><title>${esc(title)}</title></path></g>`;
       }
-      return `<g class="execution-action reversal"><path d="M ${px} ${actionY - 8} L ${px + 8} ${actionY} L ${px} ${actionY + 8} L ${px - 8} ${actionY} Z"/><text x="${px}" y="${actionY + 3}" text-anchor="middle">↔</text><title>${esc(title)}</title></g>`;
+      return `<g class="execution-action reversal${boundaryClass}"><path d="M ${px} ${actionY - 8} L ${px + 8} ${actionY} L ${px} ${actionY + 8} L ${px - 8} ${actionY} Z"/><text x="${px}" y="${actionY + 3}" text-anchor="middle">↔</text><title>${esc(title)}</title></g>`;
     }).join("");
   }).join("");
-  const priceTicks = linearTicks(min - pad, max + pad).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 9}" y="${y(value) + 3}" text-anchor="end">${Math.round(value).toLocaleString()}</text>`).join("");
-  const equityTicks = linearTicks(equityMin0 - equityPad, equityMax0 + equityPad, 4).map((value) => `<line class="grid-line" x1="${p.l}" y1="${equityY(value)}" x2="${w - p.r}" y2="${equityY(value)}"/><text class="axis-label" x="${p.l - 9}" y="${equityY(value) + 3}" text-anchor="end">${fmt.score(value, 2)}</text>`).join("");
-  const longCashLine = store.backtestPolicy === "long_inverse_cash" ? "" : `<g class="line-strategy">${pathSegments(plotRows, "longCashValue", x, equityY)}</g>`;
-  const longShortLine = store.backtestPolicy === "long_cash" ? "" : `<g class="line-longshort">${pathSegments(plotRows, "longShortValue", x, equityY)}</g>`;
-  const holdingLaneLabels = store.backtestPolicy === "compare"
-    ? `<text class="holding-lane-label long-cash" x="${w - p.r - 4}" y="${p.priceTop + 12}" text-anchor="end">LC</text><text class="holding-lane-label long-short" x="${w - p.r - 4}" y="${p.priceTop + 25}" text-anchor="end">LI</text>`
-    : "";
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${zones.join("")}${holdingLaneLabels}${priceTicks}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${w - p.r}" y2="${p.priceBottom}"/><g class="line-price">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g>${signalMarks}${actionMarks}<text class="axis-title" x="${p.l}" y="16">KOSPI 종가 · 신호는 종가, 체결은 다음 ETF 시가</text>${equityTicks}<line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${w - p.r}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="line-buyhold">${pathSegments(plotRows, "buyHoldValue", x, equityY)}</g><text class="axis-title" x="${p.l}" y="${p.equityTop - 12}">선택 구간 누적가치 (첫 평가일=1)</text><text class="axis-label" x="${p.l}" y="${h - 12}">${esc(plotRows[0].date)}</text><text class="axis-label" x="${w - p.r}" y="${h - 12}" text-anchor="end">${esc(plotRows.at(-1).date)}</text></svg>`;
-  container.setAttribute("aria-label", `${plotRows[0].date}부터 ${plotRows.at(-1).date}까지 ${compactModelName()} KOSPI 신호, 다음 시가 체결, ${policyLabel()} 누적가치 통합 차트.`);
+  const priceTicks = niceTicks(min - pad, max + pad, 6).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${plotRight}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 12}" y="${y(value) + 4}" text-anchor="end">${Math.round(value).toLocaleString()}</text>`).join("");
+  const equityTicks = niceTicks(equityMin0 - equityPad, equityMax0 + equityPad, 5).map((value) => `<line class="grid-line" x1="${p.l}" y1="${equityY(value)}" x2="${plotRight}" y2="${equityY(value)}"/><text class="axis-label" x="${p.l - 12}" y="${equityY(value) + 4}" text-anchor="end">${esc(fmt.pct(value, Math.abs(equityMax0 - equityMin0) < .2 ? 1 : 0))}</text>`).join("");
+  const dateAxis = chartDateAxis(plotRows, x, { top: p.priceTop, bottom: p.equityBottom, labelY: p.dateLabel, maxTicks: 7 });
+  const longCashLine = showLongCash ? `<g class="line-strategy">${pathSegments(plotRows, "longCashReturn", x, equityY)}</g>` : "";
+  const longShortLine = showLongShort ? `<g class="line-longshort">${pathSegments(plotRows, "longShortReturn", x, equityY)}</g>` : "";
+  const laneBackgrounds = laneDefs.map((lane) => `<rect class="holding-lane-background" x="${p.l}" y="${lane.top}" width="${plotRight - p.l}" height="${lane.bottom - lane.top}"/><text class="holding-lane-label" x="${p.l - 12}" y="${(lane.top + lane.bottom) / 2 + 4}" text-anchor="end">${esc(lane.label)}</text>`).join("");
+  const lastRow = plotRows.at(-1);
+  const endSeries = [
+    ...(showLongCash ? [{ label: "롱/현금", field: "longCashReturn", cls: "strategy" }] : []),
+    ...(showLongShort ? [{ label: "롱/인버스", field: "longShortReturn", cls: "longshort" }] : []),
+    { label: `${pair.longTicker} BH`, field: "buyHoldReturn", cls: "buyhold" }
+  ].map((series) => ({ ...series, value: Number(lastRow[series.field]) })).filter((series) => Number.isFinite(series.value)).sort((a, b) => equityY(a.value) - equityY(b.value));
+  const labelGap = 18, minLabelY = p.equityTop + 8, maxLabelY = p.equityBottom - 4;
+  endSeries.forEach((series, index) => { series.labelY = Math.max(equityY(series.value), index ? endSeries[index - 1].labelY + labelGap : minLabelY); });
+  const overflow = endSeries.length ? Math.max(0, endSeries.at(-1).labelY - maxLabelY) : 0;
+  if (overflow) endSeries.forEach((series) => { series.labelY -= overflow; });
+  const endLabels = endSeries.map((series) => `<circle class="line-end-dot ${series.cls}" cx="${plotRight}" cy="${equityY(series.value)}" r="3"/><path class="line-end-connector ${series.cls}" d="M ${plotRight + 3} ${equityY(series.value)} L ${plotRight + 12} ${series.labelY}"/><text class="line-end-label ${series.cls}" x="${plotRight + 16}" y="${series.labelY + 4}">${esc(series.label)} ${esc(fmt.signedPct(series.value, 1))}</text>`).join("");
+  const latestPrice = Number(lastRow.kospiClose ?? lastRow.kospi);
+  const latestPriceY = y(latestPrice);
+  const zeroReference = equityMin0 - equityPad <= 0 && equityMax0 + equityPad >= 0 ? `<line class="reference-line performance-zero" x1="${p.l}" y1="${equityY(0)}" x2="${plotRight}" y2="${equityY(0)}"/>` : "";
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="line-price">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="line-buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">첫 ETF 평가일 = 0%</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
+  container.setAttribute("aria-label", `${plotRows[0].date}부터 ${plotRows.at(-1).date}까지 ${compactModelName()} KOSPI 종가 신호, ${pairLabel(store.backtestProxy, true)} 다음 시가 체결, ${policyLabel()} 비용 후 누적수익률 통합 차트.`);
   attachChartNavigation(container, plotRows, (row) => {
-    const signal = row.signal ? `, ${labels[row.signal.state]} 종가 신호` : "";
-    const action = row.actions.length ? `, 시가 체결 ${row.actions.map((item) => `${policyLabel(item.policy)} ${normalizedActionLabel(item)}`).join(" / ")}` : "";
-    const positions = store.backtestPolicy === "compare"
-      ? `롱/현금 ${positionWithTicker(row.longCashPosition)}, 롱/인버스/현금 ${positionWithTicker(row.longShortPosition)}`
-      : `포지션 ${positionWithTicker(row.position)}`;
-    const values = store.backtestPolicy === "compare"
-      ? `롱/현금 가치 ${fmt.score(row.longCashValue, 3)}, 롱/인버스/현금 가치 ${fmt.score(row.longShortValue, 3)}`
-      : `전략 ${fmt.score(row.primaryValue, 3)}`;
-    return `${row.date}, KOSPI ${Number(row.kospiClose ?? row.kospi).toLocaleString()}, ${labels[row.trackState] || row.trackState}, ${positions}${signal}${action}, ${values}, 매수·보유 ${fmt.score(row.buyHoldValue, 3)}`;
+    const signal = row.signal ? `${labels[row.signal.state]} 상태 첫 관측 · 백분위 ${fmt.score(row.signal.percentile)}` : "신규 극단 신호 없음";
+    const actionFor = (policy) => row.actions.filter((item) => item.policy === policy).map(normalizedActionLabel).join(" / ") || "체결 없음";
+    const lines = [`${row.date} · KOSPI ${Number(row.kospiClose ?? row.kospi).toLocaleString()}pt`, `종가 연구 상태  ${labels[row.trackState] || row.trackState} · ${signal}`];
+    if (showLongCash) lines.push(`롱/현금  ${positionWithTicker(row.longCashPosition)} · ${actionFor("long_cash")} · ${fmt.signedPct(row.longCashReturn, 1)}`);
+    if (showLongShort) lines.push(`롱/인버스  ${positionWithTicker(row.longShortPosition)} · ${actionFor("long_inverse_cash")} · ${fmt.signedPct(row.longShortReturn, 1)}`);
+    lines.push(`${pair.longTicker} 매수·보유  ${fmt.signedPct(row.buyHoldReturn, 1)}`);
+    return lines.join("\n");
   }, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
 
   const m = primary.metrics;
@@ -1155,6 +1249,16 @@ function renderHistory() {
   const requested = windowMeta.requestedStartDate && windowMeta.requestedEndDate ? `${windowMeta.requestedStartDate}–${windowMeta.requestedEndDate}` : `${plotRows[0].date}–${plotRows.at(-1).date}`;
   const applied = windowMeta.appliedStartDate && windowMeta.appliedEndDate ? `${windowMeta.appliedStartDate}–${windowMeta.appliedEndDate}` : `${m.start}–${m.end}`;
   const carryClosed = Number(windowMeta.excludedCarryInClosedTrades || 0);
+  const resultSummary = store.backtestPolicy === "compare" && longCash?.metrics && longShort?.metrics
+    ? `롱/현금 ${fmt.signedPct(longCash.metrics.totalReturn, 1)} · 롱/인버스 ${fmt.signedPct(longShort.metrics.totalReturn, 1)}`
+    : `${policyLabel(store.backtestPolicy)} ${fmt.signedPct(m.totalReturn, 1)} · MDD ${fmt.pct(m.maxDrawdown, 1)}`;
+  $("#history-chart-meta").innerHTML = [
+    ["표시 기간", `${plotRows[0].date}–${plotRows.at(-1).date} · ${plotRows.length.toLocaleString()}일`],
+    ["실제 ETF", `${pair.leverage}X · ${pair.longTicker}/${pair.inverseTicker}`],
+    ["실행 조건", `편도 ${store.backtestCost}bp · 청산 ${store.longExitPercentile}/${100 - store.longExitPercentile}`],
+    ["현재 보유", store.backtestPolicy === "compare" ? `롱/현금 ${heldInstrument(longCash)} · 롱/인버스 ${heldInstrument(longShort)}` : heldInstrument(primary)],
+    ["구간 결과", resultSummary]
+  ].map(([label, value]) => `<span><strong>${esc(label)}</strong><b>${esc(value)}</b></span>`).join("");
   const exposure = store.backtestPolicy === "compare" && longCash?.metrics && longShort?.metrics
     ? `<strong>정책별 총노출</strong><span>롱 / 현금 ${esc(fmt.pct(longCash.metrics.grossExposure, 1))} · 롱 / 인버스 / 현금 ${esc(fmt.pct(longShort.metrics.grossExposure, 1))} · ${esc(pairLabel(store.backtestProxy, true))} · 극단 최초 신호 ${signalCount}회 · 시가 체결일 ${actionsByDate.size}일</span>`
     : `<strong>선택 시나리오 총 보유비율 ${esc(fmt.pct(m.grossExposure, 1))}</strong><span>롱 ETF ${esc(fmt.pct(m.longExposure, 1))} · 인버스 ETF ${esc(fmt.pct(inverseExposure(m), 1))} · 현금 ${esc(fmt.pct(m.cashExposure, 1))} · 현재 ${esc(heldInstrument(primary))} · 극단 최초 신호 ${signalCount}회 · 시가 체결일 ${actionsByDate.size}일</span>`;
@@ -1258,9 +1362,9 @@ function renderScatter() {
   const ymin = ymin0 - ypad, ymax = ymax0 + ypad;
   const w = 600, h = 340, p = { l: 68, r: 20, t: 20, b: 50 };
   const x = scale(xmin, xmax, p.l, w - p.r), y = scale(ymin, ymax, h - p.b, p.t);
-  const xTicks = linearTicks(xmin, xmax).map((value) => `<line class="grid-line" x1="${x(value)}" y1="${p.t}" x2="${x(value)}" y2="${h - p.b}"/><text class="axis-label" x="${x(value)}" y="${h - p.b + 17}" text-anchor="middle">${esc(fmt.pct(value, 1))}</text>`).join("");
+  const xTicks = niceTicks(xmin, xmax).map((value) => `<line class="grid-line" x1="${x(value)}" y1="${p.t}" x2="${x(value)}" y2="${h - p.b}"/><text class="axis-label" x="${x(value)}" y="${h - p.b + 17}" text-anchor="middle">${esc(fmt.pct(value, 1))}</text>`).join("");
   const yFormat = store.model === "raw" ? (value) => `${Number(value).toFixed(1)}조` : (value) => fmt.pct(value, 1);
-  const yTicks = linearTicks(ymin, ymax).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 8}" y="${y(value) + 3}" text-anchor="end">${esc(yFormat(value))}</text>`).join("");
+  const yTicks = niceTicks(ymin, ymax).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 8}" y="${y(value) + 3}" text-anchor="end">${esc(yFormat(value))}</text>`).join("");
   const extremeZones = stateBoundaries ? (() => {
     const lineY = (offset, xValue) => y(predicted(xValue) + offset);
     const fearExtremeLeft = lineY(stateBoundaries.extremeFearUpper, xmin), fearExtremeRight = lineY(stateBoundaries.extremeFearUpper, xmax);
@@ -1275,7 +1379,12 @@ function renderScatter() {
   const currentPredicted = predicted(current.return1d);
   const residual = Number.isFinite(currentPredicted) ? `<line class="residual-arrow" x1="${x(current.return1d)}" y1="${y(currentPredicted)}" x2="${x(current.return1d)}" y2="${y(current.y)}"/>` : "";
   const regressionLine = predictedEnds.length === 2 ? `<line class="regression-line" x1="${x(xmin)}" y1="${y(predicted(xmin))}" x2="${x(xmax)}" y2="${y(predicted(xmax))}"/>` : "";
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><defs><clipPath id="scatter-plot-clip"><rect x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/></clipPath></defs>${extremeZones}${xTicks}${yTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/>${regressionLine}${residual}${marks}<text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 7}" text-anchor="middle">KOSPI 1일 수익률 (%)</text><text class="axis-title" x="${p.l}" y="13">${store.model === "raw" ? "개인 순매수대금 (조원)" : "순매수대금 ÷ KOSPI 거래대금 (%)"}</text></svg>`;
+  const zeroAxes = `${xmin <= 0 && xmax >= 0 ? `<line class="reference-line zero-axis" x1="${x(0)}" y1="${p.t}" x2="${x(0)}" y2="${h - p.b}"/>` : ""}${ymin <= 0 && ymax >= 0 ? `<line class="reference-line zero-axis" x1="${p.l}" y1="${y(0)}" x2="${w - p.r}" y2="${y(0)}"/>` : ""}`;
+  const currentLabelAnchor = x(current.return1d) > (p.l + w - p.r) / 2 ? "end" : "start";
+  const currentLabelX = x(current.return1d) + (currentLabelAnchor === "end" ? -9 : 9);
+  const currentLabelY = Math.max(p.t + 15, Math.min(h - p.b - 8, y(current.y) - 10));
+  const currentLabel = `<text class="scatter-current-label" x="${currentLabelX}" y="${currentLabelY}" text-anchor="${currentLabelAnchor}">선택일 · ${esc(labels[stateFromValue(current)] || stateFromValue(current))}</text>`;
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><defs><clipPath id="scatter-plot-clip"><rect x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/></clipPath></defs><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${extremeZones}${xTicks}${yTicks}${zeroAxes}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/>${regressionLine}${residual}${marks}${currentLabel}<text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 7}" text-anchor="middle">KOSPI 1일 수익률 (%)</text><text class="axis-title" x="${p.l}" y="13">${store.model === "raw" ? "개인 순매수대금 (조원)" : "순매수대금 ÷ KOSPI 거래대금 (%)"}</text></svg>`;
   const inputLabel = store.model === "raw" ? "개인 순매수대금" : "거래대금 대비 개인 순매수 비율";
   $("#scatter-title").textContent = `수익률 × ${inputLabel}`;
   $("#scatter-subtitle").textContent = `${modelName()} · ${current.date} 기준 · 직전 ${regression.trainingCount || regression.window || points.length - 1}거래일 학습`;
@@ -1304,7 +1413,7 @@ function renderResidual() {
   }));
   const container = $("#residual-chart");
   if (rows.length < 8) return showEmpty(container, "잔차 시계열이 부족합니다.");
-  const w = 600, h = 340, p = { l: 50, r: 18, t: 20, b: 40 };
+  const w = 600, h = 360, p = { l: 58, r: 62, t: 32, b: 50 };
   const x = scale(0, rows.length - 1, p.l, w - p.r), y = scale(0, 100, h - p.b, p.t);
   const lowerExtreme = Number(store.signalExtremeTail);
   const upperExtreme = 100 - lowerExtreme;
@@ -1312,9 +1421,12 @@ function renderResidual() {
   const eligibleRows = rows.map((row) => row.selectedEligible === true ? row : { ...row, selectedPercentile: null });
   const blockedRows = rows.map((row) => row.selectedEligible !== true ? row : { ...row, selectedPercentile: null });
   const blockedMarks = rows.map((row, index) => row.selectedEligible !== true && Number.isFinite(Number(row.selectedPercentile)) ? `<circle class="residual-blocked-point" cx="${x(index)}" cy="${y(row.selectedPercentile)}" r="2.5"><title>${esc(`${row.date} · 낮은 적합도, 거래 차단`)}</title></circle>` : "").join("");
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="residual-band-fear" x="${p.l}" y="${y(lowerExtreme)}" width="${w - p.l - p.r}" height="${y(0) - y(lowerExtreme)}"/><rect class="residual-band-greed" x="${p.l}" y="${y(100)}" width="${w - p.l - p.r}" height="${y(upperExtreme) - y(100)}"/>${boundaries}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-primary">${pathSegments(eligibleRows, "selectedPercentile", x, y)}</g><g class="line-blocked">${pathSegments(blockedRows, "selectedPercentile", x, y)}</g>${blockedMarks}<text class="axis-title" x="${p.l}" y="13">백분위 (0–100) · 극단 ≤${esc(lowerExtreme)} / ≥${esc(upperExtreme)} · 회색 점선은 거래 차단</text><text class="axis-label" x="${p.l}" y="${h - 10}">${esc(rows[0].date)}</text><text class="axis-label" text-anchor="end" x="${w - p.r}" y="${h - 10}">${esc(rows.at(-1).date)}</text></svg>`;
   const validRows = rows.filter((row) => Number.isFinite(Number(row.selectedPercentile)));
   const latest = validRows.at(-1);
+  const latestIndex = latest ? rows.findIndex((row) => row.date === latest.date) : -1;
+  const latestMark = latest && latestIndex >= 0 ? `<circle class="line-end-dot strategy" cx="${x(latestIndex)}" cy="${y(latest.selectedPercentile)}" r="3"/><text class="line-end-label strategy" x="${w - p.r + 9}" y="${y(latest.selectedPercentile) + 4}">${esc(fmt.score(latest.selectedPercentile, 1))}</text>` : "";
+  const dateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 20, maxTicks: 5 });
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/><rect class="residual-band-fear" x="${p.l}" y="${y(lowerExtreme)}" width="${w - p.l - p.r}" height="${y(0) - y(lowerExtreme)}"/><rect class="residual-band-greed" x="${p.l}" y="${y(100)}" width="${w - p.l - p.r}" height="${y(upperExtreme) - y(100)}"/>${dateAxis}${boundaries}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-primary">${pathSegments(eligibleRows, "selectedPercentile", x, y)}</g><g class="line-blocked">${pathSegments(blockedRows, "selectedPercentile", x, y)}</g>${blockedMarks}${latestMark}<text class="panel-title" x="${p.l}" y="18">잔차 경험적 백분위</text><text class="axis-unit" x="${w - p.r}" y="18" text-anchor="end">0–100 · 거래 차단은 회색 점선</text><text class="residual-zone-label fear" x="${w - p.r - 7}" y="${y(lowerExtreme / 2) + 3}" text-anchor="end">극단 공포 ≤${esc(lowerExtreme)}</text><text class="residual-zone-label greed" x="${w - p.r - 7}" y="${y((100 + upperExtreme) / 2) + 3}" text-anchor="end">극단 탐욕 ≥${esc(upperExtreme)}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   container.setAttribute("aria-label", `${compactModelName(kind)} 잔차 백분위 ${rows[0].date}부터 ${rows.at(-1).date}. 최신 ${latest ? fmt.score(latest.selectedPercentile) : "산출 불가"}.`);
   attachChartNavigation(container, validRows, (row) => `${row.date}, ${compactModelName(kind)} 잔차 백분위 ${fmt.score(row.selectedPercentile)}, ${labels[row.selectedState] || row.selectedState}, 거래 사용 ${row.selectedEligible === true ? "가능" : "차단"}`, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
   const tableRows = recentRows(rows).map((row) => [row.date, fmt.score(row.selectedPercentile), labels[row.selectedState] || row.selectedState, row.selectedEligible === true ? "거래 가능" : "거래 차단"]);
@@ -1644,7 +1756,7 @@ function renderBacktests() {
   $("#strategy-model-scope").textContent = `${strategyRole[0]} · ${policyLabel()}`;
   $("#strategy-model-scope").className = `scope-badge ${strategyRole[1]}`;
   $("#backtest-card-subtitle").textContent = selectionLabel;
-  $("#equity-title").textContent = `${pairLabel(store.backtestProxy, true)} 누적가치와 낙폭`;
+  $("#equity-title").textContent = `${pairLabel(store.backtestProxy, true)} 누적수익률과 낙폭`;
   $("#equity-subtitle").textContent = `${variantLabel(key)} · 학습 ${store.signalLookback}일 · 극단 ${store.signalExtremeTail}% · 최대 ${store.signalMaxHolding}일 · ${periodLabel} · 롱 ≥${store.longExitPercentile}${store.backtestPolicy === "long_cash" ? "" : ` · 인버스 ≤${100 - store.longExitPercentile}`} · 전체 경로 carry-in`;
   $("#backtest-table caption").textContent = `${selectionLabel} 성과·위험 상세`;
   $("#trade-table caption").textContent = `${selectionLabel} 최근 거래내역`;
@@ -1727,20 +1839,34 @@ function renderEquity(result, selectionLabel, comparisonResult = null, primaryPo
     $("#equity-data-table").innerHTML = `<p class="empty-inline">선택 기간의 일별 누적가치가 공개 계약에 없습니다. 성과 표의 정확값을 확인하세요.</p>`;
     return showEmpty(container, "선택 기간의 누적가치 시계열 미공개");
   }
-  const values = rows.flatMap((row) => [Number(row.value), Number(row.longShortValue), Number(row.buyHoldValue)]).filter(Number.isFinite);
+  rows = rows.map((row) => ({ ...row, strategyReturn: equityReturn(row.value), longShortReturn: equityReturn(row.longShortValue), buyHoldReturn: equityReturn(row.buyHoldValue) }));
+  const values = rows.flatMap((row) => [Number(row.strategyReturn), Number(row.longShortReturn), Number(row.buyHoldReturn)]).filter(Number.isFinite);
   const min0 = Math.min(...values), max0 = Math.max(...values), span = max0 - min0 || .1;
   const min = min0 - span * .06, max = max0 + span * .08;
-  const w = 680, h = 280, p = { l: 66, r: 22, t: 24, b: 40 };
+  const w = 720, h = 300, p = { l: 70, r: 112, t: 34, b: 50 };
   const x = scale(0, rows.length - 1, p.l, w - p.r), y = scale(min, max, h - p.b, p.t);
-  const yTicks = linearTicks(min, max).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 8}" y="${y(value) + 3}" text-anchor="end">${esc(fmt.score(value, 2))}</text>`).join("");
+  const yTicks = niceTicks(min, max).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 9}" y="${y(value) + 4}" text-anchor="end">${esc(fmt.pct(value, Math.abs(max - min) < .2 ? 1 : 0))}</text>`).join("");
   const primaryLineClass = primaryPolicy === "long_inverse_cash" ? "line-longshort" : "line-strategy";
   const primaryLabel = policyLabel(primaryPolicy);
-  const valueSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${yTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="${primaryLineClass}">${pathSegments(rows, "value", x, y)}</g>${comparable ? `<g class="line-longshort">${pathSegments(rows, "longShortValue", x, y)}</g>` : ""}<g class="line-buyhold">${pathSegments(rows, "buyHoldValue", x, y)}</g><text class="axis-title" x="${p.l}" y="14">누적가치 (초기=1)</text><text class="axis-label" x="${p.l}" y="${h - 10}">${esc(rows[0].date)}</text><text class="axis-label" x="${w - p.r}" y="${h - 10}" text-anchor="end">${esc(rows.at(-1).date)}</text></svg>`;
+  const pair = pairMeta();
+  const valueDateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 20, maxTicks: 6 });
+  const zeroLine = min <= 0 && max >= 0 ? `<line class="reference-line performance-zero" x1="${p.l}" y1="${y(0)}" x2="${w - p.r}" y2="${y(0)}"/>` : "";
+  const endSeries = [
+    { label: primaryLabel.replaceAll(" / ", "/"), field: "strategyReturn", cls: primaryPolicy === "long_inverse_cash" ? "longshort" : "strategy" },
+    ...(comparable ? [{ label: "롱/인버스", field: "longShortReturn", cls: "longshort" }] : []),
+    { label: `${pair.longTicker} BH`, field: "buyHoldReturn", cls: "buyhold" }
+  ].map((series) => ({ ...series, value: Number(rows.at(-1)[series.field]) })).filter((series) => Number.isFinite(series.value)).sort((a, b) => y(a.value) - y(b.value));
+  endSeries.forEach((series, index) => { series.labelY = Math.max(y(series.value), index ? endSeries[index - 1].labelY + 17 : p.t + 7); });
+  const labelOverflow = endSeries.length ? Math.max(0, endSeries.at(-1).labelY - (h - p.b - 4)) : 0;
+  if (labelOverflow) endSeries.forEach((series) => { series.labelY -= labelOverflow; });
+  const valueEndLabels = endSeries.map((series) => `<circle class="line-end-dot ${series.cls}" cx="${w - p.r}" cy="${y(series.value)}" r="3"/><path class="line-end-connector ${series.cls}" d="M ${w - p.r + 3} ${y(series.value)} L ${w - p.r + 11} ${series.labelY}"/><text class="line-end-label ${series.cls}" x="${w - p.r + 15}" y="${series.labelY + 4}">${esc(series.label)} ${esc(fmt.signedPct(series.value, 1))}</text>`).join("");
+  const valueSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${valueDateAxis}${yTicks}${zeroLine}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="${primaryLineClass}">${pathSegments(rows, "strategyReturn", x, y)}</g>${comparable ? `<g class="line-longshort">${pathSegments(rows, "longShortReturn", x, y)}</g>` : ""}<g class="line-buyhold">${pathSegments(rows, "buyHoldReturn", x, y)}</g>${valueEndLabels}<text class="panel-title" x="${p.l}" y="20">비용 후 누적수익률</text><text class="axis-unit" x="${w - p.r}" y="20" text-anchor="end">첫 ETF 평가일 = 0%</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   const drawdowns = rows.flatMap((row) => [Number(row.drawdown), Number(row.longShortDrawdown), Number(row.buyHoldDrawdown)]).filter(Number.isFinite);
   const ddMin = Math.min(...drawdowns, -.01), ddMax = 0;
   const ddY = scale(ddMin, ddMax, h - p.b, p.t);
-  const ddTicks = linearTicks(ddMin, ddMax).map((value) => `<line class="grid-line" x1="${p.l}" y1="${ddY(value)}" x2="${w - p.r}" y2="${ddY(value)}"/><text class="axis-label" x="${p.l - 8}" y="${ddY(value) + 3}" text-anchor="end">${esc(fmt.pct(value, 0))}</text>`).join("");
-  const ddSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${ddTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="${primaryLineClass}">${pathSegments(rows, "drawdown", x, ddY)}</g>${comparable ? `<g class="line-longshort">${pathSegments(rows, "longShortDrawdown", x, ddY)}</g>` : ""}<g class="line-buyhold">${pathSegments(rows, "buyHoldDrawdown", x, ddY)}</g><text class="axis-title" x="${p.l}" y="14">고점 대비 낙폭 (%)</text><text class="axis-label" x="${p.l}" y="${h - 10}">${esc(rows[0].date)}</text><text class="axis-label" x="${w - p.r}" y="${h - 10}" text-anchor="end">${esc(rows.at(-1).date)}</text></svg>`;
+  const ddTicks = niceTicks(ddMin, ddMax).map((value) => `<line class="grid-line" x1="${p.l}" y1="${ddY(value)}" x2="${w - p.r}" y2="${ddY(value)}"/><text class="axis-label" x="${p.l - 9}" y="${ddY(value) + 4}" text-anchor="end">${esc(fmt.pct(value, 0))}</text>`).join("");
+  const ddDateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 20, maxTicks: 6 });
+  const ddSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${ddDateAxis}${ddTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="${primaryLineClass}">${pathSegments(rows, "drawdown", x, ddY)}</g>${comparable ? `<g class="line-longshort">${pathSegments(rows, "longShortDrawdown", x, ddY)}</g>` : ""}<g class="line-buyhold">${pathSegments(rows, "buyHoldDrawdown", x, ddY)}</g><text class="panel-title" x="${p.l}" y="20">고점 대비 낙폭</text><text class="axis-unit" x="${w - p.r}" y="20" text-anchor="end">0% = 직전 최고점</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   container.innerHTML = valueSvg + ddSvg;
   const last = rows.at(-1);
   container.setAttribute("aria-label", `${selectionLabel}. ${rows[0].date}부터 ${last.date}. 최종 ${primaryLabel} ${fmt.score(last.value, 3)}${comparable ? `, 롱 인버스 현금 ${fmt.score(last.longShortValue, 3)}` : ""}, 롱 ETF 매수·보유 ${fmt.score(last.buyHoldValue, 3)}.`);
@@ -1834,14 +1960,15 @@ function renderDiagnostics() {
   if (rows.length < 2) return showEmpty(container, "상대 스프레드 산출 불가");
   const field = rows.some((row) => Number.isFinite(Number(row.muHynixRelativeSpread))) ? "muHynixRelativeSpread" : "muHynixRatioIndexed";
   const values = rows.map((row) => Number(row[field])).filter(Number.isFinite);
-  const w = 600, h = 260, p = { l: 62, r: 18, t: 24, b: 38 };
+  const w = 600, h = 280, p = { l: 68, r: 22, t: 34, b: 48 };
   const min0 = Math.min(...values), max0 = Math.max(...values), pad = (max0 - min0 || 1) * .08;
   const min = min0 - pad, max = max0 + pad;
   const x = scale(0, rows.length - 1, p.l, w - p.r), y = scale(min, max, h - p.b, p.t);
   const formatValue = field === "muHynixRelativeSpread" ? (value) => `${fmt.score(value, 1)}p` : (value) => fmt.score(value, 0);
-  const ticks = linearTicks(min, max).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 7}" y="${y(value) + 3}" text-anchor="end">${esc(formatValue(value))}</text>`).join("");
+  const ticks = niceTicks(min, max).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 8}" y="${y(value) + 4}" text-anchor="end">${esc(formatValue(value))}</text>`).join("");
   const reference = field === "muHynixRelativeSpread" && min <= 0 && max >= 0 ? `<line class="reference-line" x1="${p.l}" y1="${y(0)}" x2="${w - p.r}" y2="${y(0)}"/>` : field === "muHynixRatioIndexed" && min <= 100 && max >= 100 ? `<line class="reference-line" x1="${p.l}" y1="${y(100)}" x2="${w - p.r}" y2="${y(100)}"/>` : "";
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${ticks}${reference}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-accent">${pathSegments(rows, field, x, y)}</g><text class="axis-title" x="${p.l}" y="14">${field === "muHynixRelativeSpread" ? "MU 대비 하이닉스 상대 스프레드 (지수포인트)" : "MU / 하이닉스 비율지수 (시작=100)"}</text><text class="axis-label" x="${p.l}" y="${h - 9}">${esc(rows[0].date)}</text><text class="axis-label" x="${w - p.r}" y="${h - 9}" text-anchor="end">${esc(rows.at(-1).date)}</text></svg>`;
+  const dateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 19, maxTicks: 5 });
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${dateAxis}${ticks}${reference}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-accent">${pathSegments(rows, field, x, y)}</g><text class="panel-title" x="${p.l}" y="19">${field === "muHynixRelativeSpread" ? "MU 대비 하이닉스 상대 스프레드 (지수포인트)" : "MU / 하이닉스 비율지수"}</text><text class="axis-unit" x="${w - p.r}" y="19" text-anchor="end">${field === "muHynixRelativeSpread" ? "미국 선행 세션 · 환율 환산" : "시작 = 100"}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 4}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   container.setAttribute("aria-label", `${rows[0].date}부터 ${rows.at(-1).date}까지 ${field === "muHynixRelativeSpread" ? "Micron 대비 SK하이닉스 상대 스프레드" : "Micron 대 SK하이닉스 비율지수"}. 최신 ${formatValue(rows.at(-1)[field])}.`);
   attachChartNavigation(container, rows, (row) => `${row.date}, ${field === "muHynixRelativeSpread" ? "상대 스프레드" : "비율지수"} ${formatValue(row[field])}`, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
   const tableRows = recentRows(rows).map((row) => [row.date, fmt.score(row.muHynixRatio, 4), fmt.score(row.muHynixRatioIndexed, 1), row.muHynixRelativeSpread == null ? "—" : `${fmt.score(row.muHynixRelativeSpread, 2)}p`]);
