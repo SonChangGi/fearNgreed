@@ -16,8 +16,7 @@ test('dashboard exposes one unified scenario control surface with pressed state'
     'data-backtest-period="full"','data-backtest-period="common"'
   ]) assert.match(html,new RegExp(token));
   assert.ok((html.match(/aria-pressed=/g)||[]).length>=17);
-  assert.match(html,/연구 트랙은 현재 신호·차트·전략에 공통 적용/);
-  assert.match(html,/한 번 적용하면 사건 연구까지 같은 조건으로 다시 계산/);
+  assert.match(html,/트랙·ETF·비용·청산선·기간으로 신호, 사건 연구, 차트와 성과표를 함께 다시 계산/);
   for(const id of ['signal-settings-form','signal-lookback-input','signal-min-r2-input','signal-tail-input','signal-max-holding-input','signal-settings-status']) assert.match(html,new RegExp(`id="${id}"`));
   assert.match(html,/id="linked-strategy-rule"/);
   assert.match(app,/robust: "scaled_huber"/);
@@ -55,9 +54,9 @@ test('position policy comparison discloses actual inverse execution and side-awa
   assert.match(html,/id="strategy-exposure"/);
   assert.match(html,/id="exit-sensitivity"/);
   assert.match(html,/id="actual-etf-method-note"/);
-  assert.match(html,/인버스도 현물 ETF 매수이므로 공매도 대차·증거금을 가정하지 않습니다/);
+  assert.match(html,/인버스도 현물 ETF 매수로 계산합니다/);
   assert.match(html,/롱 \/ 인버스 \/ 현금/);
-  assert.match(html,/2X는 일간 목표 배율입니다/);
+  assert.match(html,/2X는 일간 목표 배율이므로 누적 경로는 1X와 달라질 수 있습니다/);
   for(const ticker of ['069500','114800','122630','252670']) assert.match(html,new RegExp(ticker));
   assert.match(app,/ACTUAL_ETF_PAIRS/);
   assert.match(app,/function heldInstrument/);
@@ -75,8 +74,8 @@ test('compare mode names both policy results in the key cards and conclusion',as
   assert.match(app,/store\.backtestPolicy === "compare" && longCash\?\.metrics && longInverse\?\.metrics/);
   assert.match(app,/metric\("롱 \/ 현금 총수익률", fmt\.pct\(longCash\.metrics\.totalReturn\)/);
   assert.match(app,/metric\("롱 \/ 인버스 \/ 현금 총수익률", fmt\.pct\(longInverse\.metrics\.totalReturn\)/);
-  assert.match(app,/const conclusionLongCash = store\.backtestPolicy === "compare" \? longCashResultFor\(\) : null/);
-  assert.match(app,/const conclusionLongInverse = store\.backtestPolicy === "compare" \? longInverseResultFor\(\) : null/);
+  assert.match(app,/const conclusionLongCash = store\.backtestPolicy === "compare" \? scenarioBundle\.longCash : null/);
+  assert.match(app,/const conclusionLongInverse = store\.backtestPolicy === "compare" \? scenarioBundle\.longInverse : null/);
   assert.match(app,/롱\/현금 \$\{fmt\.signedPct\(conclusionLongCash\.metrics\.totalReturn\)\}/);
   assert.match(app,/롱\/인버스\/현금 \$\{fmt\.signedPct\(conclusionLongInverse\.metrics\.totalReturn\)\}/);
 });
@@ -257,8 +256,9 @@ test('event excess confidence intervals disclose how benchmark uncertainty is tr
   const app=await read('assets/app.js');
   assert.match(app,/meanExcessReturnCi95BenchmarkTreatment/);
   assert.match(app,/fixed_external_mean/);
-  assert.match(app,/벤치마크 평균의 추정오차는 포함하지 않습니다/);
+  assert.match(app,/사건 평균 재표집·비교 평균 고정/);
   assert.match(app,/paired_event_returns/);
+  assert.match(app,/사건·벤치마크 함께 재표집/);
 });
 
 test('controls persist to URL and localStorage and charts expose an explicit latest action',async()=>{
@@ -305,8 +305,8 @@ test('KOSPI history supports calendar presets and validated shareable custom dat
 
 test('integrated history separates close signals from next-open actual ETF actions and uses scenario exposure',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
-  assert.match(html,/공포 원은 상태 관측이지 모두 매수 주문은 아닙니다/);
-  assert.match(html,/같은 시가의 청산과 반대 ETF 매수는 하나의 교체 실행입니다/);
+  assert.match(html,/공포 원과 탐욕 마름모는 종가 상태의 첫 관측입니다/);
+  assert.match(html,/같은 시가의 청산과 반대 ETF 매수는 하나의 교체로 표시합니다/);
   assert.match(app,/function extremeSignalMap/);
   assert.match(app,/function scenarioActions/);
   assert.match(app,/class="execution-action (entry|exit|reversal)/);
@@ -334,6 +334,24 @@ test('integrated history uses readable axes, explicit policy lanes, and only vis
   assert.match(css,/\.line-end-label/);
   assert.match(css,/white-space:\s*pre-line/);
   assert.match(css,/\.chart svg \{[^}]*overflow:\s*hidden/s);
+});
+
+test('chart selection snapshot is dynamic while period-end cards and tables stay fixed',async()=>{
+  const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
+  for(const id of ['history-selected-snapshot','history-selected-title','history-selected-content']) assert.match(html,new RegExp(`id="${id}"`));
+  assert.match(html,/차트를 가리키거나 좌우 화살표·Home·End로 이동하면 위의 선택일 스냅샷이 함께 바뀝니다/);
+  assert.match(html,/성과 카드와 표는 평가 종료일 기준입니다/);
+  assert.match(html,/평가 종료일 성과/);
+  assert.match(app,/function renderHistorySelectedSnapshot/);
+  assert.match(app,/선택일 누적성과/);
+  assert.match(app,/평가 종료일 보유/);
+  assert.match(app,/평가기간 총수익률/);
+  assert.match(app,/typeof geometry\.onSelect === "function"/);
+  assert.match(app,/chart\._selectLatest = \(\) => selectIndex\(latestIndex\)/);
+  assert.match(app,/chart\._selectLatest\?\.\(\)/);
+  assert.match(app,/const scenarioBundle = selectedScenarioBundle\(\);[\s\S]*renderHistory\(scenarioBundle\)[\s\S]*renderBacktests\(scenarioBundle\)/);
+  assert.match(css,/\.history-selected-snapshot/);
+  assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.history-selected-grid \{ grid-template-columns: 1fr; \}/);
 });
 
 test('scatter refits the selected historical session and renders exact empirical state boundaries',async()=>{
@@ -398,7 +416,7 @@ test('integrated controls fail closed before load and keep selected-date diagnos
 test('normalized benchmark equity and future flow channels remain explicit and fail closed',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   assert.match(html,/id="flow-channels"/);
-  assert.match(html,/외국인·기관 수급/);
+  assert.match(html,/개인·외국인·기관 채널/);
   assert.match(app,/commonBenchmarkEquity/);
   assert.match(app,/function hydratedEquityRows/);
   assert.match(app,/flowChannels\?\.channels/);
@@ -407,6 +425,6 @@ test('normalized benchmark equity and future flow channels remain explicit and f
   assert.match(app,/낮음 · 거래 미사용/);
   assert.match(app,/collecting \? "수집 중"/);
   assert.match(app,/collecting \? "표본 부족"/);
-  assert.match(html,/외국인·기관 카드에 수치가 보여도 진단 결과/);
+  assert.match(html,/현재 전략 신호에는 개인 수급 채널이 반영됩니다/);
   assert.match(app,/거래 상세 행은 경량 공개 계약에서 생략되었습니다/);
 });

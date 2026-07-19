@@ -451,14 +451,14 @@ function renderSignalBridge() {
   $("#bridge-explanation").textContent = interpretation;
 }
 
-function renderHeader() {
+function renderHeader(scenarioBundle = selectedScenarioBundle()) {
   const summary = store.summary;
   const base = analysisEntity();
   const model = modelPayload();
   const status = effectiveStatus(summary);
   const state = status === "unavailable" ? "unavailable" : stateFromValue(model);
   const agreement = selectedModelAgreement();
-  $("#current-state-label").textContent = `선택 종료일 연구 신호 · ${modelRole()}`;
+  $("#current-state-label").textContent = `평가 종료일 연구 신호 · ${modelRole()}`;
   const badge = $("#status-badge");
   badge.textContent = `데이터 ${qualityLabel(status)}`;
   badge.className = `badge ${status}`;
@@ -474,7 +474,7 @@ function renderHeader() {
   $("#state").textContent = labels[state] || state;
   $("#signal-badge").textContent = model?.tradeEligible === false && state !== "unavailable" ? `${labels[state] || state} · 진입 차단` : labels[state] || state;
   $("#signal-badge").className = `state-badge ${state}${model?.tradeEligible === false ? " blocked" : ""}`;
-  $("#asof").textContent = `신호일 ${fmt.date(base.date || summary.dataAsOf)} · 데이터 기준 ${fmt.date(summary.dataAsOf)}`;
+  $("#asof").textContent = `평가 종료일 ${fmt.date(base.date || summary.dataAsOf)} · 데이터 최신일 ${fmt.date(summary.dataAsOf)}`;
   const reasons = summary.status.degradedReasons || [];
   $("#status-note").textContent = reasons.length ? `운영 주의: ${reasons.map(degradedReasonLabel).join(" · ")}. 표시 기준일과 공급자 상태를 함께 확인하세요.` : "핵심 공급자와 계산 품질 게이트 통과";
 
@@ -489,7 +489,7 @@ function renderHeader() {
     metric("KOSPI 1일", fmt.signedPct(base.return1d), "종가 대비 전 거래일"),
     metric(store.model === "raw" ? "개인 순매수대금" : "거래대금 대비 개인 순매수 비율", inputValue, inputNote),
     metric("50일 이격도", fmt.score(base.disparity50, 1), "100 = 50일 이동평균"),
-    metric("선택 시나리오 포지션", position.value, position.note),
+    metric("평가 종료일 포지션", position.value, position.note),
     metric("252일 낙폭", fmt.pct(base.mdd252), "롤링 고점 대비")
   ].join("");
   renderSignalBridge();
@@ -504,7 +504,7 @@ function renderHeader() {
     return `<span><strong>${ticker} 세션:</strong> ${esc(fmt.compact(report.officialSessionCount))} · 보정 ${esc(report.filledCount)} · 미해결 ${esc(report.unresolvedCount)}</span>`;
   }).filter(Boolean);
   const selectedEvents = selectedEventSection();
-  const selectedStrategy = selectedScenarioBundle().primary;
+  const selectedStrategy = scenarioBundle.primary;
   $("#quality-strip").innerHTML = [
     `<span><strong>데이터 기준일:</strong> ${esc(summary.dataAsOf)}</span>`,
     `<span><strong>선택 트랙:</strong> ${esc(modelName())}</span>`,
@@ -519,7 +519,7 @@ function renderHeader() {
     `<span><strong>선택 사건:</strong> ${esc(selectedEvents?.eventCount ?? "—")}</span>`,
     `<span><strong>선택 완결 거래:</strong> ${esc(selectedStrategy?.metrics?.tradeCount ?? "—")}</span>`
   ].join("");
-  $("#model-selection-note").textContent = `통합 사용자 시나리오: ${modelName()} · 과거 ${store.signalLookback}일 · R²≥${Number(store.signalMinimumR2).toFixed(2)} · 극단 ${store.signalExtremeTail}% · 최대 ${store.signalMaxHolding}일. 현재 신호·산점도·잔차·사건·전략을 같은 입력으로 계산합니다.`;
+  $("#model-selection-note").textContent = `적용 시나리오 · ${modelName()} · 학습 ${store.signalLookback}일 · R²≥${Number(store.signalMinimumR2).toFixed(2)} · 극단 ${store.signalExtremeTail}% · 최대 보유 ${store.signalMaxHolding}일`;
   $("#scatter-model-scope").textContent = modelRole();
   const linkedRule = $("#linked-strategy-rule");
   if (linkedRule) linkedRule.textContent = `${modelName()} → ${variantLabel(variantKey(trackVariant(), store.backtestCost))}`;
@@ -753,9 +753,12 @@ function showTooltip(chart, text, point = null) {
 
 function attachChartNavigation(chart, items, formatter, geometry = {}) {
   const valid = items.filter(Boolean);
+  const fallbackIndex = Math.max(0, valid.length - 1);
+  const latestIndex = Number.isInteger(geometry.latestIndex) ? Math.max(0, Math.min(fallbackIndex, geometry.latestIndex)) : fallbackIndex;
+  const initialIndex = Number.isInteger(geometry.initialIndex) ? Math.max(0, Math.min(fallbackIndex, geometry.initialIndex)) : latestIndex;
   chart._resizeObserver?.disconnect();
   chart._chartItems = valid;
-  chart._chartIndex = Math.max(0, valid.length - 1);
+  chart._chartIndex = initialIndex;
   chart.querySelectorAll(".chart-crosshair, .chart-crosshair-point").forEach((node) => node.remove());
   const crosshair = document.createElement("span");
   crosshair.className = "chart-crosshair";
@@ -778,15 +781,29 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
     const viewX = current.left + ratio * (current.right - current.left);
     return chart.scrollLeft + current.svgRect.left - current.chartRect.left + viewX / current.width * current.svgRect.width;
   };
+  const positionCrosshair = () => {
+    if (!valid.length) return 0;
+    const ratio = valid.length <= 1 ? 1 : chart._chartIndex / (valid.length - 1);
+    const left = Math.max(0, crosshairLeft(ratio));
+    crosshair.style.left = `${left}px`;
+    return left;
+  };
+  const revealCrosshair = (left) => {
+    if (chart.scrollWidth <= chart.clientWidth) return;
+    const padding = Math.min(36, chart.clientWidth * .12);
+    if (left < chart.scrollLeft + padding) chart.scrollLeft = Math.max(0, left - padding);
+    else if (left > chart.scrollLeft + chart.clientWidth - padding) chart.scrollLeft = Math.min(chart.scrollWidth - chart.clientWidth, left - chart.clientWidth + padding);
+  };
   const selectIndex = (index, point = null) => {
     if (!valid.length) return;
     chart._chartIndex = Math.max(0, Math.min(valid.length - 1, index));
-    const ratio = valid.length <= 1 ? 1 : chart._chartIndex / (valid.length - 1);
-    crosshair.style.left = `${Math.max(0, Math.min(chart.scrollWidth, crosshairLeft(ratio)))}px`;
+    const left = positionCrosshair();
+    if (!point) revealCrosshair(left);
     chart.classList.add("is-exploring");
     const text = formatter(valid[chart._chartIndex], chart._chartIndex);
     showTooltip(chart, text, point);
     chart.setAttribute("aria-valuetext", text);
+    if (typeof geometry.onSelect === "function") geometry.onSelect(valid[chart._chartIndex], chart._chartIndex);
   };
   chart.onfocus = () => {
     if (valid.length) selectIndex(chart._chartIndex);
@@ -824,15 +841,19 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
     else next += 1;
     selectIndex(next);
   };
-  let latestAligned = false;
+  chart._selectLatest = () => selectIndex(latestIndex);
+  if (valid.length && typeof geometry.onSelect === "function") geometry.onSelect(valid[initialIndex], initialIndex);
   const alignLatest = () => {
-    if (latestAligned || chart.clientWidth <= 0 || chart.scrollWidth <= chart.clientWidth) return;
+    if (chart.clientWidth <= 0 || chart.scrollWidth <= chart.clientWidth) return;
     chart.scrollLeft = chart.scrollWidth - chart.clientWidth;
-    latestAligned = true;
   };
   requestAnimationFrame(alignLatest);
   if (typeof ResizeObserver !== "undefined") {
-    const observer = new ResizeObserver(alignLatest);
+    const observer = new ResizeObserver(() => {
+      const left = positionCrosshair();
+      if (chart._chartIndex === latestIndex) alignLatest();
+      else revealCrosshair(left);
+    });
     observer.observe(chart);
     chart._resizeObserver = observer;
   }
@@ -1058,7 +1079,34 @@ function normalizedActionLabel(action) {
   return labels[name] || name || "체결";
 }
 
-function renderHistory() {
+function historyPolicyAction(row, policy) {
+  return (row?.actions || []).filter((item) => item.policy === policy).map(normalizedActionLabel).join(" / ") || "체결 없음";
+}
+
+function renderHistorySelectedSnapshot(row, { periodEnd, showLongCash, showLongShort, pair }) {
+  const root = $("#history-selected-snapshot");
+  const container = $("#history-selected-content");
+  if (!root || !container) return;
+  if (!row) {
+    root.dataset.context = "empty";
+    container.innerHTML = '<div class="history-selected-placeholder">선택 기간의 차트 스냅샷을 준비할 수 없습니다.</div>';
+    return;
+  }
+  const isPeriodEnd = row.date === periodEnd;
+  const state = labels[row.trackState] || row.trackState || "미확인";
+  const percentile = Number.isFinite(Number(row.trackPercentile)) ? `${fmt.score(row.trackPercentile, 1)} 백분위` : "백분위 —";
+  const kospi = Number(row.kospiClose ?? row.kospi);
+  const cards = [
+    `<section><span>KOSPI 종가 · 상태</span><strong>${esc(Number.isFinite(kospi) ? Math.round(kospi).toLocaleString() : "—")}</strong><small>${esc(`${state} · ${percentile}`)}</small></section>`,
+    ...(showLongCash ? [`<section><span>롱 / 현금 · 선택일까지</span><strong>${esc(fmt.signedPct(row.longCashReturn))}</strong><small>${esc(`${positionWithTicker(row.longCashPosition)} · ${historyPolicyAction(row, "long_cash")}`)}</small><small>선택일까지 MDD ${esc(fmt.pct(row.longCashMddToDate))}</small></section>`] : []),
+    ...(showLongShort ? [`<section><span>롱 / 인버스 / 현금 · 선택일까지</span><strong>${esc(fmt.signedPct(row.longShortReturn))}</strong><small>${esc(`${positionWithTicker(row.longShortPosition)} · ${historyPolicyAction(row, "long_inverse_cash")}`)}</small><small>선택일까지 MDD ${esc(fmt.pct(row.longShortMddToDate))}</small></section>`] : []),
+    `<section><span>${esc(pair.longTicker)} 매수·보유 · 선택일까지</span><strong>${esc(fmt.signedPct(row.buyHoldReturn))}</strong><small>선택일까지 MDD ${esc(fmt.pct(row.buyHoldMddToDate))}</small><small>평가 시작일을 0%로 재기준화</small></section>`
+  ];
+  root.dataset.context = isPeriodEnd ? "period-end" : "selected-date";
+  container.innerHTML = `<div class="history-selected-head"><div><span>차트 선택일</span><strong>${esc(row.date)}</strong><em>${isPeriodEnd ? "평가 종료일" : "기간 내 탐색"}</em></div><p>${isPeriodEnd ? "성과 카드·표와 같은 종료일입니다." : `이 날짜까지의 누적성과입니다. 성과 카드·표 기준은 ${esc(periodEnd)}입니다.`}</p></div><div class="history-selected-grid">${cards.join("")}</div>`;
+}
+
+function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   const rows = selectedHistory().filter((row) => row.kospiClose != null || row.kospi != null);
   const modelKind = store.model;
   $("#history-model-scope").textContent = `${modelRole(modelKind)} · ${policyLabel()} · 청산 ${store.longExitPercentile}`;
@@ -1073,14 +1121,16 @@ function renderHistory() {
   $("#history-legend-buyhold").innerHTML = `<i class="legend-line buyhold"></i>${esc(pair.longTicker)} ${esc(pair.longName)} 매수·보유`;
   syncHistoryRangeControls(rows);
   const container = $("#history-chart");
-  const { longCash, longShort, primary } = selectedScenarioBundle();
+  const { longCash, longShort, primary } = scenarioBundle;
   if (rows.length < 8 || !primary?.metrics) {
     $("#history-chart-meta").innerHTML = `<span><strong>표시 상태</strong><b>유효 거래일 부족</b></span><span><strong>필요 조건</strong><b>8거래일 이상</b></span>`;
     $("#history-exposure-note").innerHTML = "<strong>기간을 넓혀 주세요.</strong><span>통합 차트와 과거검증은 최소 8개 유효 거래일이 필요합니다.</span>";
+    renderHistorySelectedSnapshot(null, { periodEnd: "", showLongCash, showLongShort, pair });
     const tableRows = rows.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[rowTrackValue(row, "state")] || rowTrackValue(row, "state"), "—", "—"]);
     $("#history-data-table").innerHTML = dataTable(["날짜", "KOSPI", "선택 트랙 상태", "포지션", "체결"], tableRows, `선택 기간 ${tableRows.length}개 관측값`);
     return showEmpty(container, "통합 분석을 표시하려면 유효 기간을 넓혀 주세요.");
   }
+  const m = primary.metrics;
 
   const primarySessions = scenarioSessions(primary);
   const primaryByDate = new Map(primarySessions.map((row) => [row.date, row]));
@@ -1111,15 +1161,25 @@ function renderHistory() {
       buyHoldValue: primaryRow.buyHoldValue,
       longCashValue: longCashRow.value,
       longShortValue: longShortRow.value,
+      longCashDrawdown: longCashRow.drawdown,
+      longShortDrawdown: longShortRow.drawdown,
+      buyHoldDrawdown: primaryRow.buyHoldDrawdown,
       signal: signals.get(row.date),
       actions: actionsByDate.get(row.date) || []
     };
   });
 
+  const runningMdd = { longCash: null, longShort: null, buyHold: null };
   plotRows.forEach((row) => {
     row.longCashReturn = equityReturn(row.longCashValue);
     row.longShortReturn = equityReturn(row.longShortValue);
     row.buyHoldReturn = equityReturn(row.buyHoldValue);
+    if (Number.isFinite(Number(row.longCashDrawdown))) runningMdd.longCash = Math.min(runningMdd.longCash ?? 0, Number(row.longCashDrawdown));
+    if (Number.isFinite(Number(row.longShortDrawdown))) runningMdd.longShort = Math.min(runningMdd.longShort ?? 0, Number(row.longShortDrawdown));
+    if (Number.isFinite(Number(row.buyHoldDrawdown))) runningMdd.buyHold = Math.min(runningMdd.buyHold ?? 0, Number(row.buyHoldDrawdown));
+    row.longCashMddToDate = runningMdd.longCash;
+    row.longShortMddToDate = runningMdd.longShort;
+    row.buyHoldMddToDate = runningMdd.buyHold;
   });
   const visibleReturnFields = [
     ...(showLongCash ? ["longCashReturn"] : []),
@@ -1229,20 +1289,20 @@ function renderHistory() {
   const endLabels = endSeries.map((series) => `<circle class="line-end-dot ${series.cls}" cx="${plotRight}" cy="${equityY(series.value)}" r="3"/><path class="line-end-connector ${series.cls}" d="M ${plotRight + 3} ${equityY(series.value)} L ${plotRight + 12} ${series.labelY}"/><text class="line-end-label ${series.cls}" x="${plotRight + 16}" y="${series.labelY + 4}">${esc(series.label)} ${esc(fmt.signedPct(series.value, 1))}</text>`).join("");
   const latestPrice = Number(lastRow.kospiClose ?? lastRow.kospi);
   const latestPriceY = y(latestPrice);
+  const matchedPeriodEndIndex = plotRows.findIndex((row) => row.date === m.end);
+  const periodEndIndex = matchedPeriodEndIndex >= 0 ? matchedPeriodEndIndex : plotRows.length - 1;
   const zeroReference = equityMin0 - equityPad <= 0 && equityMax0 + equityPad >= 0 ? `<line class="reference-line performance-zero" x1="${p.l}" y1="${equityY(0)}" x2="${plotRight}" y2="${equityY(0)}"/>` : "";
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="line-price">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="line-buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">첫 ETF 평가일 = 0%</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
   container.setAttribute("aria-label", `${plotRows[0].date}부터 ${plotRows.at(-1).date}까지 ${compactModelName()} KOSPI 종가 신호, ${pairLabel(store.backtestProxy, true)} 다음 시가 체결, ${policyLabel()} 비용 후 누적수익률 통합 차트.`);
   attachChartNavigation(container, plotRows, (row) => {
     const signal = row.signal ? `${labels[row.signal.state]} 상태 첫 관측 · 백분위 ${fmt.score(row.signal.percentile)}` : "신규 극단 신호 없음";
-    const actionFor = (policy) => row.actions.filter((item) => item.policy === policy).map(normalizedActionLabel).join(" / ") || "체결 없음";
-    const lines = [`${row.date} · KOSPI ${Number(row.kospiClose ?? row.kospi).toLocaleString()}pt`, `종가 연구 상태  ${labels[row.trackState] || row.trackState} · ${signal}`];
-    if (showLongCash) lines.push(`롱/현금  ${positionWithTicker(row.longCashPosition)} · ${actionFor("long_cash")} · ${fmt.signedPct(row.longCashReturn, 1)}`);
-    if (showLongShort) lines.push(`롱/인버스  ${positionWithTicker(row.longShortPosition)} · ${actionFor("long_inverse_cash")} · ${fmt.signedPct(row.longShortReturn, 1)}`);
+    const lines = [`차트 선택일 ${row.date} · KOSPI ${Number(row.kospiClose ?? row.kospi).toLocaleString()}pt`, `종가 연구 상태  ${labels[row.trackState] || row.trackState} · ${signal}`, "선택일 누적성과"];
+    if (showLongCash) lines.push(`롱/현금  ${positionWithTicker(row.longCashPosition)} · ${historyPolicyAction(row, "long_cash")} · ${fmt.signedPct(row.longCashReturn, 1)}`);
+    if (showLongShort) lines.push(`롱/인버스  ${positionWithTicker(row.longShortPosition)} · ${historyPolicyAction(row, "long_inverse_cash")} · ${fmt.signedPct(row.longShortReturn, 1)}`);
     lines.push(`${pair.longTicker} 매수·보유  ${fmt.signedPct(row.buyHoldReturn, 1)}`);
     return lines.join("\n");
-  }, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
+  }, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r, initialIndex: periodEndIndex, latestIndex: periodEndIndex, onSelect: (row) => renderHistorySelectedSnapshot(row, { periodEnd: m.end || plotRows.at(-1).date, showLongCash, showLongShort, pair }) });
 
-  const m = primary.metrics;
   const signalCount = [...signals.values()].length;
   const windowMeta = primary.window || primary.range || {};
   const carry = windowMeta.carryIn?.position || primary.carryInPosition || "cash";
@@ -1256,13 +1316,13 @@ function renderHistory() {
     ["표시 기간", `${plotRows[0].date}–${plotRows.at(-1).date} · ${plotRows.length.toLocaleString()}일`],
     ["실제 ETF", `${pair.leverage}X · ${pair.longTicker}/${pair.inverseTicker}`],
     ["실행 조건", `편도 ${store.backtestCost}bp · 청산 ${store.longExitPercentile}/${100 - store.longExitPercentile}`],
-    ["현재 보유", store.backtestPolicy === "compare" ? `롱/현금 ${heldInstrument(longCash)} · 롱/인버스 ${heldInstrument(longShort)}` : heldInstrument(primary)],
-    ["구간 결과", resultSummary]
+    ["평가 종료일 보유", store.backtestPolicy === "compare" ? `롱/현금 ${heldInstrument(longCash)} · 롱/인버스 ${heldInstrument(longShort)}` : heldInstrument(primary)],
+    ["평가기간 총수익률", resultSummary]
   ].map(([label, value]) => `<span><strong>${esc(label)}</strong><b>${esc(value)}</b></span>`).join("");
   const exposure = store.backtestPolicy === "compare" && longCash?.metrics && longShort?.metrics
     ? `<strong>정책별 총노출</strong><span>롱 / 현금 ${esc(fmt.pct(longCash.metrics.grossExposure, 1))} · 롱 / 인버스 / 현금 ${esc(fmt.pct(longShort.metrics.grossExposure, 1))} · ${esc(pairLabel(store.backtestProxy, true))} · 극단 최초 신호 ${signalCount}회 · 시가 체결일 ${actionsByDate.size}일</span>`
     : `<strong>선택 시나리오 총 보유비율 ${esc(fmt.pct(m.grossExposure, 1))}</strong><span>롱 ETF ${esc(fmt.pct(m.longExposure, 1))} · 인버스 ETF ${esc(fmt.pct(inverseExposure(m), 1))} · 현금 ${esc(fmt.pct(m.cashExposure, 1))} · 현재 ${esc(heldInstrument(primary))} · 극단 최초 신호 ${signalCount}회 · 시가 체결일 ${actionsByDate.size}일</span>`;
-  $("#history-exposure-note").innerHTML = `${exposure}<span>요청 ${esc(requested)} · 적용 ETF 세션 ${esc(applied)} · 기준 표시 정책 시작 포지션 ${esc(labels[carry] || carry)} · 구간 내 완결 거래 ${esc(m.tradeCount)}건${carryClosed ? ` · 시작 전 진입한 carry-in 청산 ${esc(carryClosed)}건은 거래 통계에서 분리` : ""}. 전체 선행 경로를 이어받고 선택 구간 첫 평가액을 1로 재기준화했습니다.</span>`;
+  $("#history-exposure-note").innerHTML = `${exposure}<span>평가 ${esc(applied)} · 완결 거래 ${esc(m.tradeCount)}건 · 시작 포지션 ${esc(labels[carry] || carry)}${requested === applied ? "" : ` · 요청 ${esc(requested)}`}${carryClosed ? ` · 시작 전 진입 포지션 청산 ${esc(carryClosed)}건 별도` : ""}</span>`;
   const recent = recentRows(plotRows);
   const tableRows = store.backtestPolicy === "compare"
     ? recent.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[row.trackState] || row.trackState, positionWithTicker(row.longCashPosition), positionWithTicker(row.longShortPosition), row.actions.map((action) => `${policyLabel(action.policy)} ${normalizedActionLabel(action)} (${action.signalDate || action.sourceSignalDate || "—"}→${row.date})`).join(" / ") || "—", fmt.score(row.longCashValue, 3), fmt.score(row.longShortValue, 3)])
@@ -1383,20 +1443,20 @@ function renderScatter() {
   const currentLabelAnchor = x(current.return1d) > (p.l + w - p.r) / 2 ? "end" : "start";
   const currentLabelX = x(current.return1d) + (currentLabelAnchor === "end" ? -9 : 9);
   const currentLabelY = Math.max(p.t + 15, Math.min(h - p.b - 8, y(current.y) - 10));
-  const currentLabel = `<text class="scatter-current-label" x="${currentLabelX}" y="${currentLabelY}" text-anchor="${currentLabelAnchor}">선택일 · ${esc(labels[stateFromValue(current)] || stateFromValue(current))}</text>`;
+  const currentLabel = `<text class="scatter-current-label" x="${currentLabelX}" y="${currentLabelY}" text-anchor="${currentLabelAnchor}">평가 종료일 · ${esc(labels[stateFromValue(current)] || stateFromValue(current))}</text>`;
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><defs><clipPath id="scatter-plot-clip"><rect x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/></clipPath></defs><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${extremeZones}${xTicks}${yTicks}${zeroAxes}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/>${regressionLine}${residual}${marks}${currentLabel}<text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 7}" text-anchor="middle">KOSPI 1일 수익률 (%)</text><text class="axis-title" x="${p.l}" y="13">${store.model === "raw" ? "개인 순매수대금 (조원)" : "순매수대금 ÷ KOSPI 거래대금 (%)"}</text></svg>`;
   const inputLabel = store.model === "raw" ? "개인 순매수대금" : "거래대금 대비 개인 순매수 비율";
   $("#scatter-title").textContent = `수익률 × ${inputLabel}`;
   $("#scatter-subtitle").textContent = `${modelName()} · ${current.date} 기준 · 직전 ${regression.trainingCount || regression.window || points.length - 1}거래일 학습`;
   const zoneAria = stateBoundaries ? `회귀선 대비 선택 학습 잔차의 경험적 ${store.signalExtremeTail}% 이하 극단 공포와 ${100 - store.signalExtremeTail}% 이상 극단 탐욕 영역을 표시합니다.` : "정확한 선택 회귀 상태 경계가 없어 극단 영역은 표시하지 않습니다.";
-  container.setAttribute("aria-label", `${points.length}개 관측치 ${modelName()} 산점도. ${zoneAria} 선택 기준일 ${current.date} 수익률 ${fmt.pct(current.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(current.y, 3)}조원` : fmt.pct(current.y, 3)}.`);
+  container.setAttribute("aria-label", `${points.length}개 관측치 ${modelName()} 산점도. ${zoneAria} 평가 종료일 ${current.date} 수익률 ${fmt.pct(current.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(current.y, 3)}조원` : fmt.pct(current.y, 3)}.`);
   const cutoffFormat = store.model === "raw" ? (value) => `${fmt.score(value, 3)}조원` : (value) => `${(Number(value) * 100).toFixed(2)}%p`;
   const zoneNote = stateBoundaries
     ? ` · 선택 회귀 학습 잔차 경계: ${store.signalExtremeTail}% ${cutoffFormat(stateBoundaries.extremeFearUpper)}, 20% ${cutoffFormat(stateBoundaries.fearUpper)}, 80% ${cutoffFormat(stateBoundaries.greedLower)}, ${100 - store.signalExtremeTail}% ${cutoffFormat(stateBoundaries.extremeGreedLower)} (n=${stateBoundaries.count})`
     : " · 선택 종료일의 과거 전용 회귀를 적합할 수 없어 영역을 표시하지 않음";
   $("#scatter-note").textContent = `학습 n=${points.filter((row) => row.role !== "current").length} · 현재 n=${points.filter((row) => row.role === "current").length} · β=${fmt.score(regression.beta, 4)} · R²=${fmt.score(modelPayload()?.rollingR2, 3)}${zoneNote}`;
-  attachScatterNavigation(container, pointGeometry, (row) => `${row.date}, KOSPI ${fmt.signedPct(row.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3)}, 당시 롤링 상태 ${labels[row.state] || row.state || "미확인"}${row.role === "current" ? ", 선택 기준일 관측" : ", 학습 관측"}`, { width: w, height: h });
-  const tableRows = recentRows(points).map((row) => [row.date, fmt.signedPct(row.return1d), store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3), labels[row.state] || row.state || "—", row.role === "current" ? "선택 기준일" : "학습"]);
+  attachScatterNavigation(container, pointGeometry, (row) => `${row.date}, KOSPI ${fmt.signedPct(row.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3)}, 당시 롤링 상태 ${labels[row.state] || row.state || "미확인"}${row.role === "current" ? ", 평가 종료일 관측" : ", 학습 관측"}`, { width: w, height: h });
+  const tableRows = recentRows(points).map((row) => [row.date, fmt.signedPct(row.return1d), store.model === "raw" ? `${fmt.score(row.y, 3)}조원` : fmt.pct(row.y, 3), labels[row.state] || row.state || "—", row.role === "current" ? "평가 종료일" : "학습"]);
   $("#scatter-data-table").innerHTML = dataTable(["날짜", "KOSPI 1일", inputLabel, "당시 롤링 상태", "역할"], tableRows, `${modelName()} 최근 ${tableRows.length}개 산점도 관측`);
 }
 
@@ -1519,13 +1579,9 @@ function renderEventVisual(section) {
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${ticks}<line class="reference-line" x1="${x(0)}" y1="${p.t}" x2="${x(0)}" y2="${h - p.b}"/>${marks}<line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><text class="axis-title" x="${p.l}" y="14">평균 선행수익률 · 95% CI</text></svg>`;
   container.setAttribute("aria-label", `${store.eventAsset} ${rows.length}개 사건 요약. 평균과 95% 신뢰구간${hasBenchmark ? ", 비교 벤치마크" : ""}${hasExcess ? ", 초과수익" : ""}.`);
   attachScatterNavigation(container, geometry, (row) => `${labels[row.state] || row.state} ${row.horizon}일, 평균 ${fmt.signedPct(row.mean)}, 95% 신뢰구간 ${fmt.pct(row.meanCi95?.[0])}에서 ${fmt.pct(row.meanCi95?.[1])}, 사건 ${row.eventCount}개${eventBenchmark(row) == null ? "" : `, 벤치마크 ${fmt.signedPct(eventBenchmark(row))}`}${eventExcess(row) == null ? "" : `, 초과수익 ${fmt.signedPct(eventExcess(row))}`}`, { width: w, height: h });
-  const conditionalCiNote = benchmarkTreatments.has("fixed_external_mean")
-    ? " 초과수익 95% CI는 무조건부 벤치마크 평균을 고정한 조건부 구간이며, 벤치마크 평균의 추정오차는 포함하지 않습니다."
-    : benchmarkTreatments.has("paired_event_returns")
-      ? " 초과수익 95% CI는 사건별 벤치마크 수익률을 함께 재표집한 구간입니다."
-      : "";
   $("#event-benchmark-legend").hidden = !hasBenchmark;
-  $("#event-benchmark-note").textContent = hasBenchmark ? `비교 벤치마크와의 차이를 연결선과 Δ로 표시합니다.${hasExcess ? " 초과수익은 서버가 발행한 값입니다." : " 초과수익 수치는 아직 별도 발행되지 않았습니다."}${conditionalCiNote}` : "비교 벤치마크·초과수익이 공개 계약에 없어 0% 기준선만 표시합니다. 평균수익률 자체를 시장 대비 초과성과로 해석하지 마세요.";
+  const intervalMethod = benchmarkTreatments.has("paired_event_returns") ? " 사건·벤치마크 함께 재표집" : benchmarkTreatments.has("fixed_external_mean") ? " 사건 평균 재표집·비교 평균 고정" : "";
+  $("#event-benchmark-note").textContent = hasBenchmark ? `비교 벤치마크와의 차이를 연결선과 Δ로 표시합니다.${hasExcess ? ` 초과수익 95% 구간 ·${intervalMethod || " 발행값"}.` : " 평균수익률과 벤치마크를 나란히 확인할 수 있습니다."}` : "평균수익률과 0% 기준선을 표시합니다.";
 }
 
 function renderEvents() {
@@ -1555,7 +1611,7 @@ function renderEvents() {
     return;
   }
   body.innerHTML = section.summary.map((row) => `<tr class="${row.smallSample ? "small-sample" : ""}"><td><span class="state-mark ${row.state.includes("greed") ? "greed" : ""}">${esc(labels[row.state] || row.state)}</span></td><td>${esc(row.horizon)}일</td><td>${esc(row.eventCount)}${row.smallSample ? "*" : ""}</td><td>${esc(fmt.pct(row.mean))}</td><td>${esc(fmt.pct(row.median))}</td><td>${esc(fmt.pct(row.positiveRate, 1))}</td><td>${esc(fmt.pct(row.meanCi95?.[0]))} ~ ${esc(fmt.pct(row.meanCi95?.[1]))}</td></tr>`).join("");
-  $("#event-note").textContent = `${sampleLabel} ${section.eventCount}개 · 평가 ${section.startDate || "전체 시작"}–${section.endDate || "최신"}. ${store.eventSample === "all" ? "겹치는 사건의 iid 구간은 상관을 반영하지 못하므로 탐색용입니다. " : "20일 비중첩 표본의 iid 구간입니다. "}* 각 기간 완결 사건이 20개 미만이면 소표본으로 흐리게 표시하며 통계적 확정으로 해석하지 않습니다.`;
+  $("#event-note").textContent = `${sampleLabel} ${section.eventCount}개 · 평가 ${section.startDate || "전체 시작"}–${section.endDate || "평가 종료일"} · 기간별 사건 수, 평균·중앙값·상승 비중과 95% 구간을 함께 표시합니다.`;
   renderEventVisual(section);
 }
 
@@ -1726,23 +1782,22 @@ function renderPolicyComparison(longCash, longInverse) {
       <div><span>${esc(policyLabel(policy))}</span><strong>${esc(fmt.signedPct(m.totalReturn))}</strong><small>${esc(resultSourceLabel(result))}</small></div>
       <dl>
         <div><dt>CAGR</dt><dd>${esc(fmt.pct(m.cagr))}</dd></div><div><dt>Sharpe</dt><dd>${esc(fmt.score(m.sharpe, 2))}</dd></div>
-        <div><dt>최대낙폭</dt><dd>${esc(fmt.pct(m.maxDrawdown))}</dd></div><div><dt>현재 보유</dt><dd>${esc(heldInstrument(result))}</dd></div>
+        <div><dt>최대낙폭</dt><dd>${esc(fmt.pct(m.maxDrawdown))}</dd></div><div><dt>종료일 보유</dt><dd>${esc(heldInstrument(result))}</dd></div>
         <div><dt>롱 / 인버스 / 현금</dt><dd>${esc(`${fmt.pct(m.longExposure, 1)} / ${fmt.pct(inverseExposure(m), 1)} / ${fmt.pct(m.cashExposure, 1)}`)}</dd></div>
         <div><dt>거래 수</dt><dd>${esc(`${m.tradeCount}건`)}</dd></div>
       </dl></section>`;
   }).join("");
   $("#strategy-exposure").innerHTML = [["long_cash", longCash.metrics], ["long_inverse_cash", longInverse.metrics]].map(([policy, m]) => `<section class="exposure-policy"><div class="exposure-heading"><strong>${esc(policyLabel(policy))}</strong><span>총 보유 ${esc(fmt.pct(m.grossExposure, 1))} · 순 자본배분 ${esc(fmt.pct(m.netExposure, 1))}</span></div><div class="exposure-bar" aria-hidden="true"><i class="long" style="width:${Math.max(0, Number(m.longExposure) * 100)}%"></i><i class="inverse" style="width:${Math.max(0, inverseExposure(m) * 100)}%"></i><i class="cash" style="width:${Math.max(0, Number(m.cashExposure) * 100)}%"></i></div><dl><div><dt>롱 ETF</dt><dd>${esc(fmt.pct(m.longExposure, 1))}</dd></div><div><dt>인버스 ETF</dt><dd>${esc(fmt.pct(inverseExposure(m), 1))}</dd></div><div><dt>현금</dt><dd>${esc(fmt.pct(m.cashExposure, 1))}</dd></div></dl></section>`).join("");
-  $("#exit-sensitivity").innerHTML = `<strong>현재 사용자 청산선</strong><span>롱 ≥${esc(store.longExitPercentile)}</span><span>인버스 ≤${esc(100 - store.longExitPercentile)}</span><small>같은 값이 통합 차트·두 정책·성과표에 동시에 적용됩니다. 최적화 결과가 아닙니다.</small>`;
+  $("#exit-sensitivity").innerHTML = `<strong>현재 사용자 청산선</strong><span>롱 ≥${esc(store.longExitPercentile)}</span><span>인버스 ≤${esc(100 - store.longExitPercentile)}</span><small>통합 차트·두 정책·성과표에 동시에 적용됩니다.</small>`;
 }
 
-function renderBacktests() {
+function renderBacktests(scenarioBundle = selectedScenarioBundle()) {
   if (!store.dashboard || !store.history || !store.strategyComparison) return;
   const body = $("#backtest-table tbody");
   resetTableSort($("#backtest-table"));
   resetTableSort($("#trade-table"));
   ensureBacktestSelection();
-  const longCash = longCashResultFor();
-  const longInverse = longInverseResultFor();
+  const { longCash, longShort: longInverse } = scenarioBundle;
   const unsupportedPolicyVariant = store.backtestPolicy !== "long_cash" && store.backtestVariant === "disparity";
   const selected = (unsupportedPolicyVariant ? [] : store.backtestPolicy === "long_cash" ? [{ policy: "long_cash", result: longCash }] : store.backtestPolicy === "long_inverse_cash" ? [{ policy: "long_inverse_cash", result: longInverse }] : [{ policy: "long_cash", result: longCash }, { policy: "long_inverse_cash", result: longInverse }]).filter(({ result }) => result?.metrics);
   const result = store.backtestPolicy === "long_inverse_cash" ? longInverse : longCash;
@@ -1755,10 +1810,10 @@ function renderBacktests() {
   const strategyRole = store.backtestVariant === "scaled_huber" ? ["실전 신호", "practical"] : store.backtestVariant === "raw_ols" ? ["PDF 원문 근사", "replica"] : store.backtestVariant === "scaled_ols" ? ["OLS 기준선", "baseline"] : ["강건성 변형", "fixed"];
   $("#strategy-model-scope").textContent = `${strategyRole[0]} · ${policyLabel()}`;
   $("#strategy-model-scope").className = `scope-badge ${strategyRole[1]}`;
-  $("#backtest-card-subtitle").textContent = selectionLabel;
+  $("#backtest-card-subtitle").textContent = `적용 조건 · ${selectionLabel}`;
   $("#equity-title").textContent = `${pairLabel(store.backtestProxy, true)} 누적수익률과 낙폭`;
-  $("#equity-subtitle").textContent = `${variantLabel(key)} · 학습 ${store.signalLookback}일 · 극단 ${store.signalExtremeTail}% · 최대 ${store.signalMaxHolding}일 · ${periodLabel} · 롱 ≥${store.longExitPercentile}${store.backtestPolicy === "long_cash" ? "" : ` · 인버스 ≤${100 - store.longExitPercentile}`} · 전체 경로 carry-in`;
-  $("#backtest-table caption").textContent = `${selectionLabel} 성과·위험 상세`;
+  $("#equity-subtitle").textContent = `${variantLabel(key)} · 학습 ${store.signalLookback}일 · 극단 ${store.signalExtremeTail}% · 최대 ${store.signalMaxHolding}일 · ${periodLabel} · 롱 ≥${store.longExitPercentile}${store.backtestPolicy === "long_cash" ? "" : ` · 인버스 ≤${100 - store.longExitPercentile}`}`;
+  $("#backtest-table caption").textContent = `${selectionLabel} 전략 성과 상세`;
   $("#trade-table caption").textContent = `${selectionLabel} 최근 거래내역`;
   if (!selected.length) {
     const reason = latestScenarioError?.message || "네 ETF의 조정 시가·종가가 모두 공개된 기간이 필요합니다.";
@@ -1768,11 +1823,11 @@ function renderBacktests() {
     $("#trade-table tbody").innerHTML = `<tr><td colspan="10">거래 없음</td></tr>`;
     renderPolicyComparison(longCash, longInverse);
     renderProxyComparison();
-    renderConclusion();
     return;
   }
   const primaryResult = result?.metrics ? result : selected[0].result;
   const m = primaryResult.metrics;
+  $("#backtest-card-subtitle").textContent = `평가 종료일 ${m.end} · ${selectionLabel}`;
   body.innerHTML = selected.map(({ policy, result: policyResult }) => {
     const metrics = policyResult.metrics;
     return `<tr><td>${esc(`${policyLabel(policy)} · ${pairLabel(store.backtestProxy, true)} · ${variantLabel(key)}`)}</td><td>${esc(`${metrics.start}~${metrics.end}`)}</td><td>${esc(fmt.pct(metrics.totalReturn))}</td><td>${esc(fmt.pct(metrics.cagr))}</td><td>${esc(fmt.pct(metrics.volatility))}</td><td>${esc(fmt.score(metrics.sharpe, 2))}</td><td>${esc(fmt.pct(metrics.maxDrawdown))}</td><td>${esc(fmt.pct(metrics.winRate, 1))}</td><td>${esc(fmt.pct(metrics.longExposure, 1))}</td><td>${esc(fmt.pct(inverseExposure(metrics), 1))}</td><td>${esc(fmt.pct(metrics.cashExposure, 1))}</td><td>${esc(fmt.pct(metrics.grossExposure, 1))}</td><td>${esc(fmt.pct(metrics.netExposure, 1))}</td><td>${esc(fmt.pct(metrics.zeroCostTimingReturn ?? metrics.exposureMatchedReturn))}</td><td>${esc(fmt.pct(metrics.riskMatchedBuyHoldReturn))}</td><td>${esc(fmt.score(metrics.turnover, 2))}×</td><td>${esc(metrics.tradeCount)}</td><td>${esc(fmt.score(metrics.averageHoldingSessions, 1))}일</td><td>${esc(fmt.pct(metrics.buyAndHoldReturn))}</td><td>${esc(fmt.pct(metrics.buyAndHoldMaxDrawdown))}</td></tr>`;
@@ -1781,7 +1836,7 @@ function renderBacktests() {
     ? [
       metric("롱 / 현금 총수익률", fmt.pct(longCash.metrics.totalReturn), `CAGR ${fmt.pct(longCash.metrics.cagr)} · Sharpe ${fmt.score(longCash.metrics.sharpe, 2)}`),
       metric("롱 / 인버스 / 현금 총수익률", fmt.pct(longInverse.metrics.totalReturn), `CAGR ${fmt.pct(longInverse.metrics.cagr)} · Sharpe ${fmt.score(longInverse.metrics.sharpe, 2)}`),
-      metric("현재 실제 보유", `${heldInstrument(longCash)} / ${heldInstrument(longInverse)}`, "롱/현금 / 롱/인버스/현금"),
+      metric("평가 종료일 보유", `${heldInstrument(longCash)} / ${heldInstrument(longInverse)}`, "롱/현금 / 롱/인버스/현금"),
       metric("롱 / 현금 최대낙폭", fmt.pct(longCash.metrics.maxDrawdown), `총노출 ${fmt.pct(longCash.metrics.grossExposure, 1)}`),
       metric("롱 / 인버스 최대낙폭", fmt.pct(longInverse.metrics.maxDrawdown), `총노출 ${fmt.pct(longInverse.metrics.grossExposure, 1)}`),
       metric(`${pairMeta().longTicker} 매수·보유`, fmt.pct(longCash.metrics.buyAndHoldReturn), `MDD ${fmt.pct(longCash.metrics.buyAndHoldMaxDrawdown)}`),
@@ -1790,7 +1845,7 @@ function renderBacktests() {
     : [
       metric("전략 총수익률", fmt.pct(m.totalReturn), `CAGR ${fmt.pct(m.cagr)}`),
       metric("전략 최대낙폭", fmt.pct(m.maxDrawdown), `변동성 ${fmt.pct(m.volatility)}`),
-      metric("현재 실제 보유", heldInstrument(primaryResult), `${pairLabel(store.backtestProxy, true)} · ${labels[scenarioPosition(primaryResult)] || scenarioPosition(primaryResult)}`),
+      metric("평가 종료일 보유", heldInstrument(primaryResult), `${pairLabel(store.backtestProxy, true)} · ${labels[scenarioPosition(primaryResult)] || scenarioPosition(primaryResult)}`),
       metric(`${pairMeta().longTicker} 매수·보유`, fmt.pct(m.buyAndHoldReturn), `MDD ${fmt.pct(m.buyAndHoldMaxDrawdown)}`),
       metric("동일 타이밍 무비용", fmt.pct(m.zeroCostTimingReturn ?? m.exposureMatchedReturn), "같은 진입·청산 · 비용 0bp"),
       metric("위험 일치 매수·보유", fmt.pct(m.riskMatchedBuyHoldReturn), `시장 비중 ${fmt.pct(m.riskMatchedScale, 1)}`),
@@ -1800,7 +1855,7 @@ function renderBacktests() {
     ].join("");
   renderEquity(primaryResult, selectionLabel, store.backtestPolicy === "compare" ? longInverse : null, store.backtestPolicy === "long_inverse_cash" ? "long_inverse_cash" : "long_cash");
   const trades = selected.flatMap(({ policy, result: policyResult }) => (policyResult.trades || []).map((trade) => ({ ...trade, policy, pair: policyResult.pair || pairMeta() }))).sort((a, b) => String(b.exit_date || b.exitDate).localeCompare(String(a.exit_date || a.exitDate)));
-  $("#trade-card-subtitle").textContent = "실제 체결 ETF·정책·방향을 분리 · 보유 중 같은 극단의 반복 신호는 무시 · 화면 최신 12건";
+  $("#trade-card-subtitle").textContent = "신호일 종가와 다음 거래일 시가 체결을 연결한 최근 12건";
   const tradeRows = trades.length
     ? trades.slice(0, 12).map((trade) => `<tr><td>${esc(policyLabel(trade.policy))}</td><td>${esc(labels[trade.side] || trade.side)}</td><td>${esc(trade.instrumentTicker || (trade.side === "long" ? trade.pair.longTicker : trade.pair.inverseTicker))}</td><td>${esc(trade.entry_signal_date || trade.entrySignalDate || "—")}</td><td>${esc(trade.entry_date || trade.entryDate || "—")}</td><td>${esc(trade.exit_signal_date || trade.exitSignalDate || "—")}</td><td>${esc(trade.exit_date || trade.exitDate || "—")}</td><td>${esc(trade.holding_sessions ?? trade.holdingSessions ?? "—")}</td><td>${esc(labels[trade.exit_reason || trade.exitReason || trade.reason] || trade.exit_reason || trade.exitReason || trade.reason)}</td><td>${esc(fmt.pct(trade.net_return ?? trade.netReturn))}</td></tr>`).join("")
     : selected.some(({ result: policyResult }) => policyResult.tradeHistoryTruncated && Number(policyResult.metrics?.tradeCount) > 0)
@@ -1810,7 +1865,6 @@ function renderBacktests() {
   applyTableFilter($("#trade-filter"));
   renderPolicyComparison(longCash, longInverse);
   renderProxyComparison();
-  renderConclusion();
 }
 
 function hydratedEquityRows(result) {
@@ -1871,15 +1925,15 @@ function renderEquity(result, selectionLabel, comparisonResult = null, primaryPo
   const last = rows.at(-1);
   container.setAttribute("aria-label", `${selectionLabel}. ${rows[0].date}부터 ${last.date}. 최종 ${primaryLabel} ${fmt.score(last.value, 3)}${comparable ? `, 롱 인버스 현금 ${fmt.score(last.longShortValue, 3)}` : ""}, 롱 ETF 매수·보유 ${fmt.score(last.buyHoldValue, 3)}.`);
   attachChartNavigation(container, rows, (row) => `${row.date}, ${primaryLabel} ${fmt.score(row.value, 3)}${comparable ? `, 롱 인버스 현금 ${fmt.score(row.longShortValue, 3)}` : ""}, 롱 ETF 매수·보유 ${fmt.score(row.buyHoldValue, 3)}, ${primaryLabel} 낙폭 ${fmt.pct(row.drawdown)}${comparable ? `, 롱 인버스 현금 낙폭 ${fmt.pct(row.longShortDrawdown)}` : ""}, 매수·보유 낙폭 ${fmt.pct(row.buyHoldDrawdown)}`, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
-  $("#equity-data-table").innerHTML = dataTable(["시점", "날짜", primaryLabel, "비교 롱/인버스/현금", "롱 ETF 매수·보유", `${primaryLabel} 낙폭`, "비교 롱/인버스 낙폭", "BH 낙폭"], [["시작", rows[0].date, fmt.score(rows[0].value, 3), comparable ? fmt.score(rows[0].longShortValue, 3) : "—", fmt.score(rows[0].buyHoldValue, 3), fmt.pct(rows[0].drawdown), comparable ? fmt.pct(rows[0].longShortDrawdown) : "—", fmt.pct(rows[0].buyHoldDrawdown)], ["최신", last.date, fmt.score(last.value, 3), comparable ? fmt.score(last.longShortValue, 3) : "—", fmt.score(last.buyHoldValue, 3), fmt.pct(last.drawdown), comparable ? fmt.pct(last.longShortDrawdown) : "—", fmt.pct(last.buyHoldDrawdown)]], `${selectionLabel} 시작·최신 값`);
+  $("#equity-data-table").innerHTML = dataTable(["시점", "날짜", primaryLabel, "비교 롱/인버스/현금", "롱 ETF 매수·보유", `${primaryLabel} 낙폭`, "비교 롱/인버스 낙폭", "BH 낙폭"], [["시작", rows[0].date, fmt.score(rows[0].value, 3), comparable ? fmt.score(rows[0].longShortValue, 3) : "—", fmt.score(rows[0].buyHoldValue, 3), fmt.pct(rows[0].drawdown), comparable ? fmt.pct(rows[0].longShortDrawdown) : "—", fmt.pct(rows[0].buyHoldDrawdown)], ["평가 종료", last.date, fmt.score(last.value, 3), comparable ? fmt.score(last.longShortValue, 3) : "—", fmt.score(last.buyHoldValue, 3), fmt.pct(last.drawdown), comparable ? fmt.pct(last.longShortDrawdown) : "—", fmt.pct(last.buyHoldDrawdown)]], `${selectionLabel} 시작·평가 종료 값`);
 }
 
-function renderConclusion() {
+function renderConclusion(scenarioBundle = selectedScenarioBundle()) {
   if (!store.dashboard) return;
   const section = selectedEventSection();
-  const result = resultFor();
-  const conclusionLongCash = store.backtestPolicy === "compare" ? longCashResultFor() : null;
-  const conclusionLongInverse = store.backtestPolicy === "compare" ? longInverseResultFor() : null;
+  const result = scenarioBundle.primary;
+  const conclusionLongCash = store.backtestPolicy === "compare" ? scenarioBundle.longCash : null;
+  const conclusionLongInverse = store.backtestPolicy === "compare" ? scenarioBundle.longInverse : null;
   const fear20 = section?.summary?.find((row) => row.state === "extreme_fear" && Number(row.horizon) === 20);
   const metrics = result?.metrics;
   const replica = pdfReplicaPayload();
@@ -1892,17 +1946,18 @@ function renderConclusion() {
     ? [conclusionLongCash, conclusionLongInverse].every((item) => item?.metrics && Number(item.metrics.totalReturn) > 0 && Number(item.metrics.sharpe) > 0)
     : metrics && Number(metrics.totalReturn) > 0 && Number(metrics.sharpe) > 0;
   const tone = eventConclusive && strategyPositive ? "supportive" : !fear20 || !metrics ? "mixed" : "caution";
-  const verdict = "원문 날짜 재현, 전체 사건 일반화, 비용 후 전략 실용성을 서로 다른 질문으로 판정합니다.";
+  const periodMetrics = metrics || conclusionLongCash?.metrics || conclusionLongInverse?.metrics;
+  const verdict = periodMetrics ? `${periodMetrics.start}–${periodMetrics.end} 선택 기간의 신호, 사건 반응과 실제 ETF 실행 결과입니다.` : "선택한 설정의 신호와 사건 결과를 요약합니다.";
   const sampleLabel = store.eventSample === "all" ? "전체 사건" : "20일 비중첩";
   const key = variantKey();
   const replicaEvidence = annotated.length ? `${replicaMatch == null ? `${annotated.length}개 주석 사건 공개` : `${replicaMatch}/${annotated.length} 방향 일치`} · 절대수급 원문 근사` : "주석 사건 파생값 미발행";
   const eventEvidence = fear20 ? `20일 평균 ${fmt.signedPct(fear20.mean)} · 95% CI ${fmt.pct(fear20.meanCi95?.[0])}~${fmt.pct(fear20.meanCi95?.[1])} · n=${fear20.eventCount}${excess == null ? " · 벤치마크 초과수익 미발행" : ` · 초과 ${fmt.signedPct(excess)}`}` : "선택 표본 없음";
   const strategyEvidence = store.backtestPolicy === "compare" && conclusionLongCash?.metrics && conclusionLongInverse?.metrics
     ? `실제 ${pairLabel(store.backtestProxy, true)} · 롱 청산 ${store.longExitPercentile} / 인버스 청산 ${100 - store.longExitPercentile} · 롱/현금 ${fmt.signedPct(conclusionLongCash.metrics.totalReturn)} (Sharpe ${fmt.score(conclusionLongCash.metrics.sharpe, 2)}) · 롱/인버스/현금 ${fmt.signedPct(conclusionLongInverse.metrics.totalReturn)} (Sharpe ${fmt.score(conclusionLongInverse.metrics.sharpe, 2)})`
-    : metrics ? `${pairLabel(store.backtestProxy, true)} · ${policyLabel(store.backtestPolicy)} · 롱 청산 ${store.longExitPercentile}${store.backtestPolicy === "long_cash" ? "" : ` / 인버스 청산 ${100 - store.longExitPercentile}`} · ${resultSourceLabel(result)} · ${fmt.signedPct(metrics.totalReturn)} · Sharpe ${fmt.score(metrics.sharpe, 2)} · 총 보유 ${fmt.pct(metrics.grossExposure ?? metrics.exposure, 1)} · 현재 ${heldInstrument(result)}` : "선택 결과 없음";
-  const facts = `<span><strong>1 · PDF 날짜 재현</strong>${esc(replicaEvidence)}</span><span><strong>2 · 사건 일반화</strong>${esc(eventEvidence)}</span><span><strong>3 · 비용 후 전략</strong>${esc(strategyEvidence)}</span>`;
+    : metrics ? `${pairLabel(store.backtestProxy, true)} · ${policyLabel(store.backtestPolicy)} · 롱 청산 ${store.longExitPercentile}${store.backtestPolicy === "long_cash" ? "" : ` / 인버스 청산 ${100 - store.longExitPercentile}`} · ${resultSourceLabel(result)} · ${fmt.signedPct(metrics.totalReturn)} · Sharpe ${fmt.score(metrics.sharpe, 2)} · 총 보유 ${fmt.pct(metrics.grossExposure ?? metrics.exposure, 1)} · 종료일 ${heldInstrument(result)}` : "선택 결과 없음";
+  const facts = `<span><strong>1 · 실제 ETF 전략</strong>${esc(strategyEvidence)}</span><span><strong>2 · 극단 공포 사건</strong>${esc(eventEvidence)}</span><span><strong>3 · PDF 날짜 대조</strong>${esc(replicaEvidence)}</span>`;
   $("#research-conclusion").className = `conclusion-card ${tone}`;
-  $("#research-conclusion").innerHTML = `<div class="conclusion-heading"><div><p class="eyebrow">THREE SEPARATE QUESTIONS</p><h2 id="conclusion-title">현재 공개 결과가 말하는 것</h2></div><span class="badge neutral">사건: ${esc(store.eventAsset)} ${esc(compactModelName(eventModelKind()))} · ${esc(sampleLabel)} · 전략: ${esc(pairLabel(store.backtestProxy, true))} ${esc(variantLabel(key))}</span></div><p class="conclusion-lead">${esc(verdict)}</p><div class="conclusion-facts">${facts}</div><p class="conclusion-footnote">사건 평균이 양수인 것, 시장 대비 초과수익인 것, 비용 후 거래 가능한 것은 서로 동치가 아닙니다. 2X의 일간 배율은 장기 누적수익률 배율이 아니며, 낮은 노출도 전략과 100% 매수·보유도 직접 우열 판정에 쓰지 않습니다.</p>`;
+  $("#research-conclusion").innerHTML = `<div class="conclusion-heading"><div><p class="eyebrow">SELECTED PERIOD RESULTS</p><h2 id="conclusion-title">선택 기간 결과 요약</h2></div><span class="badge neutral">사건: ${esc(store.eventAsset)} ${esc(compactModelName(eventModelKind()))} · ${esc(sampleLabel)} · 전략: ${esc(pairLabel(store.backtestProxy, true))} ${esc(variantLabel(key))}</span></div><p class="conclusion-lead">${esc(verdict)}</p><div class="conclusion-facts">${facts}</div><p class="conclusion-footnote">위 분석 설정이 신호·사건·통합 차트·전략 성과표에 동일하게 적용됩니다.</p>`;
 }
 
 function pdfReplicaPayload() {
@@ -2071,7 +2126,7 @@ function updateBacktestControls() {
   const available = resultFor();
   const bounds = available?.window || available?.range || {};
   const applied = bounds.appliedStartDate && bounds.appliedEndDate ? ` · 적용 ${bounds.appliedStartDate}–${bounds.appliedEndDate}` : "";
-  $("#backtest-selection-note").textContent = available ? `${pairLabel(store.backtestProxy)} · 브라우저 과거전용 재적합 · ${modelName()} · 학습 ${store.signalLookback}일 · 극단 ${store.signalExtremeTail}% · 롱 청산 ${store.longExitPercentile}, 인버스 청산 ${100 - store.longExitPercentile} · 최대 ${store.signalMaxHolding}일${applied}. 전체 선행 경로의 포지션과 예약 주문을 이어받습니다.` : "선택한 실제 ETF 페어의 조정가격 이력을 확인 중입니다.";
+  $("#backtest-selection-note").textContent = available ? `${pairLabel(store.backtestProxy)} · ${modelName()} · 학습 ${store.signalLookback}일 · 극단 ${store.signalExtremeTail}% · 롱 청산 ${store.longExitPercentile}, 인버스 청산 ${100 - store.longExitPercentile} · 최대 ${store.signalMaxHolding}일${applied}` : "선택한 실제 ETF 페어의 조정가격 이력을 확인 중입니다.";
   $("#exit-threshold-value").textContent = `${store.longExitPercentile}`;
   $("#inverse-exit-threshold-value").textContent = `${100 - store.longExitPercentile}`;
   $("#exit-threshold-input").value = String(store.longExitPercentile);
@@ -2144,6 +2199,7 @@ function scrollChartLatest(chartId) {
   const chart = document.getElementById(chartId);
   if (!chart) return;
   chart.scrollTo({ left: Math.max(0, chart.scrollWidth - chart.clientWidth), behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  chart._selectLatest?.();
   chart.focus({ preventScroll: true });
 }
 
@@ -2426,16 +2482,17 @@ function renderAll() {
   updatePressed("[data-window]", store.window, "window");
   updatePressed("[data-event-asset]", store.eventAsset, "eventAsset");
   updatePressed("[data-event-sample]", store.eventSample, "eventSample");
-  renderHeader();
-  renderHistory();
+  const scenarioBundle = selectedScenarioBundle();
+  renderHeader(scenarioBundle);
+  renderHistory(scenarioBundle);
   renderScatter();
   renderResidual();
   renderEvents();
-  renderBacktests();
+  renderBacktests(scenarioBundle);
   renderPdfSnapshot();
   renderDiagnostics();
   renderFlowChannels();
-  renderConclusion();
+  renderConclusion(scenarioBundle);
   enhanceTables();
   applyTableFilter($("#trade-filter"));
 }
