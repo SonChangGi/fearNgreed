@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -181,6 +182,26 @@ def test_public_outputs_expose_three_models_with_compact_daily_history() -> None
         assert roles["channels"][channel]["eligibleForTrading"] is False
     assert output_size_report(outputs)["history"] < 2_000_000
     assert output_size_report(outputs)["strategy_comparison"] < 500_000
+
+
+def test_pipeline_publishes_official_latest_session_freshness() -> None:
+    inputs = _pipeline_inputs()
+    expected = inputs.kospi.index[-1].date()
+
+    outputs = build_outputs(replace(inputs, expected_as_of=expected))
+
+    assert outputs.summary["status"]["freshnessBasis"] == ("official_krx_latest_completed_session")
+    assert outputs.summary["status"]["expectedDataAsOf"] == expected.isoformat()
+    assert outputs.summary["status"]["sourceFreshnessPassed"] is True
+    assert outputs.dashboard["quality"]["expectedAsOf"] == expected.isoformat()
+
+
+def test_pipeline_rejects_core_sources_older_than_official_latest_session() -> None:
+    inputs = _pipeline_inputs()
+    expected = inputs.kospi.index[-1].date() + timedelta(days=1)
+
+    with pytest.raises(ValueError, match="stale_core_sources"):
+        build_outputs(replace(inputs, expected_as_of=expected))
 
 
 def test_columnar_history_rounds_only_numeric_float_values() -> None:

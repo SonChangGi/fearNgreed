@@ -29,7 +29,16 @@
     "status": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["state", "label", "cadence", "expectedFreshnessDays", "degradedReasons"],
+      "required": [
+        "state",
+        "label",
+        "cadence",
+        "expectedFreshnessDays",
+        "freshnessBasis",
+        "expectedDataAsOf",
+        "sourceFreshnessPassed",
+        "degradedReasons"
+      ],
       "properties": {
         "state": {"enum": ["ok", "degraded", "stale", "unavailable"]},
         "label": {
@@ -38,6 +47,11 @@
         },
         "cadence": {"const": "weekdays-after-20:30-KST"},
         "expectedFreshnessDays": {"type": "integer", "minimum": 0, "maximum": 30},
+        "freshnessBasis": {
+          "enum": ["official_krx_latest_completed_session", "source_alignment_only"]
+        },
+        "expectedDataAsOf": {"type": ["string", "null"], "format": "date"},
+        "sourceFreshnessPassed": {"type": "boolean"},
         "degradedReasons": {
           "type": "array",
           "items": {"type": "string", "minLength": 1},

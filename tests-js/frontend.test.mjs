@@ -183,6 +183,39 @@ test('frontend rejects mismatched methodology and data dates instead of renderin
   assert.match(app,/!models\.scaled \|\| !models\.raw/);
 });
 
+test('frontend freshness precedence executes server flags and the automation watchdog',async()=>{
+  const app=await read('assets/app.js');
+  const status=app.slice(app.indexOf('function effectiveStatus'),app.indexOf('function entity'));
+  const effectiveStatus=Function(`${status}; return effectiveStatus;`)();
+  const recentSuccess=new Date(Date.now()-86_400_000).toISOString();
+  const oldSuccess=new Date(Date.now()-5*86_400_000).toISOString();
+  const base={
+    dataAsOf:'2020-01-02',
+    status:{state:'degraded',expectedFreshnessDays:3},
+    automation:{lastSuccessAt:recentSuccess}
+  };
+
+  assert.equal(effectiveStatus(base),'degraded','lastSuccessAt must protect a legacy payload from a calendar-holiday false stale');
+  assert.equal(effectiveStatus({...base,automation:{lastSuccessAt:oldSuccess}}),'stale','stopped automation must become stale even when data and expected dates were once equal');
+  assert.equal(effectiveStatus({...base,status:{...base.status,freshnessBasis:'official_krx_latest_completed_session',expectedDataAsOf:'2020-01-02',sourceFreshnessPassed:false}}),'stale');
+  assert.equal(effectiveStatus({...base,status:{...base.status,freshnessBasis:'official_krx_latest_completed_session',expectedDataAsOf:'2020-01-03',sourceFreshnessPassed:true}}),'stale');
+  assert.equal(effectiveStatus({...base,status:{...base.status,freshnessBasis:'source_alignment_only',expectedDataAsOf:null,sourceFreshnessPassed:false}}),'degraded');
+  assert.equal(effectiveStatus({...base,status:{...base.status,state:'unavailable',expectedDataAsOf:'2020-01-03',sourceFreshnessPassed:false}}),'unavailable');
+});
+
+test('frontend displays the official expected session when it differs',async()=>{
+  const app=await read('assets/app.js');
+  assert.match(app,/공식 기대일/);
+  assert.match(app,/공식 최신 완료 세션/);
+  assert.match(app,/자동 갱신 마지막 성공/);
+});
+
+test('frontend explains split KRX credential failures without exposing values',async()=>{
+  const app=await read('assets/app.js');
+  assert.match(app,/krx_open_api_key_missing: "KRX Open API 키 미설정"/);
+  assert.match(app,/krx_login_credentials_missing: "KRX 로그인 인증정보 미설정"/);
+});
+
 test('MU Hynix relative spread keeps its published index-point unit',async()=>{
   const app=await read('assets/app.js');
   assert.match(app,/상대 스프레드 \(지수포인트\)/);

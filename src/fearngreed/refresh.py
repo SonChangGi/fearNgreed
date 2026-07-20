@@ -87,9 +87,10 @@ class IncrementalSeed:
 class RefreshStageError(RuntimeError):
     """A public-safe pipeline failure code with no provider response attached."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, expected_as_of: date | None = None):
         super().__init__(code)
         self.code = code
+        self.expected_as_of = expected_as_of
 
 
 def _safe_stage_code(prefix: str, error: Exception) -> str:
@@ -105,6 +106,39 @@ def _safe_stage_code(prefix: str, error: Exception) -> str:
 
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _parse_public_date(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _published_summary_data_as_of(root: Path) -> date | None:
+    summary_path = root / "data" / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(summary, dict):
+        return None
+    return _parse_public_date(summary.get("dataAsOf"))
+
+
+def _reject_public_date_regression(
+    *,
+    published: date | None,
+    candidate: date,
+    code: str,
+    expected_as_of: date | None = None,
+) -> None:
+    if published is not None and candidate < published:
+        raise RefreshStageError(code, expected_as_of=expected_as_of)
 
 
 def probe(day: date) -> int:
@@ -139,13 +173,22 @@ def refresh(
     backfill_start_date: date | None,
     dry_run: bool,
 ) -> dict[str, object]:
+    _require_refresh_credentials()
     root = repository_root()
+    published_data_as_of = _published_summary_data_as_of(root)
+    if not dry_run:
+        _reject_public_date_regression(
+            published=published_data_as_of,
+            candidate=end,
+            code="refresh_end_before_published_data",
+        )
     seed = None if backfill_start_date else _load_incremental_seed(root, end)
     start = backfill_start_date or (seed.mutable_start if seed else date(2010, 1, 4))
     generated_at = datetime.now(UTC)
     degraded: list[str] = []
     core_source = "krx_open_api"
     open_client: KRXOpenAPIClient | None = None
+    expected_as_of: date | None = None
     recent_open_etfs: dict[str, pd.DataFrame] = {}
 
     try:
@@ -154,8 +197,13 @@ def refresh(
             cache_revalidate_after=max(start, end - timedelta(days=14)),
         )
         latest_open = _latest_open_row(open_client, end)
-        if latest_open is None:
-            raise ProviderError("KRX Open API returned no recent KOSPI row")
+    except ProviderError as error:
+        raise RefreshStageError(_open_api_reason(error)) from None
+    if latest_open is None:
+        raise RefreshStageError("krx_official_latest_session_unavailable")
+    expected_as_of = latest_open.date
+
+    try:
         recent_kospi = _fetch_open_kospi(open_client, start, end)
         recent_open_etfs = _fetch_open_etfs(
             open_client,
@@ -184,7 +232,13 @@ def refresh(
     else:
         krx_stocks = _fetch_authenticated_stocks(stock_crosscheck_start, end, degraded)
 
-    recent_flow = fetch_market_participant_flows(start, end)
+    try:
+        recent_flow = fetch_market_participant_flows(start, end)
+    except ProviderError as error:
+        raise RefreshStageError(
+            _public_failure_reason(str(error)),
+            expected_as_of=expected_as_of,
+        ) from None
     adjusted_fetch_start = start - timedelta(days=ADJUSTED_ANCHOR_LOOKBACK_DAYS) if seed else start
     recent_adjusted = _fetch_adjusted_partition(
         CORE_YAHOO_TICKERS,
@@ -237,6 +291,7 @@ def refresh(
                 krx_stocks=krx_stocks,
                 kospi_secondary_history_independent=seed is None,
                 prior_etf_reconciliation=seed.etf_reconciliation if seed else {},
+                expected_as_of=expected_as_of,
             )
         )
     except Exception as error:
@@ -245,25 +300,51 @@ def refresh(
             if str(error).startswith("core input quality failed:")
             else _safe_stage_code("refresh_build", error)
         )
-        raise RefreshStageError(code) from None
+        raise RefreshStageError(code, expected_as_of=expected_as_of) from None
     try:
         if seed and seed.methodology_version == outputs.history.get("methodologyVersion"):
             _preserve_frozen_history(seed, outputs)
         sizes = output_size_report(outputs)
-    except RefreshStageError:
-        raise
+    except RefreshStageError as error:
+        raise RefreshStageError(
+            error.code,
+            expected_as_of=error.expected_as_of or expected_as_of,
+        ) from None
     except Exception as error:
-        raise RefreshStageError(_safe_stage_code("refresh_artifact", error)) from None
+        raise RefreshStageError(
+            _safe_stage_code("refresh_artifact", error),
+            expected_as_of=expected_as_of,
+        ) from None
     oversized = [name for name, size in sizes.items() if size > PUBLIC_LIMITS[name]]
     if oversized:
-        raise RefreshStageError(f"refresh_artifact_size_limit_{'_'.join(oversized)}")
+        raise RefreshStageError(
+            f"refresh_artifact_size_limit_{'_'.join(oversized)}",
+            expected_as_of=expected_as_of,
+        )
+    output_data_as_of = _parse_public_date(outputs.summary.get("dataAsOf"))
+    if output_data_as_of is None:
+        raise RefreshStageError(
+            "refresh_output_data_as_of_invalid",
+            expected_as_of=expected_as_of,
+        )
+    if not dry_run:
+        _reject_public_date_regression(
+            published=published_data_as_of,
+            candidate=output_data_as_of,
+            code="refresh_data_as_of_regression",
+            expected_as_of=expected_as_of,
+        )
     no_op = bool(seed and _is_unchanged(seed, outputs))
-    if not dry_run and not no_op:
-        write_outputs_atomic(outputs, root / "data")
+    if not dry_run:
+        if no_op:
+            _write_successful_noop_status(root, outputs)
+        else:
+            write_outputs_atomic(outputs, root / "data")
     return {
         "ok": True,
         "dryRun": dry_run,
         "dataAsOf": outputs.summary["dataAsOf"],
+        "expectedDataAsOf": expected_as_of.isoformat(),
         "status": outputs.summary["status"]["state"],
         "sourceMode": core_source,
         "sizes": sizes,
@@ -497,6 +578,21 @@ def _is_unchanged(seed: IncrementalSeed, outputs: PipelineOutputs) -> bool:
         outputs.strategy_comparison,
     )
     return current_signature == seed.existing_signature
+
+
+def _write_successful_noop_status(root: Path, outputs: PipelineOutputs) -> None:
+    """Record a successful provider check without rewriting unchanged research payloads."""
+    data_dir = root / "data"
+    summary_path = data_dir / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        summary = outputs.summary
+    if not isinstance(summary, dict):
+        summary = outputs.summary
+    summary["automation"] = outputs.summary["automation"]
+    _write_json_atomic(summary_path, summary)
+    _write_json_atomic(data_dir / "automation-status.json", outputs.automation_status)
 
 
 def _preserve_frozen_history(seed: IncrementalSeed, outputs: PipelineOutputs) -> None:
@@ -763,6 +859,8 @@ def _fetch_adjusted_partition(
 
 def _open_api_reason(error: ProviderError) -> str:
     text = str(error)
+    if "KRX_API_KEY" in text and "not configured" in text.lower():
+        return "krx_open_api_key_missing"
     if "HTTP 401" in text:
         return "krx_open_api_http_401"
     if "HTTP 403" in text:
@@ -770,7 +868,15 @@ def _open_api_reason(error: ProviderError) -> str:
     return "krx_open_api_unavailable"
 
 
-def mark_failed(reason: str) -> None:
+def _require_refresh_credentials() -> None:
+    """Fail before provider access when the scheduled refresh is misconfigured."""
+    if not os.getenv("KRX_API_KEY"):
+        raise RefreshStageError("krx_open_api_key_missing")
+    if not os.getenv("KRX_ID") or not os.getenv("KRX_PW"):
+        raise RefreshStageError("krx_login_credentials_missing")
+
+
+def mark_failed(reason: str, expected_as_of: date | None = None) -> None:
     root = repository_root()
     data_dir = root / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -785,31 +891,79 @@ def mark_failed(reason: str) -> None:
                 previous_automation = loaded
         except (OSError, ValueError):
             pass
+
+    summary_path = data_dir / "summary.json"
+    summary: dict[str, object] | None = None
+    if summary_path.exists():
+        try:
+            loaded = json.loads(summary_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                summary = loaded
+        except (OSError, ValueError):
+            pass
+
+    current_data_as_of = _parse_public_date(summary.get("dataAsOf")) if summary else None
+    if current_data_as_of is None:
+        current_data_as_of = _parse_public_date(previous_automation.get("dataAsOf"))
+    freshness_lag_detected = bool(
+        expected_as_of is not None
+        and current_data_as_of is not None
+        and expected_as_of > current_data_as_of
+    )
+    failure_state = "stale" if freshness_lag_detected else "degraded"
     previous_reasons = previous_automation.get("degradedReasons", [])
     if not isinstance(previous_reasons, list):
         previous_reasons = []
     automation = {
         "schemaVersion": 1,
-        "state": "degraded",
+        "state": failure_state,
         "lastAttemptAt": attempted_at,
         "lastSuccessAt": previous_automation.get("lastSuccessAt"),
         "dataAsOf": previous_automation.get("dataAsOf"),
         "degradedReasons": list(dict.fromkeys([*previous_reasons, reason])),
         "sourceMode": previous_automation.get("sourceMode", "unavailable"),
     }
-    summary_path = data_dir / "summary.json"
-    if summary_path.exists():
+    freshness_fields = ("freshnessBasis", "expectedDataAsOf", "sourceFreshnessPassed")
+    for field_name in freshness_fields:
+        if field_name in previous_automation:
+            automation[field_name] = previous_automation[field_name]
+    if freshness_lag_detected:
+        expected_value = expected_as_of.isoformat()
+        automation.update(
+            {
+                "freshnessBasis": "official_krx_latest_completed_session",
+                "expectedDataAsOf": expected_value,
+                "sourceFreshnessPassed": False,
+            }
+        )
+
+    if summary is not None:
         try:
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            previous = summary.get("status", {}).get("degradedReasons", [])
+            status = summary.get("status")
+            if not isinstance(status, dict):
+                status = {}
+            summary["status"] = status
+            previous = status.get("degradedReasons", [])
             if not isinstance(previous, list):
                 previous = []
-            summary.setdefault("status", {})["state"] = "degraded"
-            summary["status"]["label"] = "데이터 저하"
-            summary["status"]["degradedReasons"] = list(dict.fromkeys([*previous, reason]))
-            summary.setdefault("automation", {})["lastAttemptAt"] = attempted_at
-            summary["automation"]["state"] = "degraded"
-            automation["lastSuccessAt"] = summary.get("automation", {}).get(
+            status["state"] = failure_state
+            status["label"] = "데이터 지연" if freshness_lag_detected else "데이터 저하"
+            status["degradedReasons"] = list(dict.fromkeys([*previous, reason]))
+            if freshness_lag_detected:
+                status.update(
+                    {
+                        "freshnessBasis": "official_krx_latest_completed_session",
+                        "expectedDataAsOf": expected_as_of.isoformat(),
+                        "sourceFreshnessPassed": False,
+                    }
+                )
+            summary_automation = summary.get("automation")
+            if not isinstance(summary_automation, dict):
+                summary_automation = {}
+            summary["automation"] = summary_automation
+            summary_automation["lastAttemptAt"] = attempted_at
+            summary_automation["state"] = failure_state
+            automation["lastSuccessAt"] = summary_automation.get(
                 "lastSuccessAt", automation["lastSuccessAt"]
             )
             automation["dataAsOf"] = summary.get("dataAsOf", automation["dataAsOf"])
@@ -817,7 +971,7 @@ def mark_failed(reason: str) -> None:
             if isinstance(entities, list) and entities and isinstance(entities[0], dict):
                 automation["sourceMode"] = entities[0].get("sourceMode", automation["sourceMode"])
             _write_json_atomic(summary_path, summary)
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError):
             pass
     _write_json_atomic(automation_path, automation)
 
@@ -829,6 +983,10 @@ def _public_failure_reason(reason: str) -> str:
     lowered = value.lower()
     if "another refresh" in lowered:
         return "refresh_already_running"
+    if "krx_api_key" in lowered and "not configured" in lowered:
+        return "krx_open_api_key_missing"
+    if "krx login credentials" in lowered and "not configured" in lowered:
+        return "krx_login_credentials_missing"
     if "credential" in lowered or "not configured" in lowered:
         return "krx_credentials_missing"
     if "krx open api" in lowered:
@@ -903,7 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
     except RefreshStageError as error:
         reason = error.code
         if not args.dry_run:
-            mark_failed(reason)
+            mark_failed(reason, error.expected_as_of)
         print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False))
         return 1
     except ProviderError as error:

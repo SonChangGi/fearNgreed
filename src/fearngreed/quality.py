@@ -28,6 +28,7 @@ def validate_core_inputs(
     *,
     expected_as_of: date | str | pd.Timestamp | None = None,
     max_freshness_days: int = 3,
+    require_expected_session: bool = False,
 ) -> QualityReport:
     report = QualityReport()
     report.metrics = {
@@ -110,7 +111,7 @@ def validate_core_inputs(
             if freshness_lag < 0:
                 report.add("source_date_after_expected", critical=True)
             elif freshness_lag > max_freshness_days:
-                report.add("stale_core_sources")
+                report.add("stale_core_sources", critical=require_expected_session)
     if len(common) < 200:
         report.add("insufficient_common_history", critical=True)
     elif report.metrics["dateOverlapRatio"] < 0.9:

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from datetime import date
 
 import pandas as pd
 import pytest
 
+import fearngreed.refresh as refresh_module
 from fearngreed.pipeline import PipelineOutputs
 from fearngreed.providers.common import ProviderError
 from fearngreed.refresh import (
@@ -22,11 +24,212 @@ from fearngreed.refresh import (
     _frames_from_history,
     _load_incremental_seed,
     _merge_frames,
+    _open_api_reason,
     _preserve_frozen_history,
+    _public_failure_reason,
+    _reject_public_date_regression,
     _replace_history_rows,
+    _require_refresh_credentials,
+    _write_successful_noop_status,
 )
 
 ETF_TICKERS = tuple(ETF_LISTING_DATES)
+
+
+@pytest.mark.parametrize(
+    ("provider_message", "expected"),
+    [
+        ("KRX_API_KEY is not configured", "krx_open_api_key_missing"),
+        ("KRX login credentials are not configured", "krx_login_credentials_missing"),
+    ],
+)
+def test_public_failure_reason_distinguishes_missing_krx_credentials(
+    provider_message: str, expected: str
+) -> None:
+    assert _public_failure_reason(provider_message) == expected
+
+
+def test_open_api_missing_key_reason_remains_visible_when_pykrx_fallback_is_available() -> None:
+    assert (
+        _open_api_reason(ProviderError("KRX_API_KEY is not configured"))
+        == "krx_open_api_key_missing"
+    )
+
+
+def test_public_failure_reason_still_redacts_unrecognized_credential_errors() -> None:
+    assert (
+        _public_failure_reason("credential request failed with private provider detail")
+        == "krx_credentials_missing"
+    )
+
+
+def test_refresh_credentials_fail_closed_before_provider_access(monkeypatch) -> None:
+    monkeypatch.delenv("KRX_API_KEY", raising=False)
+    monkeypatch.delenv("KRX_ID", raising=False)
+    monkeypatch.delenv("KRX_PW", raising=False)
+    with pytest.raises(RefreshStageError, match="krx_open_api_key_missing"):
+        _require_refresh_credentials()
+
+    monkeypatch.setenv("KRX_API_KEY", "api-key-canary")
+    with pytest.raises(RefreshStageError, match="krx_login_credentials_missing"):
+        _require_refresh_credentials()
+
+    monkeypatch.setenv("KRX_ID", "login-id-canary")
+    monkeypatch.setenv("KRX_PW", "password-canary")
+    _require_refresh_credentials()
+
+
+def _configure_fake_refresh_credentials(monkeypatch) -> None:
+    monkeypatch.setenv("KRX_API_KEY", "api-key-canary")
+    monkeypatch.setenv("KRX_ID", "login-id-canary")
+    monkeypatch.setenv("KRX_PW", "password-canary")
+
+
+def test_refresh_fails_closed_when_official_latest_session_cannot_be_established(
+    tmp_path, monkeypatch
+) -> None:
+    _configure_fake_refresh_credentials(monkeypatch)
+    monkeypatch.setattr(refresh_module, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        refresh_module.KRXOpenAPIClient,
+        "from_env",
+        staticmethod(lambda **_kwargs: object()),
+    )
+    monkeypatch.setattr(refresh_module, "_latest_open_row", lambda _client, _end: None)
+    fallback_called = False
+
+    def fake_fallback(_start, _end):
+        nonlocal fallback_called
+        fallback_called = True
+        return pd.DataFrame()
+
+    monkeypatch.setattr(refresh_module, "fetch_kospi_index", fake_fallback)
+
+    with pytest.raises(
+        RefreshStageError, match="krx_official_latest_session_unavailable"
+    ) as captured:
+        refresh_module.refresh(
+            end=date(2026, 7, 16),
+            backfill_start_date=None,
+            dry_run=True,
+        )
+
+    assert captured.value.expected_as_of is None
+    assert fallback_called is False
+
+
+@pytest.mark.parametrize("backfill_start", [None, date(2010, 1, 4)])
+def test_refresh_rejects_backdated_public_end_before_any_provider_call(
+    tmp_path, monkeypatch, backfill_start
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    original = b'{"dataAsOf":"2026-07-16","status":{"state":"ok"}}\n'
+    (data_dir / "summary.json").write_bytes(original)
+    _configure_fake_refresh_credentials(monkeypatch)
+    monkeypatch.setattr(refresh_module, "repository_root", lambda: tmp_path)
+
+    def unexpected_provider_call(**_kwargs):
+        raise AssertionError("provider must not run for a backdated public refresh")
+
+    monkeypatch.setattr(
+        refresh_module.KRXOpenAPIClient,
+        "from_env",
+        staticmethod(unexpected_provider_call),
+    )
+
+    with pytest.raises(RefreshStageError, match="refresh_end_before_published_data"):
+        refresh_module.refresh(
+            end=date(2026, 7, 15),
+            backfill_start_date=backfill_start,
+            dry_run=False,
+        )
+
+    assert (data_dir / "summary.json").read_bytes() == original
+
+
+def test_output_date_regression_error_carries_official_expected_session() -> None:
+    expected = date(2026, 7, 17)
+
+    with pytest.raises(RefreshStageError, match="refresh_data_as_of_regression") as captured:
+        _reject_public_date_regression(
+            published=date(2026, 7, 16),
+            candidate=date(2026, 7, 15),
+            code="refresh_data_as_of_regression",
+            expected_as_of=expected,
+        )
+
+    assert captured.value.expected_as_of == expected
+
+
+def test_main_forwards_official_expected_session_to_failure_status(monkeypatch) -> None:
+    expected = date(2026, 7, 17)
+    recorded: list[tuple[str, date | None]] = []
+    monkeypatch.setattr(refresh_module, "refresh_lock", lambda: nullcontext())
+
+    def fail_refresh(**_kwargs):
+        raise RefreshStageError(
+            "refresh_core_input_quality_failed",
+            expected_as_of=expected,
+        )
+
+    monkeypatch.setattr(refresh_module, "refresh", fail_refresh)
+    monkeypatch.setattr(
+        refresh_module,
+        "mark_failed",
+        lambda reason, expected_as_of=None: recorded.append((reason, expected_as_of)),
+    )
+
+    assert refresh_module.main(["--date", "2026-07-17"]) == 1
+    assert recorded == [("refresh_core_input_quality_failed", expected)]
+
+
+def test_successful_noop_updates_only_operational_timestamps(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    summary = {
+        "generatedAt": "2026-07-16T12:00:00Z",
+        "dataAsOf": "2026-07-16",
+        "status": {"state": "ok"},
+        "automation": {
+            "lastAttemptAt": "2026-07-16T12:00:00Z",
+            "lastSuccessAt": "2026-07-16T12:00:00Z",
+            "state": "ok",
+        },
+    }
+    (data_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    outputs = PipelineOutputs(
+        summary={
+            **summary,
+            "generatedAt": "2026-07-20T12:00:00Z",
+            "automation": {
+                "lastAttemptAt": "2026-07-20T12:00:00Z",
+                "lastSuccessAt": "2026-07-20T12:00:00Z",
+                "state": "ok",
+            },
+        },
+        dashboard={"unchanged": True},
+        history={"unchanged": True},
+        automation_status={
+            "schemaVersion": 1,
+            "state": "ok",
+            "lastAttemptAt": "2026-07-20T12:00:00Z",
+            "lastSuccessAt": "2026-07-20T12:00:00Z",
+            "dataAsOf": "2026-07-16",
+            "degradedReasons": [],
+            "sourceMode": "krx_open_api",
+        },
+        strategy_comparison={"unchanged": True},
+    )
+
+    _write_successful_noop_status(tmp_path, outputs)
+
+    updated_summary = json.loads((data_dir / "summary.json").read_text(encoding="utf-8"))
+    updated_status = json.loads((data_dir / "automation-status.json").read_text(encoding="utf-8"))
+    assert updated_summary["generatedAt"] == "2026-07-16T12:00:00Z"
+    assert updated_summary["automation"]["lastSuccessAt"] == "2026-07-20T12:00:00Z"
+    assert updated_status["lastSuccessAt"] == "2026-07-20T12:00:00Z"
+    assert not (data_dir / "dashboard.json").exists()
 
 
 def _etf_history_prices(value: float) -> dict[str, float]:

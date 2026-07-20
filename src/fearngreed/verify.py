@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,12 @@ HISTORY_NUMERIC_PRECISION_DIGITS = 8
 ETF_PRICE_TICKERS = ("226490", "069500", "114800", "122630", "252670")
 
 
-def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[str, Any]:
+def verify_local(
+    root: Path,
+    *,
+    minimum_headroom_ratio: float = 0.05,
+    expected_data_as_of: date | str | None = None,
+) -> dict[str, Any]:
     payloads: dict[str, dict[str, Any]] = {}
     hashes: dict[str, str] = {}
     sizes: dict[str, int] = {}
@@ -82,6 +88,8 @@ def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[st
     }
     if len(data_dates) != 1 or None in data_dates:
         raise ValueError("public dataAsOf values do not match")
+    data_as_of = next(iter(data_dates))
+    _verify_summary_freshness(summary, data_as_of, expected_data_as_of)
     if automation.get("state") != summary.get("status", {}).get("state"):
         raise ValueError("automation and summary operational states do not match")
     _verify_history(history)
@@ -96,7 +104,7 @@ def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[st
     return {
         "ok": True,
         "methodologyVersion": next(iter(methodology_versions)),
-        "dataAsOf": next(iter(data_dates)),
+        "dataAsOf": data_as_of,
         "operationalState": automation.get("state"),
         "hashes": hashes,
         "sizes": sizes,
@@ -104,8 +112,97 @@ def verify_local(root: Path, *, minimum_headroom_ratio: float = 0.05) -> dict[st
     }
 
 
-def verify_remote(root: Path, base_url: str) -> dict[str, Any]:
-    local = verify_local(root)
+def _verify_summary_freshness(
+    summary: dict[str, Any],
+    data_as_of: Any,
+    expected_data_as_of: date | str | None = None,
+) -> None:
+    """Validate fresh, known-stale, and provider-unconfirmed status shapes."""
+
+    if not isinstance(data_as_of, str):
+        raise ValueError("public dataAsOf is invalid")
+    try:
+        data_date = date.fromisoformat(data_as_of)
+    except ValueError:
+        raise ValueError("public dataAsOf is invalid") from None
+
+    status = summary.get("status")
+    if not isinstance(status, dict):
+        raise ValueError("summary freshness status is missing")
+    state = status.get("state")
+    basis = status.get("freshnessBasis")
+    published_expected = status.get("expectedDataAsOf")
+    freshness_passed = status.get("sourceFreshnessPassed")
+
+    cli_expected = (
+        expected_data_as_of.isoformat()
+        if isinstance(expected_data_as_of, date)
+        else expected_data_as_of
+    )
+    if cli_expected is not None:
+        try:
+            date.fromisoformat(cli_expected)
+        except (TypeError, ValueError):
+            raise ValueError("expected public data date is invalid") from None
+        if not (
+            basis == "official_krx_latest_completed_session"
+            and freshness_passed is True
+            and data_as_of == published_expected == cli_expected
+            and state in {"ok", "degraded"}
+        ):
+            raise ValueError("public freshness does not match the required official KRX session")
+        return
+
+    if basis == "source_alignment_only":
+        if published_expected is not None:
+            raise ValueError("source-alignment summary cannot publish an expected session")
+        if freshness_passed not in {True, False}:
+            raise ValueError("summary sourceFreshnessPassed is invalid")
+        allowed_states = (
+            {"ok", "degraded"}
+            if freshness_passed is True
+            else {
+                "degraded",
+                "unavailable",
+            }
+        )
+        if state not in allowed_states:
+            raise ValueError("source-alignment freshness and operational state disagree")
+        return
+
+    if freshness_passed is True:
+        if basis != "official_krx_latest_completed_session" or published_expected != data_as_of:
+            raise ValueError("fresh summary must match its official expected session")
+        if state not in {"ok", "degraded"}:
+            raise ValueError("fresh summary must publish an available operational state")
+        return
+
+    if freshness_passed is not False:
+        raise ValueError("summary sourceFreshnessPassed is invalid")
+
+    if basis == "official_krx_latest_completed_session":
+        if not isinstance(published_expected, str):
+            raise ValueError("known-stale summary must publish an official expected session")
+        try:
+            expected_date = date.fromisoformat(published_expected)
+        except ValueError:
+            raise ValueError("summary expectedDataAsOf is invalid") from None
+        if expected_date <= data_date:
+            raise ValueError("known-stale expectedDataAsOf must be later than dataAsOf")
+        if state not in {"stale", "unavailable"}:
+            raise ValueError("known-stale summary must publish a stale operational state")
+        return
+
+    raise ValueError("summary freshnessBasis is invalid")
+
+
+def verify_remote(
+    root: Path,
+    base_url: str,
+    *,
+    expected_data_as_of: date | str | None = None,
+) -> dict[str, Any]:
+    local = verify_local(root, expected_data_as_of=expected_data_as_of)
     remote_hashes: dict[str, str] = {}
     normalized = base_url.rstrip("/")
     for relative in PUBLIC_FILES:
@@ -801,12 +898,21 @@ def main() -> int:
         "--base-url", help="Optional deployed Pages root for byte-for-byte readback"
     )
     parser.add_argument("--minimum-headroom-ratio", type=float, default=0.05)
+    parser.add_argument(
+        "--expected-data-as-of",
+        type=date.fromisoformat,
+        help="Require every public artifact to match this official KRX session",
+    )
     args = parser.parse_args()
     root = repository_root()
     receipt = (
-        verify_remote(root, args.base_url)
+        verify_remote(root, args.base_url, expected_data_as_of=args.expected_data_as_of)
         if args.base_url
-        else verify_local(root, minimum_headroom_ratio=args.minimum_headroom_ratio)
+        else verify_local(
+            root,
+            minimum_headroom_ratio=args.minimum_headroom_ratio,
+            expected_data_as_of=args.expected_data_as_of,
+        )
     )
     print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
     return 0

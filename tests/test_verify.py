@@ -14,6 +14,7 @@ from fearngreed.verify import (
     _verify_history_channel_roles,
     _verify_scatter_state_boundaries,
     _verify_strategy_comparison,
+    _verify_summary_freshness,
     verify_local,
 )
 
@@ -59,6 +60,98 @@ def test_verify_local_reports_hashes_and_headroom() -> None:
         "data/automation-status.json",
         "data/strategy-comparison.json",
     }
+
+
+def test_verify_local_can_require_an_exact_official_data_date() -> None:
+    root = Path(__file__).resolve().parents[1]
+    actual = json.loads((root / "data" / "summary.json").read_text(encoding="utf-8"))["dataAsOf"]
+
+    assert (
+        verify_local(root, minimum_headroom_ratio=0, expected_data_as_of=actual)["dataAsOf"]
+        == actual
+    )
+    with pytest.raises(ValueError, match="required official KRX session"):
+        verify_local(root, minimum_headroom_ratio=0, expected_data_as_of="1999-01-04")
+
+
+def _freshness_summary(
+    *,
+    state: str,
+    basis: str,
+    expected: str | None,
+    passed: bool,
+) -> dict:
+    return {
+        "status": {
+            "state": state,
+            "freshnessBasis": basis,
+            "expectedDataAsOf": expected,
+            "sourceFreshnessPassed": passed,
+        }
+    }
+
+
+def test_summary_freshness_verifier_accepts_coherent_success_and_cli_expected_date() -> None:
+    summary = _freshness_summary(
+        state="degraded",
+        basis="official_krx_latest_completed_session",
+        expected="2026-07-20",
+        passed=True,
+    )
+
+    _verify_summary_freshness(summary, "2026-07-20")
+    _verify_summary_freshness(summary, "2026-07-20", "2026-07-20")
+
+    with pytest.raises(ValueError, match="required official KRX session"):
+        _verify_summary_freshness(summary, "2026-07-20", "2026-07-21")
+
+
+def test_summary_freshness_verifier_accepts_only_coherent_known_stale_state() -> None:
+    summary = _freshness_summary(
+        state="stale",
+        basis="official_krx_latest_completed_session",
+        expected="2026-07-20",
+        passed=False,
+    )
+
+    _verify_summary_freshness(summary, "2026-07-16")
+
+    summary["status"]["state"] = "degraded"
+    with pytest.raises(ValueError, match="stale operational state"):
+        _verify_summary_freshness(summary, "2026-07-16")
+    summary["status"]["state"] = "stale"
+    summary["status"]["expectedDataAsOf"] = "2026-07-16"
+    with pytest.raises(ValueError, match="later than dataAsOf"):
+        _verify_summary_freshness(summary, "2026-07-16")
+
+
+def test_summary_freshness_verifier_allows_provider_unconfirmed_degraded_state() -> None:
+    summary = _freshness_summary(
+        state="degraded",
+        basis="source_alignment_only",
+        expected=None,
+        passed=False,
+    )
+
+    _verify_summary_freshness(summary, "2026-07-16")
+
+    summary["status"]["state"] = "ok"
+    with pytest.raises(ValueError, match="operational state disagree"):
+        _verify_summary_freshness(summary, "2026-07-16")
+
+    summary["status"]["sourceFreshnessPassed"] = True
+    _verify_summary_freshness(summary, "2026-07-16")
+
+
+def test_summary_schema_requires_explicit_freshness_contract() -> None:
+    root = Path(__file__).resolve().parents[1]
+    schema = json.loads((root / "schemas" / "summary.schema.json").read_text(encoding="utf-8"))
+
+    assert {
+        "freshnessBasis",
+        "expectedDataAsOf",
+        "sourceFreshnessPassed",
+    }.issubset(schema["properties"]["status"]["required"])
 
 
 def _actual_policy_fixture(

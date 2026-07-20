@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, replace
+from datetime import date
 from typing import Any, Literal
 
 import pandas as pd
@@ -79,9 +80,19 @@ def index_records_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 def build_analysis_frame(
-    kospi: pd.DataFrame, flow: pd.DataFrame
+    kospi: pd.DataFrame,
+    flow: pd.DataFrame,
+    *,
+    expected_as_of: date | str | pd.Timestamp | None = None,
+    require_expected_session: bool = False,
 ) -> tuple[pd.DataFrame, list[FlowSignal], list[FlowSignal], QualityReport]:
-    quality = validate_core_inputs(kospi, flow)
+    quality = validate_core_inputs(
+        kospi,
+        flow,
+        expected_as_of=expected_as_of,
+        max_freshness_days=0 if expected_as_of is not None else 3,
+        require_expected_session=require_expected_session,
+    )
     if quality.state == "unavailable":
         return pd.DataFrame(), [], [], quality
     frame = kospi.join(flow, how="inner").sort_index()

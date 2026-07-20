@@ -119,6 +119,23 @@ def test_core_quality_reports_source_session_and_freshness_checks() -> None:
     assert "stale_core_sources" in report.issues
 
 
+def test_core_quality_can_require_the_exact_official_latest_session() -> None:
+    kospi, flow = _core_frames()
+
+    report = validate_core_inputs(
+        kospi,
+        flow,
+        expected_as_of=kospi.index[-1].date() + timedelta(days=1),
+        max_freshness_days=0,
+        require_expected_session=True,
+    )
+
+    assert report.state == "unavailable"
+    assert report.metrics["sourceFreshnessPassed"] is False
+    assert report.metrics["dataFreshnessLagDays"] == 1
+    assert "stale_core_sources" in report.issues
+
+
 def test_historical_close_crosscheck_validates_multiple_anchors() -> None:
     dates = pd.bdate_range("2026-01-02", periods=20)
     primary = pd.Series(range(100, 120), index=dates, dtype=float)

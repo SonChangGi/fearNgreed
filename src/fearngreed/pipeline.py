@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +85,7 @@ class PipelineInputs:
     krx_stocks: dict[str, pd.DataFrame] = field(default_factory=dict)
     kospi_secondary_history_independent: bool = True
     prior_etf_reconciliation: dict[str, dict[str, Any]] = field(default_factory=dict)
+    expected_as_of: date | str | pd.Timestamp | None = None
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,12 @@ class PipelineOutputs:
 
 
 def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
-    frame, scaled_signals, raw_signals, quality = build_analysis_frame(inputs.kospi, inputs.flow)
+    frame, scaled_signals, raw_signals, quality = build_analysis_frame(
+        inputs.kospi,
+        inputs.flow,
+        expected_as_of=inputs.expected_as_of,
+        require_expected_session=inputs.expected_as_of is not None,
+    )
     if frame.empty or quality.state == "unavailable":
         raise ValueError(f"core input quality failed: {','.join(quality.issues)}")
     robust_signals = channel_signals(frame, INDIVIDUAL_SCALED, fit_method="huber")
@@ -391,6 +397,13 @@ def _summary(
             "label": _operational_label(status_state),
             "cadence": "weekdays-after-20:30-KST",
             "expectedFreshnessDays": 3,
+            "freshnessBasis": (
+                "official_krx_latest_completed_session"
+                if quality_metrics.get("expectedAsOf")
+                else "source_alignment_only"
+            ),
+            "expectedDataAsOf": quality_metrics.get("expectedAsOf"),
+            "sourceFreshnessPassed": bool(quality_metrics.get("sourceFreshnessPassed", False)),
             "degradedReasons": degraded,
         },
         "coverage": {

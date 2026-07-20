@@ -42,7 +42,7 @@ python3 -m http.server 8000
 
 ## 자동화
 
-평일 20:30 KST에 갱신한다. 정상 이력이 있으면 최신 5거래일의 KRX 캐시를 다시 검증하고 그 이전 파생 이력은 고정한다. 수정 불가 구간과 겹치는 Yahoo 조정가격 앵커를 별도로 대조하고, 과거 가격 스케일 또는 공개 파생 행의 어느 값이라도 달라지면 새·옛 이력을 섞지 않고 `requires_backfill`로 실패한다. 공급자별 최신일이 다르면 더 늦은 행을 억지로 결합하지 않고 최신 공통 거래일까지 계산하며 `degraded` 사유를 남긴다. 같은 기준일과 파생값이면 `noOp`으로 끝나며, 더 오래된 구간을 고치려면 경계를 명시한 수동 백필이 필요하다. 공급자 실패 시 마지막 정상 시장 산출물을 보존하고 `summary`·`automation-status`만 원자적으로 degraded로 발행한 뒤 Actions 실행은 실패로 표시한다. GitHub Actions에는 사용자가 직접 `KRX_API_KEY`, `KRX_ID`, `KRX_PW` repository secrets를 등록해야 한다. 로컬 Keychain 값은 GitHub로 자동 복사하지 않는다.
+평일 20:30 KST에 갱신한다. 정상 이력이 있으면 최신 5거래일의 KRX 캐시를 다시 검증하고 그 이전 파생 이력은 고정한다. 수정 불가 구간과 겹치는 Yahoo 조정가격 앵커를 별도로 대조하고, 과거 가격 스케일 또는 공개 파생 행의 어느 값이라도 달라지면 새·옛 이력을 섞지 않고 `requires_backfill`로 실패한다. KRX Open API가 공식 최신 완료 세션을 확정하고 KOSPI·개인수급의 최신 공통일이 그 세션과 정확히 같을 때만 신호·사건·백테스트를 갱신한다. 공식일을 확인할 수 없거나 공개 기준일보다 과거로 후퇴하는 실행은 쓰기 전에 중단한다. 같은 기준일과 파생값이면 `noOp`으로 시장 산출물을 유지하되 `summary`·`automation-status`의 정상 실행 시각은 갱신한다. 공급자 실패 시 마지막 정상 시장 산출물을 보존하고, 공식 기대일을 아는 경우 `stale`, 모르는 경우 `degraded` 상태만 원자적으로 발행한다. Actions는 수집 receipt의 공식 기대일로 로컬·배포 JSON을 다시 검증한다. GitHub Actions에는 사용자가 직접 `KRX_API_KEY`, `KRX_ID`, `KRX_PW` repository 또는 `github-pages` environment secrets를 등록해야 한다. 로컬 Keychain 값은 GitHub로 자동 복사하지 않는다.
 
 ```bash
 with-krx-keychain uv run --frozen python -m fearngreed.refresh --backfill-start-date 2010-01-04

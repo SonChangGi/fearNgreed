@@ -34,6 +34,12 @@ const qualityLabels = {
 const DEGRADED_REASON_LABELS = Object.freeze({
   core_latest_common_date_alignment: "공급자 최신일 차이로 공통 거래일까지 계산",
   krx_credentials_missing: "KRX 인증정보 미설정",
+  krx_open_api_key_missing: "KRX Open API 키 미설정",
+  krx_login_credentials_missing: "KRX 로그인 인증정보 미설정",
+  krx_official_latest_session_unavailable: "KRX 공식 최신 거래일 확인 실패",
+  refresh_core_input_quality_failed: "최신 KOSPI·개인수급 기준일 미일치",
+  refresh_end_before_published_data: "공개 기준일보다 과거인 갱신 요청 차단",
+  refresh_data_as_of_regression: "공개 데이터 기준일 후퇴 차단",
   krx_open_api_unavailable: "KRX Open API 일시 이용 불가",
   authenticated_pykrx_unavailable: "인증 KRX 수급 경로 일시 이용 불가",
   yfinance_unavailable: "조정가격 연구 소스 일시 이용 불가",
@@ -215,8 +221,16 @@ function stateFromValue(model) {
 }
 
 function effectiveStatus(summary) {
-  const dataDate = new Date(`${summary.dataAsOf}T00:00:00Z`);
-  const ageDays = Math.floor((Date.now() - dataDate.getTime()) / 86_400_000);
+  const freshnessPassed = summary?.status?.sourceFreshnessPassed;
+  const expectedDataAsOf = summary?.status?.expectedDataAsOf;
+  const freshnessBasis = summary?.status?.freshnessBasis;
+  if (summary?.status?.state === "unavailable") return "unavailable";
+  if (freshnessBasis === "official_krx_latest_completed_session" && freshnessPassed === false) return "stale";
+  if (expectedDataAsOf && summary.dataAsOf !== expectedDataAsOf) return "stale";
+  const lastSuccessAt = Date.parse(summary?.automation?.lastSuccessAt || "");
+  const fallbackDataDate = Date.parse(`${summary.dataAsOf}T00:00:00Z`);
+  const freshnessTimestamp = Number.isFinite(lastSuccessAt) ? lastSuccessAt : fallbackDataDate;
+  const ageDays = Math.floor((Date.now() - freshnessTimestamp) / 86_400_000);
   if (Number.isFinite(ageDays) && ageDays > summary.status.expectedFreshnessDays) return "stale";
   return summary.status.state;
 }
@@ -475,9 +489,19 @@ function renderHeader(scenarioBundle = selectedScenarioBundle()) {
   $("#state").textContent = labels[state] || state;
   $("#signal-badge").textContent = model?.tradeEligible === false && state !== "unavailable" ? `${labels[state] || state} · 진입 차단` : labels[state] || state;
   $("#signal-badge").className = `state-badge ${state}${model?.tradeEligible === false ? " blocked" : ""}`;
-  $("#asof").textContent = `평가 종료일 ${fmt.date(base.date || summary.dataAsOf)} · 데이터 최신일 ${fmt.date(summary.dataAsOf)}`;
+  const expectedDataAsOf = summary.status.expectedDataAsOf;
+  const freshnessMismatch = Boolean(expectedDataAsOf && expectedDataAsOf !== summary.dataAsOf);
+  $("#asof").textContent = `평가 종료일 ${fmt.date(base.date || summary.dataAsOf)} · 데이터 최신일 ${fmt.date(summary.dataAsOf)}${freshnessMismatch ? ` · 공식 기대일 ${fmt.date(expectedDataAsOf)}` : ""}`;
   const reasons = summary.status.degradedReasons || [];
-  $("#status-note").textContent = reasons.length ? `운영 주의: ${reasons.map(degradedReasonLabel).join(" · ")}. 표시 기준일과 공급자 상태를 함께 확인하세요.` : "핵심 공급자와 계산 품질 게이트 통과";
+  const freshnessNote = freshnessMismatch
+    ? `공식 최신 완료 세션 ${fmt.date(expectedDataAsOf)} · 현재 데이터 ${fmt.date(summary.dataAsOf)}`
+    : summary.status.sourceFreshnessPassed === false
+      ? "KRX 공식 최신 완료 세션 확인 대기"
+      : status === "stale"
+        ? `자동 갱신 마지막 성공 ${summary.automation?.lastSuccessAt ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(summary.automation.lastSuccessAt)) : fmt.date(summary.dataAsOf)}`
+        : "";
+  const reasonNote = reasons.length ? `운영 주의: ${reasons.map(degradedReasonLabel).join(" · ")}` : "";
+  $("#status-note").textContent = [freshnessNote, reasonNote].filter(Boolean).join(". ") || "핵심 공급자와 계산 품질 게이트 통과";
 
   const percentile = model?.percentile ?? model?.sentimentPercentile;
   const inputValue = store.model === "raw" ? `${fmt.score(base.rawFlowTrillion, 3)}조원` : fmt.pct(base.flowShare, 3);
