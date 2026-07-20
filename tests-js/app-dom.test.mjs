@@ -6,6 +6,44 @@ import { bootDashboard, click, fireInput, signature, submit, waitFor } from "./h
 const SIGNAL_OUTPUTS = ["#state", "#signal-bridge", "#scatter-chart", "#residual-chart", "#event-table tbody"];
 const STRATEGY_OUTPUTS = ["#history-chart", "#backtest-cards", "#backtest-table tbody", "#trade-table tbody"];
 
+function kstDate(offsetDays = 0) {
+  return new Date(Date.now() + 9 * 60 * 60 * 1000 + offsetDays * 86_400_000).toISOString().slice(0, 10);
+}
+
+function liveSignalFixture(overrides = {}) {
+  const signalDate = overrides.signalDate || kstDate();
+  return {
+    schemaVersion: 1,
+    contract: "fearngreed-live-signal",
+    projectId: "fearngreed",
+    methodologyVersion: "fear-flow-v5",
+    signalDate,
+    phase: "provisional",
+    generatedAt: `${signalDate}T06:48:00Z`,
+    sourceCutoff: "regular-session-close-provisional",
+    historyDataAsOf: "2026-07-16",
+    expectedConfirmationAt: `${signalDate}T09:15:00Z`,
+    actionWindow: {
+      mode: "after-hours-close",
+      opensAt: `${signalDate}T06:40:00Z`,
+      closesAt: `${signalDate}T07:00:00Z`,
+      state: "open",
+      executionGuaranteed: false
+    },
+    quality: { state: "ok", tradeEligible: true, reasons: [] },
+    inputRow: {
+      date: signalDate,
+      kospiClose: 6780,
+      return1d: -0.006,
+      flowShare: -0.45,
+      rawFlowTrillion: 8,
+      disparity50: 84,
+      mdd252: -0.26
+    },
+    ...overrides
+  };
+}
+
 function failNextInnerHtmlWrite(target) {
   let prototype = target;
   let descriptor;
@@ -225,4 +263,42 @@ test("segmented controls, sharing, and reset keep one applied scenario", { concu
   assertApplied('[data-backtest-cost="10"]', "cost", "10", "backtestCost");
   assertApplied('[data-backtest-period="common"]', "period", "common", "backtestPeriod");
   assert.match(document.querySelector("#view-action-status").textContent, /기본값으로 복원/);
+});
+
+test("a newer provisional signal is input-linked but never extends confirmed charts or backtests", { concurrency: false, timeout: 120_000 }, async () => {
+  const window = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture() } });
+  const { document } = window;
+  const strip = document.querySelector("#live-signal-strip");
+  assert.equal(strip.hidden, false);
+  assert.equal(strip.dataset.phase, "provisional");
+  assert.match(document.querySelector("#live-phase-badge").textContent, /잠정/);
+  assert.match(document.querySelector("#live-signal-score").textContent, /백분위/);
+  assert.match(document.querySelector("#live-signal-time").textContent, /계산/);
+  assert.match(document.querySelector("#live-action-note").textContent, /시간외 종가/);
+  assert.match(document.querySelector("#live-confirmed-anchor").textContent, /2026년 7월 16일 확정 기준/);
+  assert.doesNotMatch(document.querySelector("#history-data-table").textContent, /2026-07-20/);
+
+  const robustLive = signature(document, ["#live-signal-state", "#live-signal-score"]);
+  click(window, '[data-model="raw"]');
+  await waitFor(
+    () => document.querySelector("#signal-settings-status").dataset.state === "ok" && document.querySelector(".analysis-config").getAttribute("aria-busy") === "false",
+    "live signal track recompute"
+  );
+  assert.notEqual(signature(document, ["#live-signal-state", "#live-signal-score"]), robustLive);
+  assert.doesNotMatch(document.querySelector("#history-data-table").textContent, /2026-07-20/);
+});
+
+test("same-date or malformed live payloads never replace the confirmed dashboard", { concurrency: false, timeout: 120_000 }, async () => {
+  const sameDateWindow = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture({ signalDate: "2026-07-16", inputRow: { ...liveSignalFixture().inputRow, date: "2026-07-16" } }) } });
+  assert.equal(sameDateWindow.document.querySelector("#live-signal-strip").hidden, true);
+  assert.notEqual(sameDateWindow.document.querySelector("#status-badge").textContent, "unavailable");
+
+  const malformedWindow = await bootDashboard({ dataOverrides: { "live-signal.json": { ...liveSignalFixture(), contract: "wrong-contract" } } });
+  assert.equal(malformedWindow.document.querySelector("#live-signal-strip").hidden, true);
+  assert.notEqual(malformedWindow.document.querySelector("#status-badge").textContent, "unavailable");
+  assert.match(malformedWindow.document.querySelector("#state").textContent, /중립|공포|탐욕/);
+
+  const staleDate = kstDate(-1);
+  const staleWindow = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture({ signalDate: staleDate, inputRow: { ...liveSignalFixture().inputRow, date: staleDate } }) } });
+  assert.equal(staleWindow.document.querySelector("#live-signal-strip").hidden, true);
 });

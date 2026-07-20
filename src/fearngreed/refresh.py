@@ -172,6 +172,7 @@ def refresh(
     end: date,
     backfill_start_date: date | None,
     dry_run: bool,
+    require_end_session: bool = False,
 ) -> dict[str, object]:
     _require_refresh_credentials()
     root = repository_root()
@@ -202,19 +203,71 @@ def refresh(
     if latest_open is None:
         raise RefreshStageError("krx_official_latest_session_unavailable")
     expected_as_of = latest_open.date
-
-    try:
-        recent_kospi = _fetch_open_kospi(open_client, start, end)
-        recent_open_etfs = _fetch_open_etfs(
-            open_client,
-            max(start, end - timedelta(days=14), min(ETF_LISTING_DATES.values())),
-            end,
+    if require_end_session and expected_as_of != end:
+        raise RefreshStageError(
+            "krx_target_session_not_published",
+            expected_as_of=expected_as_of,
         )
-    except ProviderError as error:
+
+    use_authenticated_core = False
+    if expected_as_of < end:
+        try:
+            target_kospi = fetch_kospi_index(end, end)
+            target_has_session = _frame_contains_exact_session(target_kospi, end)
+        except ProviderError as error:
+            raise RefreshStageError(
+                _public_failure_reason(str(error)),
+                expected_as_of=expected_as_of,
+            ) from None
+        if not target_has_session:
+            current_data_as_of = published_data_as_of
+            if current_data_as_of is None and seed is not None:
+                current_data_as_of = _parse_public_date(seed.data_as_of)
+            if backfill_start_date is None and current_data_as_of == expected_as_of:
+                return _non_trading_day_receipt(
+                    requested=end,
+                    official_session=expected_as_of,
+                    dry_run=dry_run,
+                    seed=seed,
+                )
+        else:
+            # The authenticated range endpoint already has the requested
+            # session while the Open API daily endpoint is still lagging.  Use
+            # the authenticated core for this run instead of silently
+            # rebuilding the previous session under a new timestamp.
+            expected_as_of = end
+            use_authenticated_core = True
+            core_source = "authenticated_pykrx_fallback"
+            degraded.append("krx_open_api_target_session_lag")
+
+    if use_authenticated_core:
+        try:
+            recent_kospi = fetch_kospi_index(start, end)
+            if not _frame_contains_exact_session(recent_kospi, end):
+                raise ProviderError("authenticated KRX target session is missing")
+        except ProviderError as error:
+            raise RefreshStageError(
+                _public_failure_reason(str(error)),
+                expected_as_of=expected_as_of,
+            ) from None
+        # All same-day official crosschecks must share the same source phase.
+        # A lagging Open API KOSPI implies its ETF/stock rows cannot prove the
+        # target session either, so use the authenticated adapters throughout.
         open_client = None
-        core_source = "authenticated_pykrx_fallback"
-        degraded.append(_open_api_reason(error))
-        recent_kospi = fetch_kospi_index(start, end)
+        recent_open_etfs = {}
+    else:
+        try:
+            recent_kospi = _fetch_open_kospi(open_client, start, end)
+            recent_open_etfs = _fetch_open_etfs(
+                open_client,
+                max(start, end - timedelta(days=14), min(ETF_LISTING_DATES.values())),
+                end,
+            )
+        except ProviderError as error:
+            open_client = None
+            core_source = "authenticated_pykrx_fallback"
+            degraded.append(_open_api_reason(error))
+            recent_kospi = fetch_kospi_index(start, end)
 
     krx_etfs = _fetch_authenticated_etf_histories(
         end,
@@ -700,6 +753,49 @@ def _latest_open_row(client: KRXOpenAPIClient, end: date):
     return None
 
 
+def _frame_contains_exact_session(frame: pd.DataFrame, session: date) -> bool:
+    """Return whether an authenticated exact-date response contains that session.
+
+    An empty, contract-valid response is the provider's non-trading-day result.
+    A non-empty response with a different date is ambiguous and must not be
+    interpreted as a holiday.
+    """
+    if frame.empty:
+        return False
+    normalized = pd.to_datetime(frame.index, errors="coerce").tz_localize(None).normalize()
+    if normalized.isna().any():
+        raise ProviderError("authenticated KRX session date is invalid")
+    target = pd.Timestamp(session)
+    if target in normalized:
+        return True
+    raise ProviderError("authenticated KRX exact-date response is inconsistent")
+
+
+def _non_trading_day_receipt(
+    *,
+    requested: date,
+    official_session: date,
+    dry_run: bool,
+    seed: IncrementalSeed | None,
+) -> dict[str, object]:
+    """Describe a confirmed holiday no-op without mutating public artifacts."""
+    official_value = official_session.isoformat()
+    return {
+        "ok": True,
+        "skipped": True,
+        "reason": "krx_target_is_non_trading_day",
+        "dryRun": dry_run,
+        "requestedDate": requested.isoformat(),
+        "dataAsOf": official_value,
+        "expectedDataAsOf": official_value,
+        "status": seed.status_state if seed is not None else "ok",
+        "sourceMode": "krx_open_api",
+        "sizes": {},
+        "incremental": seed is not None,
+        "noOp": True,
+    }
+
+
 def _fetch_open_kospi(client: KRXOpenAPIClient, start: date, end: date) -> pd.DataFrame:
     records: list[dict[str, object]] = []
     for index, timestamp in enumerate(pd.bdate_range(start, end)):
@@ -1037,12 +1133,72 @@ def default_end_date() -> date:
     return now.date()
 
 
+def _current_refresh_receipt(root: Path, end: date) -> dict[str, object] | None:
+    """Return a true no-op receipt when this exact official session is already public."""
+    summary_path = root / "data" / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(summary, dict):
+        return None
+    status = summary.get("status")
+    automation = summary.get("automation")
+    if not isinstance(status, dict) or not isinstance(automation, dict):
+        return None
+    target = end.isoformat()
+    if (
+        summary.get("dataAsOf") != target
+        or status.get("expectedDataAsOf") != target
+        or status.get("sourceFreshnessPassed") is not True
+    ):
+        return None
+    entity = next(
+        (
+            item
+            for item in summary.get("primaryEntities", [])
+            if isinstance(item, dict) and item.get("id") == "KOSPI"
+        ),
+        {},
+    )
+    return {
+        "ok": True,
+        "skipped": True,
+        "reason": "official_session_already_current",
+        "dataAsOf": target,
+        "expectedDataAsOf": target,
+        "status": status.get("state", "ok"),
+        "sourceMode": entity.get("sourceMode", "unavailable"),
+        "incremental": True,
+        "noOp": True,
+    }
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh Fear & Greed public derivatives")
     parser.add_argument("--probe", action="store_true", help="Run a sanitized provider smoke test")
     parser.add_argument("--date", type=date.fromisoformat, help="Probe or refresh end date")
     parser.add_argument("--backfill-start-date", type=date.fromisoformat)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--failure-policy",
+        choices=("publish", "preserve"),
+        default="publish",
+        help="Publish fail-closed status or preserve every public file for an early retry",
+    )
+    parser.add_argument(
+        "--skip-if-current",
+        action="store_true",
+        help=(
+            "Exit successfully without provider access or file writes when the target session "
+            "is current"
+        ),
+    )
+    parser.add_argument(
+        "--require-end-session",
+        action="store_true",
+        help="Treat an official latest row older than --date as not-yet-published",
+    )
     return parser.parse_args(argv)
 
 
@@ -1053,26 +1209,32 @@ def main(argv: list[str] | None = None) -> int:
         return probe(end)
     try:
         with refresh_lock():
+            if args.skip_if_current:
+                current_receipt = _current_refresh_receipt(repository_root(), end)
+                if current_receipt is not None:
+                    print(json.dumps(current_receipt, ensure_ascii=False, sort_keys=True))
+                    return 0
             receipt = refresh(
                 end=end,
                 backfill_start_date=args.backfill_start_date,
                 dry_run=args.dry_run,
+                require_end_session=args.require_end_session,
             )
     except RefreshStageError as error:
         reason = error.code
-        if not args.dry_run:
+        if not args.dry_run and args.failure_policy == "publish":
             mark_failed(reason, error.expected_as_of)
         print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False))
         return 1
     except ProviderError as error:
         reason = _public_failure_reason(str(error))
-        if not args.dry_run:
+        if not args.dry_run and args.failure_policy == "publish":
             mark_failed(reason)
         print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False))
         return 1
     except Exception:
         reason = "refresh_pipeline_failed"
-        if not args.dry_run:
+        if not args.dry_run and args.failure_policy == "publish":
             mark_failed(reason)
         print(json.dumps({"ok": False, "reason": reason}, ensure_ascii=False))
         return 1

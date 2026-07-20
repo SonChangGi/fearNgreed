@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import nullcontext
 from datetime import date
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -17,6 +18,7 @@ from fearngreed.refresh import (
     RefreshStageError,
     _align_core_to_latest_common,
     _assert_adjusted_scale_stable,
+    _current_refresh_receipt,
     _decode_history_rows,
     _fetch_adjusted_partition,
     _fetch_authenticated_etf_histories,
@@ -118,6 +120,200 @@ def test_refresh_fails_closed_when_official_latest_session_cannot_be_established
     assert fallback_called is False
 
 
+def test_early_retry_requires_the_requested_session_without_public_writes(
+    tmp_path, monkeypatch
+) -> None:
+    _configure_fake_refresh_credentials(monkeypatch)
+    monkeypatch.setattr(refresh_module, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        refresh_module.KRXOpenAPIClient,
+        "from_env",
+        staticmethod(lambda **_kwargs: object()),
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "_latest_open_row",
+        lambda _client, _end: SimpleNamespace(date=date(2026, 7, 16)),
+    )
+    authenticated_called = False
+
+    def unexpected_authenticated_call(_start, _end):
+        nonlocal authenticated_called
+        authenticated_called = True
+        raise AssertionError("early retry must wait for the Open API target session")
+
+    monkeypatch.setattr(
+        refresh_module,
+        "fetch_kospi_index",
+        unexpected_authenticated_call,
+    )
+
+    with pytest.raises(RefreshStageError, match="krx_target_session_not_published") as captured:
+        refresh_module.refresh(
+            end=date(2026, 7, 17),
+            backfill_start_date=None,
+            dry_run=False,
+            require_end_session=True,
+        )
+
+    assert captured.value.expected_as_of == date(2026, 7, 16)
+    assert authenticated_called is False
+    assert not (tmp_path / "data").exists()
+
+
+def test_terminal_weekday_holiday_is_a_strict_noop_without_public_writes(
+    tmp_path, monkeypatch
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    summary_path = data_dir / "summary.json"
+    original = b'{"dataAsOf":"2026-07-17","status":{"state":"ok"}}\n'
+    summary_path.write_bytes(original)
+    _configure_fake_refresh_credentials(monkeypatch)
+    monkeypatch.setattr(refresh_module, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        refresh_module.KRXOpenAPIClient,
+        "from_env",
+        staticmethod(lambda **_kwargs: object()),
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "_latest_open_row",
+        lambda _client, _end: SimpleNamespace(date=date(2026, 7, 17)),
+    )
+    authenticated_calls: list[tuple[date, date]] = []
+
+    def holiday_session(start, end):
+        authenticated_calls.append((start, end))
+        return pd.DataFrame(columns=["open", "high", "low", "close"])
+
+    monkeypatch.setattr(refresh_module, "fetch_kospi_index", holiday_session)
+    monkeypatch.setattr(
+        refresh_module,
+        "_fetch_open_kospi",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("holiday no-op must stop before historical collection")
+        ),
+    )
+
+    receipt = refresh_module.refresh(
+        end=date(2026, 7, 20),
+        backfill_start_date=None,
+        dry_run=False,
+    )
+
+    assert receipt == {
+        "ok": True,
+        "skipped": True,
+        "reason": "krx_target_is_non_trading_day",
+        "dryRun": False,
+        "requestedDate": "2026-07-20",
+        "dataAsOf": "2026-07-17",
+        "expectedDataAsOf": "2026-07-17",
+        "status": "ok",
+        "sourceMode": "krx_open_api",
+        "sizes": {},
+        "incremental": False,
+        "noOp": True,
+    }
+    assert authenticated_calls == [(date(2026, 7, 20), date(2026, 7, 20))]
+    assert summary_path.read_bytes() == original
+    assert not (data_dir / "automation-status.json").exists()
+
+
+def test_terminal_open_api_lag_uses_authenticated_target_session(tmp_path, monkeypatch) -> None:
+    _configure_fake_refresh_credentials(monkeypatch)
+    monkeypatch.setattr(refresh_module, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        refresh_module.KRXOpenAPIClient,
+        "from_env",
+        staticmethod(lambda **_kwargs: object()),
+    )
+    target = date(2026, 7, 20)
+    monkeypatch.setattr(
+        refresh_module,
+        "_latest_open_row",
+        lambda _client, _end: SimpleNamespace(date=date(2026, 7, 17)),
+    )
+    authenticated_calls: list[tuple[date, date]] = []
+
+    def authenticated_kospi(start, end):
+        authenticated_calls.append((start, end))
+        return pd.DataFrame(
+            {
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "trading_volume": [1_000.0],
+                "trading_value": [10_000.0],
+            },
+            index=pd.DatetimeIndex([target], name="date"),
+        )
+
+    monkeypatch.setattr(refresh_module, "fetch_kospi_index", authenticated_kospi)
+    monkeypatch.setattr(
+        refresh_module,
+        "_fetch_open_kospi",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lagged Open API KOSPI must not remain the core")
+        ),
+    )
+    monkeypatch.setattr(refresh_module, "_fetch_open_etfs", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        refresh_module,
+        "_fetch_authenticated_etf_histories",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(refresh_module, "_fetch_authenticated_stocks", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        refresh_module,
+        "fetch_market_participant_flows",
+        lambda _start, _end: pd.DataFrame(
+            {"individual_net_purchase": [1_000.0]},
+            index=pd.DatetimeIndex([target], name="date"),
+        ),
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "_fetch_adjusted_partition",
+        lambda *_args, **_kwargs: {},
+    )
+    captured: dict[str, object] = {}
+
+    def capture_build(inputs):
+        captured["coreSource"] = inputs.core_source
+        captured["expectedAsOf"] = inputs.expected_as_of
+        captured["degradedReasons"] = inputs.degraded_reasons
+        raise RuntimeError("stop after fallback selection")
+
+    monkeypatch.setattr(refresh_module, "build_outputs", capture_build)
+
+    with pytest.raises(RefreshStageError, match="refresh_build_refresh_failed"):
+        refresh_module.refresh(
+            end=target,
+            backfill_start_date=None,
+            dry_run=True,
+        )
+
+    assert authenticated_calls == [(target, target), (date(2010, 1, 4), target)]
+    assert captured == {
+        "coreSource": "authenticated_pykrx_fallback",
+        "expectedAsOf": target,
+        "degradedReasons": ("krx_open_api_target_session_lag",),
+    }
+
+
+def test_authenticated_exact_date_mismatch_is_not_treated_as_a_holiday() -> None:
+    frame = pd.DataFrame(
+        {"close": [100.0]},
+        index=pd.DatetimeIndex([date(2026, 7, 17)], name="date"),
+    )
+
+    with pytest.raises(ProviderError, match="exact-date response is inconsistent"):
+        refresh_module._frame_contains_exact_session(frame, date(2026, 7, 20))
+
+
 @pytest.mark.parametrize("backfill_start", [None, date(2010, 1, 4)])
 def test_refresh_rejects_backdated_public_end_before_any_provider_call(
     tmp_path, monkeypatch, backfill_start
@@ -182,6 +378,69 @@ def test_main_forwards_official_expected_session_to_failure_status(monkeypatch) 
 
     assert refresh_module.main(["--date", "2026-07-17"]) == 1
     assert recorded == [("refresh_core_input_quality_failed", expected)]
+
+
+def test_main_preserve_failure_policy_leaves_public_status_untouched(monkeypatch) -> None:
+    marked: list[str] = []
+    monkeypatch.setattr(refresh_module, "refresh_lock", lambda: nullcontext())
+    monkeypatch.setattr(
+        refresh_module,
+        "refresh",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RefreshStageError("krx_target_session_not_published")
+        ),
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "mark_failed",
+        lambda reason, expected_as_of=None: marked.append(reason),
+    )
+
+    assert (
+        refresh_module.main(
+            [
+                "--date",
+                "2026-07-17",
+                "--failure-policy",
+                "preserve",
+                "--require-end-session",
+            ]
+        )
+        == 1
+    )
+    assert marked == []
+
+
+def test_skip_if_current_is_a_true_noop_before_provider_access(tmp_path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    summary = {
+        "dataAsOf": "2026-07-17",
+        "status": {
+            "state": "ok",
+            "expectedDataAsOf": "2026-07-17",
+            "sourceFreshnessPassed": True,
+        },
+        "automation": {"lastSuccessAt": "2026-07-17T09:20:00Z"},
+        "primaryEntities": [{"id": "KOSPI", "sourceMode": "krx_open_api"}],
+    }
+    summary_path = data_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    original = summary_path.read_bytes()
+    monkeypatch.setattr(refresh_module, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(refresh_module, "refresh_lock", lambda: nullcontext())
+    monkeypatch.setattr(
+        refresh_module,
+        "refresh",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("provider must not run")),
+    )
+
+    receipt = _current_refresh_receipt(tmp_path, date(2026, 7, 17))
+    assert receipt is not None
+    assert receipt["skipped"] is True
+    assert receipt["expectedDataAsOf"] == "2026-07-17"
+    assert refresh_module.main(["--date", "2026-07-17", "--skip-if-current"]) == 0
+    assert summary_path.read_bytes() == original
 
 
 def test_successful_noop_updates_only_operational_timestamps(tmp_path) -> None:

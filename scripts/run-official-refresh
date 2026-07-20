@@ -1,0 +1,128 @@
+#!/bin/zsh
+set -euo pipefail
+
+REPOSITORY_URL="https://github.com/SonChangGi/fearNgreed.git"
+SEOUL_DATE="$(TZ=Asia/Seoul date +%F)"
+SEOUL_WEEKDAY="$(TZ=Asia/Seoul date +%u)"
+SEOUL_TIME="$(TZ=Asia/Seoul date +%H%M)"
+
+if (( SEOUL_WEEKDAY > 5 )); then
+  echo "official-refresh skipped: weekend"
+  exit 0
+fi
+
+terminal_run=false
+if (( 10#$SEOUL_TIME >= 1815 && 10#$SEOUL_TIME < 2000 )); then
+  terminal_run=false
+elif (( 10#$SEOUL_TIME >= 2030 && 10#$SEOUL_TIME < 2300 )); then
+  terminal_run=true
+else
+  echo "official-refresh skipped: outside 18:15-20:00 or 20:30-23:00 KST"
+  exit 0
+fi
+
+if ! command -v with-krx-keychain >/dev/null 2>&1; then
+  echo "official-refresh unavailable: Keychain bridge not found"
+  exit 1
+fi
+
+umask 077
+WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fearngreed-official-refresh.XXXXXX")"
+CHECKOUT="$WORK_ROOT/repository"
+RECEIPT="$WORK_ROOT/refresh-receipt.json"
+trap '/bin/rm -rf -- "$WORK_ROOT"' EXIT
+
+export GIT_TERMINAL_PROMPT=0
+git clone --quiet --depth 1 --branch main "$REPOSITORY_URL" "$CHECKOUT"
+BASE_HEAD="$(git -C "$CHECKOUT" rev-parse HEAD)"
+
+refresh_args=(--date "$SEOUL_DATE" --skip-if-current)
+if [[ "$terminal_run" == "true" ]]; then
+  refresh_args+=(--failure-policy publish)
+else
+  refresh_args+=(--failure-policy preserve --require-end-session)
+fi
+
+set +e
+(
+  cd "$CHECKOUT"
+  with-krx-keychain uv run --frozen python -m fearngreed.refresh \
+    "${refresh_args[@]}" >"$RECEIPT" 2>/dev/null
+)
+refresh_status=$?
+set -e
+
+if (( refresh_status != 0 )) && [[ "$terminal_run" != "true" ]]; then
+  git -C "$CHECKOUT" diff --quiet -- data
+  echo "official-refresh retry pending: $SEOUL_DATE"
+  exit 0
+fi
+
+if (( refresh_status == 0 )); then
+  skipped="$(uv run --directory "$CHECKOUT" --frozen python -c \
+    'import json, pathlib, sys; payload=json.loads(pathlib.Path(sys.argv[1]).read_text()); print("true" if payload.get("skipped") is True else "false")' \
+    "$RECEIPT")"
+  if [[ "$skipped" == "true" ]]; then
+    git -C "$CHECKOUT" diff --quiet -- data
+    echo "official-refresh no-op: $SEOUL_DATE"
+    exit 0
+  fi
+fi
+
+if git -C "$CHECKOUT" diff --quiet -- data; then
+  echo "official-refresh unavailable: provider failed without a publishable status"
+  exit 1
+fi
+
+unexpected=0
+while IFS= read -r path; do
+  case "$path" in
+    data/*) ;;
+    *)
+      echo "official-refresh blocked unexpected path: $path"
+      unexpected=1
+      ;;
+  esac
+done < <(git -C "$CHECKOUT" diff --name-only)
+(( unexpected == 0 ))
+
+if (( refresh_status != 0 )); then
+  changed_data="$(git -C "$CHECKOUT" diff --name-only -- data | LC_ALL=C sort)"
+  [[ "$changed_data" == $'data/automation-status.json\ndata/summary.json' ]]
+fi
+
+(
+  cd "$CHECKOUT"
+  uv run --frozen pytest
+  uv run --frozen ruff check .
+  uv run --frozen ruff format --check .
+  npm ci --silent
+  npm test
+  uv run --frozen python -m fearngreed.verify
+  uv run --frozen python -m fearngreed.site --output dist
+  with-krx-keychain uv run --frozen python -c \
+    "from pathlib import Path; from fearngreed.security import scan_public_files; assert not scan_public_files(Path('.'))"
+)
+
+git -C "$CHECKOUT" config user.name "fearngreed-local-automation"
+git -C "$CHECKOUT" config user.email "actions@users.noreply.github.com"
+git -C "$CHECKOUT" config commit.gpgsign false
+if (( refresh_status == 0 )); then
+  git -C "$CHECKOUT" add data
+  commit_message="data: refresh fear and greed derivatives"
+else
+  git -C "$CHECKOUT" add data/summary.json data/automation-status.json
+  commit_message="data: publish degraded refresh status"
+fi
+git -C "$CHECKOUT" diff --cached --check
+git -C "$CHECKOUT" fetch --quiet origin main
+[[ "$(git -C "$CHECKOUT" rev-parse origin/main)" == "$BASE_HEAD" ]]
+git -C "$CHECKOUT" commit --quiet -m "$commit_message"
+git -C "$CHECKOUT" push --quiet origin HEAD:main
+
+if (( refresh_status == 0 )); then
+  echo "official-refresh published: $SEOUL_DATE"
+else
+  echo "official-refresh published degraded status: $SEOUL_DATE"
+  exit 1
+fi

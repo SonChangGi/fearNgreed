@@ -1,0 +1,104 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIR="${0:A:h}"
+REPOSITORY_ROOT="${SCRIPT_DIR:h}"
+OUTPUT_PATH="$REPOSITORY_ROOT/var/live-signal-local.json"
+SEOUL_DATE="$(TZ=Asia/Seoul date +%F)"
+SEOUL_WEEKDAY="$(TZ=Asia/Seoul date +%u)"
+
+inside_capture_window() {
+  local current_time
+  current_time="$(TZ=Asia/Seoul date +%H%M)"
+  (( 10#$current_time >= 1547 && 10#$current_time < 1600 ))
+}
+
+seconds_until_cutoff() {
+  local hour minute second
+  hour="$(TZ=Asia/Seoul date +%H)"
+  minute="$(TZ=Asia/Seoul date +%M)"
+  second="$(TZ=Asia/Seoul date +%S)"
+  echo $((16 * 3600 - 10#$hour * 3600 - 10#$minute * 60 - 10#$second))
+}
+
+receipt_field() {
+  local field="$1"
+  uv run --frozen python -c \
+    'import json, pathlib, sys; payload=json.loads(pathlib.Path(sys.argv[1]).read_text()); value=payload.get(sys.argv[2]); print("true" if value is True else "false" if value is False else value or "")' \
+    "$receipt_file" "$field" 2>/dev/null
+}
+
+if (( SEOUL_WEEKDAY > 5 )); then
+  echo "live-signal skipped: weekend"
+  exit 0
+fi
+if ! inside_capture_window; then
+  echo "live-signal skipped: outside 15:47-16:00 KST"
+  exit 0
+fi
+if ! command -v with-krx-keychain >/dev/null 2>&1; then
+  echo "live-signal unavailable: Keychain bridge not found"
+  exit 1
+fi
+
+umask 077
+mkdir -p "$REPOSITORY_ROOT/var"
+receipt_file="$(mktemp "$REPOSITORY_ROOT/var/.live-signal-receipt.XXXXXX")"
+candidate_file="$(mktemp "$REPOSITORY_ROOT/var/.live-signal-candidate.XXXXXX")"
+trap 'rm -f "$receipt_file" "$candidate_file"' EXIT
+PUBLISHED_OUTPUT_PATH="$OUTPUT_PATH"
+# Keep the collector pointed at staging until the post-capture cutoff check passes.
+OUTPUT_PATH="$candidate_file"
+
+cd "$REPOSITORY_ROOT"
+for attempt in 1 2 3 4; do
+  if ! inside_capture_window; then
+    echo "live-signal skipped: 16:00 KST cutoff reached"
+    exit 0
+  fi
+
+  : >"$receipt_file"
+  rm -f "$OUTPUT_PATH"
+  if with-krx-keychain uv run --frozen python -m fearngreed.live_signal \
+    --date "$SEOUL_DATE" \
+    --output "$OUTPUT_PATH" >"$receipt_file" 2>/dev/null; then
+    if ! inside_capture_window; then
+      echo "live-signal skipped: capture completed after 16:00 KST"
+      exit 0
+    fi
+    if [[ "$(receipt_field skipped)" == "true" ]]; then
+      echo "live-signal skipped: session is already confirmed"
+      exit 0
+    fi
+    if [[ ! -s "$OUTPUT_PATH" ]]; then
+      echo "live-signal failed: successful capture returned no candidate"
+      exit 1
+    fi
+    /bin/mv -f "$OUTPUT_PATH" "$PUBLISHED_OUTPUT_PATH"
+    echo "live-signal ready: $SEOUL_DATE (attempt $attempt)"
+    /usr/bin/osascript -e \
+      'display notification "15:47 잠정 신호가 갱신되었습니다." with title "Fear & Greed Flow Lab"' \
+      >/dev/null 2>&1 || true
+    exit 0
+  fi
+
+  reason="$(receipt_field reason || true)"
+  case "$reason" in
+    live_kospi_session_unavailable | live_flow_session_unavailable | live_kospi_date_mismatch | live_flow_date_mismatch | live_observation_invalid | live_capture_window_closed)
+      ;;
+    *)
+      echo "live-signal failed: capture pipeline error"
+      exit 1
+      ;;
+  esac
+
+  remaining="$(seconds_until_cutoff)"
+  if (( attempt == 4 || remaining <= 180 )); then
+    echo "live-signal skipped: no KRX session or provisional inputs not ready"
+    exit 0
+  fi
+  sleep 180
+done
+
+echo "live-signal skipped: no KRX session or provisional inputs not ready"
+exit 0

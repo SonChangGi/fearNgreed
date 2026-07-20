@@ -12,6 +12,7 @@ def test_site_builder_excludes_private_reference(tmp_path: Path) -> None:
     build_site(root, output)
     assert (output / "index.html").exists()
     assert (output / "data" / "summary.json").exists()
+    assert (output / "data" / "live-signal.json").exists()
     assert not (output / "references").exists()
     assert not list(output.rglob("source.pdf"))
 

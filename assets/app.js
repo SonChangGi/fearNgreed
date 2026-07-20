@@ -67,6 +67,7 @@ const fmt = {
   score: (value, digits = 1) => value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(digits),
   compact: (value) => value == null || !Number.isFinite(Number(value)) ? "—" : Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 2 }).format(value),
   date: (value) => value ? new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "short", day: "numeric" }).format(new Date(`${value}T00:00:00`)) : "—",
+  time: (value) => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value)) : "—",
   multiple: (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : `${Number(value).toFixed(digits)}×`
 };
 
@@ -173,6 +174,7 @@ let store = {
   dashboard: null,
   history: null,
   strategyComparison: null,
+  liveSignal: null,
   activeSeries: null,
   activeSignalMeta: null,
   ...DEFAULT_CONTROLS
@@ -182,6 +184,14 @@ async function loadJson(path) {
   const response = await fetch(path, { cache: "no-store" });
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
   return response.json();
+}
+
+async function loadOptionalJson(path) {
+  try {
+    return await loadJson(path);
+  } catch (_) {
+    return null;
+  }
 }
 
 function validateContracts(summary, dashboard, history, strategyComparison) {
@@ -195,6 +205,28 @@ function validateContracts(summary, dashboard, history, strategyComparison) {
   const hasSeries = Array.isArray(history.series) || (Array.isArray(history.seriesColumns) && Array.isArray(history.seriesRows));
   const models = summary.primaryEntities?.[0]?.models || dashboard?.models || {};
   if (!["ok", "degraded", "stale", "unavailable"].includes(summary?.status?.state) || !Array.isArray(summary.primaryEntities) || summary.primaryEntities.length !== 1 || !models.scaled || !models.raw || !hasSeries || summary?.payload?.strategyComparisonUrl !== "./strategy-comparison.json") throw new Error("공개 데이터의 필수 계약이 없습니다.");
+}
+
+function validateLiveSignal(liveSignal, summary) {
+  if (liveSignal == null) return null;
+  if (liveSignal?.schemaVersion !== 1 || liveSignal?.contract !== "fearngreed-live-signal" || liveSignal?.projectId !== "fearngreed") throw new Error("빠른 신호 계약이 올바르지 않습니다.");
+  if (liveSignal.methodologyVersion !== summary?.methodologyVersion) throw new Error("빠른 신호 방법론 버전이 확정 분석과 다릅니다.");
+  if (!isIsoDate(liveSignal.signalDate) || liveSignal.inputRow?.date !== liveSignal.signalDate) throw new Error("빠른 신호 기준일이 올바르지 않습니다.");
+  const historicalLive = liveSignal.signalDate <= summary.dataAsOf;
+  if (liveSignal.sourceCutoff !== "regular-session-close-provisional" || !isIsoDate(liveSignal.historyDataAsOf) || liveSignal.historyDataAsOf >= liveSignal.signalDate || (!historicalLive && liveSignal.historyDataAsOf !== summary.dataAsOf)) throw new Error("빠른 신호 데이터 기준이 확정 분석과 다릅니다.");
+  if (!Number.isFinite(Date.parse(liveSignal.generatedAt || "")) || !["provisional", "confirmed"].includes(liveSignal.phase)) throw new Error("빠른 신호 계산 단계가 올바르지 않습니다.");
+  if (liveSignal.expectedConfirmationAt != null && !Number.isFinite(Date.parse(liveSignal.expectedConfirmationAt))) throw new Error("빠른 신호 확정 예정 시각이 올바르지 않습니다.");
+  const quality = liveSignal.quality;
+  if (!quality || !["ok", "degraded", "unavailable"].includes(quality.state) || typeof quality.tradeEligible !== "boolean" || !Array.isArray(quality.reasons)) throw new Error("빠른 신호 품질 상태가 올바르지 않습니다.");
+  const requiredInputs = ["kospiClose", "return1d", "flowShare", "rawFlowTrillion", "disparity50", "mdd252"];
+  if (!requiredInputs.every((field) => typeof liveSignal.inputRow?.[field] === "number" && Number.isFinite(liveSignal.inputRow[field]))) throw new Error("빠른 신호 입력값이 올바르지 않습니다.");
+  const window = liveSignal.actionWindow;
+  if (!window || !["after-hours-close", "next-open"].includes(window.mode) || !["open", "closed", "future", "not_open"].includes(window.state) || typeof window.executionGuaranteed !== "boolean") throw new Error("빠른 신호 활용 시간이 올바르지 않습니다.");
+  const generatedAt = Date.parse(liveSignal.generatedAt);
+  const opensAt = Date.parse(window.opensAt || "");
+  const closesAt = Date.parse(window.closesAt || "");
+  if (!Number.isFinite(opensAt) || !Number.isFinite(closesAt) || !(opensAt <= generatedAt && generatedAt < closesAt)) throw new Error("빠른 신호 수집 시각이 잠정 분석 시간 밖입니다.");
+  return liveSignal;
 }
 
 function decodeHistory(history) {
@@ -464,6 +496,80 @@ function renderSignalBridge() {
     interpretation = `${unitFormat(actual)}의 절대값만 보지 않습니다. 같은 날 수익률의 기대값 ${unitFormat(expected)}에 비해 ${direction}입니다.`;
   }
   $("#bridge-explanation").textContent = interpretation;
+}
+
+function selectedLiveSignal() {
+  const live = store.liveSignal;
+  const canonicalDate = store.summary?.dataAsOf;
+  const rows = store.history?.series || [];
+  const kstToday = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const generatedAt = Date.parse(live?.generatedAt || "");
+  const generatedKstDate = Number.isFinite(generatedAt)
+    ? new Date(generatedAt + 9 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    : null;
+  if (!live || live.quality?.state === "unavailable" || !canonicalDate || live.signalDate !== kstToday || generatedKstDate !== live.signalDate || live.signalDate <= canonicalDate || !rows.length || rows.at(-1)?.date >= live.signalDate) return null;
+  try {
+    const inputRow = { ...live.inputRow, date: live.signalDate };
+    const historyRows = [...rows, inputRow];
+    const result = fitDynamicSignalAt({
+      historyRows,
+      index: historyRows.length - 1,
+      ...currentSignalConfig()
+    });
+    return {
+      live,
+      signal: result.signal,
+      tradeEligible: live.quality.state === "ok" && live.quality.tradeEligible && result.signal.tradeEligible
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function liveActionText(view) {
+  const { live, signal, tradeEligible } = view;
+  if (live.phase === "confirmed") return "✓ 확정 신호 · 전체 분석 반영 중";
+  const confirmation = live.expectedConfirmationAt ? `확정 ${fmt.time(live.expectedConfirmationAt)} 예정` : "확정 신호 대기";
+  if (!tradeEligible) return `신규 진입 차단 · ${confirmation}`;
+  const isExtreme = ["extreme_fear", "extreme_greed"].includes(signal.state);
+  const window = live.actionWindow;
+  const opensAt = Date.parse(window?.opensAt || "");
+  const closesAt = Date.parse(window?.closesAt || "");
+  const now = Date.now();
+  const windowState = Number.isFinite(closesAt) && now >= closesAt
+    ? "closed"
+    : Number.isFinite(opensAt) && now < opensAt
+      ? "not_open"
+      : window?.state;
+  if (!isExtreme) return `신규 진입 후보 없음 · ${confirmation}`;
+  if (window?.mode === "after-hours-close" && windowState === "open") return `시간외 종가 ${fmt.time(window.closesAt)}까지 확인 가능`;
+  if (window?.mode === "after-hours-close" && ["future", "not_open"].includes(windowState)) return `시간외 종가 ${fmt.time(window.opensAt)} 시작 대기`;
+  if (window?.mode === "after-hours-close" && windowState === "closed") return "시간외 종가 종료 · 다음 거래일 시가 기준";
+  if (window?.mode === "next-open") return "다음 거래일 시가 기준";
+  return confirmation;
+}
+
+function renderLiveSignal() {
+  const strip = $("#live-signal-strip");
+  const view = selectedLiveSignal();
+  if (!strip || !view) {
+    if (strip) strip.hidden = true;
+    return;
+  }
+  const { live, signal, tradeEligible } = view;
+  const phase = live.phase === "confirmed" ? "confirmed" : "provisional";
+  strip.hidden = false;
+  strip.dataset.phase = phase;
+  strip.dataset.tradeEligible = String(tradeEligible);
+  const phaseBadge = $("#live-phase-badge");
+  phaseBadge.textContent = phase === "confirmed" ? "✓ 확정" : "○ 잠정";
+  phaseBadge.className = `phase-badge ${phase}`;
+  $("#live-signal-title").textContent = phase === "confirmed" ? "당일 확정 신호" : "당일 빠른 신호";
+  $("#live-signal-state").textContent = labels[signal.state] || signal.state;
+  $("#live-signal-score").textContent = `백분위 ${fmt.score(signal.percentile, 1)}`;
+  $("#live-signal-time").textContent = `${fmt.date(live.signalDate)} · ${fmt.time(live.generatedAt)} 계산`;
+  $("#live-action-note").textContent = liveActionText(view);
+  $("#live-confirmed-anchor").textContent = `차트·백테스트는 ${fmt.date(store.summary.dataAsOf)} 확정 기준`;
 }
 
 function renderHeader(scenarioBundle = selectedScenarioBundle()) {
@@ -2816,6 +2922,7 @@ function renderAll() {
   updatePressed("[data-event-sample]", store.eventSample, "eventSample");
   const scenarioBundle = selectedScenarioBundle();
   renderHeader(scenarioBundle);
+  renderLiveSignal();
   renderHistory(scenarioBundle);
   renderScatter();
   renderResidual();
@@ -2836,10 +2943,21 @@ bindTableTools();
 initializeSectionNav();
 setResearchControlsEnabled(false);
 
-Promise.all([loadJson("data/summary.json"), loadJson("data/dashboard.json"), loadJson("data/history.json"), loadJson("data/strategy-comparison.json")])
-  .then(([summary, dashboard, history, strategyComparison]) => {
+Promise.all([loadJson("data/summary.json"), loadJson("data/dashboard.json"), loadJson("data/history.json"), loadJson("data/strategy-comparison.json"), loadOptionalJson("data/live-signal.json"), loadOptionalJson("var/live-signal-local.json")])
+  .then(([summary, dashboard, history, strategyComparison, publicLiveSignal, localLiveSignal]) => {
     validateContracts(summary, dashboard, history, strategyComparison);
-    store = { ...store, summary, dashboard, history: decodeHistory(history), strategyComparison };
+    const liveCandidates = [];
+    for (const candidate of [publicLiveSignal, localLiveSignal]) {
+      try {
+        const validated = validateLiveSignal(candidate, summary);
+        if (validated) liveCandidates.push(validated);
+      } catch (_) {
+        // A malformed optional fast signal never blocks confirmed research.
+      }
+    }
+    liveCandidates.sort((left, right) => left.signalDate.localeCompare(right.signalDate) || Date.parse(left.generatedAt) - Date.parse(right.generatedAt));
+    const liveSignal = liveCandidates.at(-1) || null;
+    store = { ...store, summary, dashboard, history: decodeHistory(history), strategyComparison, liveSignal };
     recomputeDynamicResearch();
     if (!modelPayload(store.model)) store.model = modelPayload("robust") ? "robust" : "scaled";
     ensureBacktestSelection();

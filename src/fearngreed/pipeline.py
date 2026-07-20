@@ -395,7 +395,7 @@ def _summary(
         "status": {
             "state": status_state,
             "label": _operational_label(status_state),
-            "cadence": "weekdays-after-20:30-KST",
+            "cadence": "weekdays-18:15-18:45-20:30-KST",
             "expectedFreshnessDays": 3,
             "freshnessBasis": (
                 "official_krx_latest_completed_session"

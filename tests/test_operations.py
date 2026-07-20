@@ -12,7 +12,22 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None:
     workflow = (ROOT / ".github" / "workflows" / "refresh.yml").read_text(encoding="utf-8")
 
+    for schedule in (
+        'cron: "15 9 * * 1-5"',
+        'cron: "45 9 * * 1-5"',
+        'cron: "30 11 * * 1-5"',
+    ):
+        assert schedule in workflow
+    assert "TZ=Asia/Seoul date +%F" in workflow
+    assert "EVENT_SCHEDULE" in workflow
+    assert "failure_policy=preserve" in workflow
+    assert "args+=(--require-end-session)" in workflow
+    assert "args+=(--skip-if-current)" in workflow
+    assert 'args+=(--failure-policy "$failure_policy")' in workflow
+    assert "outcome=retry_pending" in workflow
+    assert "outcome=skipped" in workflow
     assert "outcome=failure" in workflow
+    assert "ref: main" in workflow
     before_refresh = workflow.split("- name: Refresh derived data", 1)[0]
     refresh_step = workflow.split("- name: Refresh derived data", 1)[1].split(
         "- name: Enforce failed-refresh mutation boundary", 1
@@ -31,23 +46,24 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert "$KRX_ID" not in secret_error_line
     assert "$KRX_PW" not in secret_error_line
     assert "::error title=Missing required Actions secrets" in secret_error_line
+    missing_secret_block = refresh_step.split("if (( ${#missing_secrets[@]} )); then", 1)[1].split(
+        "fi", 1
+    )[0]
+    assert "exit 1" in missing_secret_block
     assert "scan_public_files" in refresh_step
     assert 'refresh_receipt_file="$RUNNER_TEMP/fearngreed-refresh-receipt.json"' in refresh_step
     assert '> "$refresh_receipt_file"' in refresh_step
     assert "receipt['expectedDataAsOf']" in refresh_step
+    assert "receipt.get('skipped') is True" in refresh_step
     assert "json.loads(Path(sys.argv[1]).read_text" in refresh_step
     assert "json.load(open('data/summary.json'" not in refresh_step
-    success_branch = refresh_step.split("if [[ $refresh_status -eq 0 ]]; then", 1)[1].split(
-        "else", 1
-    )[0]
-    failure_branch = refresh_step.split("if [[ $refresh_status -eq 0 ]]; then", 1)[1].split(
-        "else", 1
-    )[1]
-    assert "expectedDataAsOf" in success_branch
-    assert 'cat "$refresh_receipt_file"' in success_branch
-    assert "json.loads" not in failure_branch
-    assert 'cat "$refresh_receipt_file"' in failure_branch
+    assert "expectedDataAsOf" in refresh_step
+    assert refresh_step.count('cat "$refresh_receipt_file"') == 2
     assert 'echo "dataAsOf=$data_as_of" >> "$GITHUB_OUTPUT"' in refresh_step
+    assert "Enforce early-retry preservation boundary" in workflow
+    retry_section = workflow.split("- name: Enforce early-retry preservation boundary", 1)[1]
+    retry_boundary = retry_section.split("- name: Enforce failed-refresh mutation boundary", 1)[0]
+    assert "git diff --quiet -- data" in retry_boundary
     assert "Enforce failed-refresh mutation boundary" in workflow
     assert "data/summary.json|data/automation-status.json" in workflow
     assert "data: publish degraded refresh status" in workflow
@@ -65,9 +81,16 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert workflow.index("Commit validated derivatives") < workflow.index(
         "Deploy validated derivatives"
     )
+    assert "git fetch origin main" in workflow
+    assert "git rev-parse origin/main" in workflow
+    assert "git push origin HEAD:main" in workflow
+    assert "git rebase" not in workflow
+    assert "git push --force" not in workflow
     assert workflow.index("Verify live public derivative hashes") < workflow.index(
         "Report provider refresh failure"
     )
+    assert "Report early retry pending" in workflow
+    assert "Report already-current session" in workflow
 
 
 def test_pages_workflow_runs_local_and_live_contract_verification() -> None:
@@ -81,6 +104,27 @@ def test_pages_workflow_runs_local_and_live_contract_verification() -> None:
     assert workflow.index("actions/deploy-pages@v4") < workflow.index(
         "Verify live public derivative hashes"
     )
+
+
+def test_fast_signal_workflow_is_separate_bounded_and_secret_scoped() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "live-signal.yml").read_text(encoding="utf-8")
+
+    assert 'cron: "47 6 * * 1-5"' in workflow
+    assert "ref: main" in workflow
+    capture = workflow.split("Capture authenticated preliminary close signal", 1)[1].split(
+        "Enforce fast-signal mutation boundary", 1
+    )[0]
+    after_capture = workflow.split("Enforce fast-signal mutation boundary", 1)[1]
+    for name in ("KRX_API_KEY", "KRX_ID", "KRX_PW"):
+        assert name in capture
+        assert name not in after_capture
+        assert f"missing_secrets+=({name})" in capture
+    assert "data/live-signal.json) ;;" in workflow
+    assert "git add data/live-signal.json" in workflow
+    assert "\n          git add data\n" not in workflow
+    assert "git push origin HEAD:main" in workflow
+    assert "--base-url" in workflow
+    assert "scan_public_files" in capture
 
 
 def test_failed_refresh_preserves_market_outputs_and_last_success(tmp_path, monkeypatch) -> None:

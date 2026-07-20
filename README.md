@@ -36,13 +36,31 @@ python3 -m http.server 8000
 - `data/history.json`: 공개 가능한 일별 파생 시계열
 - `data/strategy-comparison.json`: 실제 1X·2X ETF 페어, 기본 80/20 정책, 청산선 민감도와 동적 시나리오 계약
 - `data/automation-status.json`: 갱신 상태
+- `data/live-signal.json`: KST 당일에만 표시되는 15:47 잠정 입력·모형 스냅샷
 - `schemas/summary.schema.json`: Quant Dashboard 계약의 엄격한 JSON Schema
+- `schemas/live-signal.schema.json`: 잠정 신호의 날짜·수집창·모형 계약
 
 방법론은 [docs/methodology.md](docs/methodology.md), 데이터/비밀정보 경계는 [docs/data-contract.md](docs/data-contract.md)를 참고한다.
 
 ## 자동화
 
-평일 20:30 KST에 갱신한다. 정상 이력이 있으면 최신 5거래일의 KRX 캐시를 다시 검증하고 그 이전 파생 이력은 고정한다. 수정 불가 구간과 겹치는 Yahoo 조정가격 앵커를 별도로 대조하고, 과거 가격 스케일 또는 공개 파생 행의 어느 값이라도 달라지면 새·옛 이력을 섞지 않고 `requires_backfill`로 실패한다. KRX Open API가 공식 최신 완료 세션을 확정하고 KOSPI·개인수급의 최신 공통일이 그 세션과 정확히 같을 때만 신호·사건·백테스트를 갱신한다. 공식일을 확인할 수 없거나 공개 기준일보다 과거로 후퇴하는 실행은 쓰기 전에 중단한다. 같은 기준일과 파생값이면 `noOp`으로 시장 산출물을 유지하되 `summary`·`automation-status`의 정상 실행 시각은 갱신한다. 공급자 실패 시 마지막 정상 시장 산출물을 보존하고, 공식 기대일을 아는 경우 `stale`, 모르는 경우 `degraded` 상태만 원자적으로 발행한다. Actions는 수집 receipt의 공식 기대일로 로컬·배포 JSON을 다시 검증한다. GitHub Actions에는 사용자가 직접 `KRX_API_KEY`, `KRX_ID`, `KRX_PW` repository 또는 `github-pages` environment secrets를 등록해야 한다. 로컬 Keychain 값은 GitHub로 자동 복사하지 않는다.
+공식 데이터 자동화는 평일 18:15·18:45·20:30 KST에 순서대로 시도한다. 18:15·18:45에는 KRX의 당일 공식 세션이 아직 없으면 공개 파일을 전혀 바꾸지 않고 다음 실행으로 넘긴다. 첫 성공 뒤 같은 날짜의 후속 실행은 공급자 호출·파일 변경·커밋·배포가 없는 true no-op이다. 20:30에는 Open API와 인증 KRX 당일 세션을 함께 확인해 휴장일이면 역시 아무 파일도 바꾸지 않고 종료하며, Open API만 늦고 인증 KRX에 당일 세션이 있으면 인증 경로로 확정 분석을 계속한다. 실제 거래일인데 최종 시도까지 실패한 경우에만 마지막 정상 시장 결과를 보존한 채 `stale` 또는 `degraded` 운영 상태를 발행한다. 모든 예약 실행은 KST 당일 날짜를 명시적으로 전달하므로 20:30 이전 실행이 전일을 잘못 선택하지 않는다.
+
+정상 이력이 있으면 최신 5거래일의 KRX 캐시를 다시 검증하고 그 이전 파생 이력은 고정한다. 수정 불가 구간과 겹치는 Yahoo 조정가격 앵커를 별도로 대조하고, 과거 가격 스케일 또는 공개 파생 행의 어느 값이라도 달라지면 새·옛 이력을 섞지 않고 `requires_backfill`로 실패한다. KRX Open API가 공식 최신 완료 세션을 확정하고 KOSPI·개인수급의 최신 공통일이 그 세션과 정확히 같을 때만 신호·사건·백테스트를 갱신한다. 공식일을 확인할 수 없거나 공개 기준일보다 과거로 후퇴하는 실행은 쓰기 전에 중단한다. Actions는 수집 receipt의 공식 기대일로 로컬·배포 JSON을 다시 검증한다. GitHub Actions에는 사용자가 직접 `KRX_API_KEY`, `KRX_ID`, `KRX_PW` repository 또는 `github-pages` environment secrets를 등록해야 한다. 로컬 Keychain 값은 GitHub로 자동 복사하지 않는다.
+
+GitHub Secrets가 아직 비어 있어도 이 Mac에서는 같은 확정 시각에 로컬 Keychain 경로가 동작한다. 로컬 확정 작업은 사용자 작업 폴더를 수정하지 않고 매 실행마다 격리된 임시 clone을 만든 뒤, 전체 테스트·계약·비밀정보 검사를 통과한 `data/` 변경만 원격 `main`에 푸시한다. 원격 HEAD가 계산 중 바뀌면 rebase나 force-push 없이 중단한다.
+
+```bash
+scripts/install-official-refresh-launch-agent
+```
+
+15:47 KST 잠정 신호는 시간외 종가매매 창 안에서 빠르게 확인할 수 있도록 로그인된 Mac의 `launchd`에서 별도로 계산한다. 공식 JSON이나 Git 이력은 건드리지 않고 `var/live-signal-local.json`만 갱신하며, 공급자 데이터가 늦으면 15:50·15:53·15:56까지 제한적으로 재시도한다. 로컬 페이지는 이 파일과 공개 `data/live-signal.json` 중 더 최신인 관측을 읽는다. GitHub의 `live-signal.yml`도 평일 15:47 KST에 같은 별도 계약을 best-effort로 수집·검증·배포하지만, 예약 시작과 Pages 반영 시각은 보장되지 않으므로 시간 민감 알림은 로컬 경로를 사용한다.
+
+```bash
+scripts/install-live-signal-launch-agent
+```
+
+Mac이 잠들어 있거나 로그아웃된 경우 15:47 잠정 신호와 로컬 확정 fallback은 보장되지 않는다. 16:00 이후 깨어난 잠정 실행은 만료된 신호를 만들지 않고 종료한다. GitHub Secrets를 직접 등록하면 동일한 공식 18:15·18:45·20:30 워크플로가 GitHub-hosted runner에서도 독립적으로 동작한다. `data/live-signal.json`은 당일 입력과 기본 3개 모형만 담으며 확정 `history.json`, 사건 연구, 차트 성과, 백테스트에는 들어가지 않는다.
 
 ```bash
 with-krx-keychain uv run --frozen python -m fearngreed.refresh --backfill-start-date 2010-01-04

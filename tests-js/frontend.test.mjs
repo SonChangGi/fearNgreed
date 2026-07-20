@@ -319,6 +319,25 @@ test('frontend validates the separate strategy-comparison contract before render
   assert.match(app,/loadJson\("data\/strategy-comparison\.json"\)/);
 });
 
+test('optional live signal is isolated from canonical contracts and uses the selected signal inputs',async()=>{
+  const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
+  for(const id of ['live-signal-strip','live-phase-badge','live-signal-state','live-signal-score','live-signal-time','live-action-note','live-confirmed-anchor']) assert.match(html,new RegExp(`id="${id}"`));
+  assert.match(html,/id="live-signal-strip"[^>]+aria-live="polite"[^>]+hidden/);
+  assert.match(app,/function loadOptionalJson/);
+  assert.match(app,/contract !== "fearngreed-live-signal"/);
+  assert.match(app,/loadOptionalJson\("var\/live-signal-local\.json"\)/);
+  assert.match(app,/live\.signalDate <= canonicalDate/);
+  assert.match(app,/live\.signalDate !== kstToday/);
+  assert.match(app,/const historyRows = \[\.\.\.rows, inputRow\]/);
+  assert.match(app,/\.\.\.currentSignalConfig\(\)/);
+  assert.match(app,/renderLiveSignal\(\)/);
+  assert.match(app,/시간외 종가/);
+  assert.match(app,/차트·백테스트는/);
+  assert.match(css,/\.phase-badge\.provisional/);
+  assert.match(css,/\.phase-badge\.confirmed/);
+  assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.live-signal-strip\s*\{[^}]*grid-template-columns:\s*1fr/s);
+});
+
 test('KOSPI history supports calendar presets and validated shareable custom dates',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
   for(const value of ['1m','3m','6m','ytd','1y','3y','all']) assert.match(html,new RegExp(`data-window="${value}"`));

@@ -5,7 +5,7 @@ import path from "node:path";
 import { Window } from "happy-dom";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
-const DATA_FILES = new Set(["summary.json", "dashboard.json", "history.json", "strategy-comparison.json"]);
+const DATA_FILES = new Set(["summary.json", "dashboard.json", "history.json", "strategy-comparison.json", "live-signal.json"]);
 
 function installGlobal(name, value) {
   Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
@@ -20,7 +20,7 @@ export async function waitFor(predicate, message, timeoutMs = 90_000) {
   throw new Error(`Timed out: ${message}`);
 }
 
-export async function bootDashboard({ url = "http://fearngreed.test/", storage = {} } = {}) {
+export async function bootDashboard({ url = "http://fearngreed.test/", storage = {}, dataOverrides = {} } = {}) {
   const window = new Window({ url });
   const html = (await readFile(path.join(ROOT, "index.html"), "utf8")).replace(/<script\b[\s\S]*?<\/script>/gi, "");
   window.document.write(html);
@@ -60,6 +60,19 @@ export async function bootDashboard({ url = "http://fearngreed.test/", storage =
     const target = new URL(typeof input === "string" ? input : input.url, window.location.href);
     const filename = path.basename(target.pathname);
     if (!DATA_FILES.has(filename)) return new Response("not found", { status: 404 });
+    if (Object.hasOwn(dataOverrides, filename)) {
+      const override = dataOverrides[filename];
+      if (override == null) return new Response("not found", { status: 404 });
+      return new Response(typeof override === "string" ? override : JSON.stringify(override), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (filename === "live-signal.json") {
+      try {
+        const body = await readFile(path.join(ROOT, "data", filename), "utf8");
+        return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+      } catch (_) {
+        return new Response("not found", { status: 404 });
+      }
+    }
     const body = await readFile(path.join(ROOT, "data", filename), "utf8");
     return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
   };

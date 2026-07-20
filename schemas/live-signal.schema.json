@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sonchanggi.github.io/fearNgreed/schemas/live-signal.schema.json",
+  "title": "Fear & Greed same-day live signal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contract",
+    "projectId",
+    "methodologyVersion",
+    "signalDate",
+    "phase",
+    "generatedAt",
+    "sourceCutoff",
+    "expectedConfirmationAt",
+    "historyDataAsOf",
+    "actionWindow",
+    "quality",
+    "inputRow",
+    "models",
+    "provenance"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contract": { "const": "fearngreed-live-signal" },
+    "projectId": { "const": "fearngreed" },
+    "methodologyVersion": { "const": "fear-flow-v5" },
+    "signalDate": { "type": "string", "format": "date" },
+    "phase": { "enum": ["provisional", "confirmed"] },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "sourceCutoff": { "const": "regular-session-close-provisional" },
+    "expectedConfirmationAt": { "type": "string", "format": "date-time" },
+    "historyDataAsOf": { "type": "string", "format": "date" },
+    "actionWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "opensAt", "closesAt", "state", "executionGuaranteed"],
+      "properties": {
+        "mode": { "enum": ["after-hours-close", "next-open"] },
+        "opensAt": { "type": "string", "format": "date-time" },
+        "closesAt": { "type": "string", "format": "date-time" },
+        "state": { "enum": ["not_open", "future", "open", "closed"] },
+        "executionGuaranteed": { "type": "boolean" }
+      }
+    },
+    "quality": {
+      "description": "Source, date and session-continuity eligibility only; model eligibility remains in models.*.tradeEligible.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "tradeEligible", "reasons"],
+      "properties": {
+        "state": { "enum": ["ok", "degraded", "unavailable"] },
+        "tradeEligible": { "type": "boolean", "description": "Whether the captured source row may be evaluated by a selected model." },
+        "reasons": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "inputRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "kospiClose", "return1d", "flowShare", "rawFlowTrillion", "disparity50", "mdd252", "sourceHash"],
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "kospiClose": { "type": "number", "exclusiveMinimum": 0 },
+        "return1d": { "type": "number" },
+        "flowShare": { "type": "number" },
+        "rawFlowTrillion": { "type": "number" },
+        "disparity50": { "type": "number", "exclusiveMinimum": 0 },
+        "mdd252": { "type": "number", "maximum": 0 },
+        "sourceHash": { "type": "string", "pattern": "^[0-9a-f]{16}$" }
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["robust", "scaled", "raw"],
+      "properties": {
+        "robust": { "$ref": "#/$defs/model" },
+        "scaled": { "$ref": "#/$defs/model" },
+        "raw": { "$ref": "#/$defs/model" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["price", "flow", "flowScope", "historyRole"],
+      "properties": {
+        "price": { "const": "authenticated-pykrx-kospi-index" },
+        "flow": { "const": "authenticated-pykrx-kospi-investor-flow" },
+        "flowScope": { "const": "KOSPI-excluding-ETF-ETN-ELW" },
+        "historyRole": { "const": "past-only-training" }
+      }
+    }
+  },
+  "$defs": {
+    "nullableNumber": { "type": ["number", "null"] },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "quality", "tradeEligible", "percentile", "residualZ", "rollingR2", "fitScore", "alpha", "beta", "expected", "residual", "trainingCount", "fitMethod"],
+      "properties": {
+        "state": { "enum": ["extreme_fear", "fear", "neutral", "greed", "extreme_greed", "unavailable"] },
+        "quality": { "type": "string" },
+        "tradeEligible": { "type": "boolean" },
+        "percentile": { "anyOf": [{ "type": "number", "minimum": 0, "maximum": 100 }, { "type": "null" }] },
+        "residualZ": { "$ref": "#/$defs/nullableNumber" },
+        "rollingR2": { "$ref": "#/$defs/nullableNumber" },
+        "fitScore": { "$ref": "#/$defs/nullableNumber" },
+        "alpha": { "$ref": "#/$defs/nullableNumber" },
+        "beta": { "$ref": "#/$defs/nullableNumber" },
+        "expected": { "$ref": "#/$defs/nullableNumber" },
+        "residual": { "$ref": "#/$defs/nullableNumber" },
+        "trainingCount": { "type": "integer", "minimum": 0 },
+        "fitMethod": { "enum": ["ols", "huber"] }
+      }
+    }
+  }
+}

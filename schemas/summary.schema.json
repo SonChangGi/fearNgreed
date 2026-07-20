@@ -45,7 +45,7 @@
           "enum": ["데이터 정상", "데이터 저하", "데이터 지연", "데이터 산출 불가"],
           "description": "Operational data state label; signal semantics live on primaryEntities."
         },
-        "cadence": {"const": "weekdays-after-20:30-KST"},
+        "cadence": {"const": "weekdays-18:15-18:45-20:30-KST"},
         "expectedFreshnessDays": {"type": "integer", "minimum": 0, "maximum": 30},
         "freshnessBasis": {
           "enum": ["official_krx_latest_completed_session", "source_alignment_only"]

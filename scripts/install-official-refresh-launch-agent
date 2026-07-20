@@ -1,0 +1,24 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIR="${0:A:h}"
+REPOSITORY_ROOT="${SCRIPT_DIR:h}"
+LABEL="com.sonchanggi.fearngreed.official-refresh"
+TEMPLATE="$REPOSITORY_ROOT/automation/$LABEL.plist"
+DESTINATION="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG_DIR="$HOME/Library/Logs/fearNgreed"
+
+with-krx-keychain --check
+mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
+/usr/bin/sed \
+  -e "s|__REPOSITORY_ROOT__|$REPOSITORY_ROOT|g" \
+  -e "s|__HOME__|$HOME|g" \
+  "$TEMPLATE" >"$DESTINATION"
+/usr/bin/plutil -lint "$DESTINATION"
+
+/bin/launchctl bootout "gui/$UID/$LABEL" >/dev/null 2>&1 || true
+/bin/launchctl bootstrap "gui/$UID" "$DESTINATION"
+/bin/launchctl enable "gui/$UID/$LABEL"
+
+echo "Installed $LABEL for weekdays at 18:15, 18:45 and 20:30 KST."
+echo "The job uses an isolated temporary clone and reads credentials only through with-krx-keychain."

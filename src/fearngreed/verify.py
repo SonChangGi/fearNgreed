@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import json
 import math
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,7 @@ PUBLIC_FILES = (
     "data/history.json",
     "data/automation-status.json",
     "data/strategy-comparison.json",
+    "data/live-signal.json",
 )
 SIZE_LIMITS = {
     "data/summary.json": 50_000,
@@ -26,6 +27,7 @@ SIZE_LIMITS = {
     "data/history.json": 2_000_000,
     "data/automation-status.json": 50_000,
     "data/strategy-comparison.json": 500_000,
+    "data/live-signal.json": 50_000,
 }
 BROWSER_SCENARIO_INPUTS = {
     "lookback": {"default": 252, "minimum": 60, "maximum": 756, "step": 1},
@@ -65,11 +67,17 @@ def verify_local(
     history = payloads["data/history.json"]
     automation = payloads["data/automation-status.json"]
     strategy = payloads["data/strategy-comparison.json"]
+    live_signal = payloads["data/live-signal.json"]
     schema = json.loads((root / "schemas/summary.schema.json").read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator(
         schema,
         format_checker=jsonschema.FormatChecker(),
     ).validate(summary)
+    live_schema = json.loads((root / "schemas/live-signal.schema.json").read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator(
+        live_schema,
+        format_checker=jsonschema.FormatChecker(),
+    ).validate(live_signal)
 
     methodology_versions = {
         summary.get("methodologyVersion"),
@@ -98,6 +106,7 @@ def verify_local(
     _verify_etf_price_contract(summary, dashboard, history)
     _verify_strategy_comparison(summary, dashboard, history, strategy)
     _verify_cross_artifact_consistency(summary, dashboard, history)
+    _verify_live_signal(live_signal, summary)
     findings = scan_public_files(root)
     if findings:
         raise ValueError("credential material detected in public files")
@@ -217,6 +226,44 @@ def verify_remote(
         if digest != local["hashes"][relative]:
             raise ValueError(f"public readback hash mismatch: {relative}")
     return {**local, "baseUrl": normalized, "remoteHashes": remote_hashes}
+
+
+def _verify_live_signal(live: dict[str, Any], summary: dict[str, Any]) -> None:
+    """Keep the fast same-day observation outside confirmed research artifacts."""
+
+    try:
+        signal_date = date.fromisoformat(str(live.get("signalDate")))
+        history_date = date.fromisoformat(str(live.get("historyDataAsOf")))
+        confirmed_date = date.fromisoformat(str(summary.get("dataAsOf")))
+    except ValueError:
+        raise ValueError("live signal date contract is invalid") from None
+    if history_date >= signal_date or (
+        signal_date > confirmed_date and history_date != confirmed_date
+    ):
+        raise ValueError("live signal history anchor is invalid")
+    if live.get("methodologyVersion") != summary.get("methodologyVersion"):
+        raise ValueError("live signal methodology does not match confirmed research")
+    input_row = live.get("inputRow")
+    if not isinstance(input_row, dict) or input_row.get("date") != live.get("signalDate"):
+        raise ValueError("live signal input date does not match signalDate")
+    window = live.get("actionWindow")
+    if not isinstance(window, dict):
+        raise ValueError("live signal action window is missing")
+    try:
+        opens_at = datetime.fromisoformat(str(window.get("opensAt")))
+        closes_at = datetime.fromisoformat(str(window.get("closesAt")))
+    except ValueError:
+        raise ValueError("live signal action window is invalid") from None
+    if opens_at.tzinfo is None or closes_at.tzinfo is None or opens_at >= closes_at:
+        raise ValueError("live signal action window is invalid")
+    if opens_at.date() != signal_date or closes_at.date() != signal_date:
+        raise ValueError("live signal action window date does not match signalDate")
+    try:
+        generated_at = datetime.fromisoformat(str(live.get("generatedAt")).replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("live signal generatedAt is invalid") from None
+    if generated_at.tzinfo is None or not (opens_at <= generated_at < closes_at):
+        raise ValueError("live signal capture time is outside its provisional window")
 
 
 def _verify_history(history: dict[str, Any]) -> None:

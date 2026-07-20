@@ -12,11 +12,34 @@ from fearngreed.verify import (
     _verify_etf_price_contract,
     _verify_history,
     _verify_history_channel_roles,
+    _verify_live_signal,
     _verify_scatter_state_boundaries,
     _verify_strategy_comparison,
     _verify_summary_freshness,
     verify_local,
 )
+
+
+def test_live_signal_verifier_matches_browser_anchor_and_capture_window() -> None:
+    root = Path(__file__).resolve().parents[1]
+    live = json.loads((root / "data" / "live-signal.json").read_text(encoding="utf-8"))
+    summary = json.loads((root / "data" / "summary.json").read_text(encoding="utf-8"))
+
+    _verify_live_signal(live, summary)
+
+    mismatched_anchor = deepcopy(live)
+    mismatched_anchor["historyDataAsOf"] = "2026-07-15"
+    with pytest.raises(ValueError, match="history anchor"):
+        _verify_live_signal(mismatched_anchor, summary)
+
+    late_capture = deepcopy(live)
+    late_capture["generatedAt"] = late_capture["actionWindow"]["closesAt"]
+    with pytest.raises(ValueError, match="outside its provisional window"):
+        _verify_live_signal(late_capture, summary)
+
+    confirmed_summary = deepcopy(summary)
+    confirmed_summary["dataAsOf"] = live["signalDate"]
+    _verify_live_signal(live, confirmed_summary)
 
 
 def test_verify_history_accepts_columnar_and_rejects_width_mismatch() -> None:
@@ -59,6 +82,7 @@ def test_verify_local_reports_hashes_and_headroom() -> None:
         "data/history.json",
         "data/automation-status.json",
         "data/strategy-comparison.json",
+        "data/live-signal.json",
     }
 
 

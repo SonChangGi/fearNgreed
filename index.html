@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const q=new URLSearchParams(location.search).get("theme");const s=localStorage.getItem("quant-calm-theme");const p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=q==="dark"||q==="light"?q:(s||p)}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260720-refresh-freshness-v14">
+  <link rel="stylesheet" href="assets/styles.css?v=20260720-live-signal-v15">
 </head>
 <body id="top">
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -50,6 +50,13 @@
         <p id="status-note">공급자 상태를 읽는 중입니다.</p>
       </aside>
     </header>
+
+    <section id="live-signal-strip" class="live-signal-strip" aria-labelledby="live-signal-title" aria-live="polite" hidden>
+      <div class="live-signal-phase"><span id="live-phase-badge" class="phase-badge provisional">○ 잠정</span><span id="live-signal-title">당일 빠른 신호</span></div>
+      <div class="live-signal-reading"><strong id="live-signal-state">—</strong><span id="live-signal-score">백분위 —</span></div>
+      <div class="live-signal-timing"><span id="live-signal-time">계산 시각 —</span><span id="live-action-note">확정 신호 대기</span></div>
+      <small id="live-confirmed-anchor">차트·백테스트는 확정 데이터 기준</small>
+    </section>
 
     <div class="view-toolbar" aria-label="화면 설정">
       <p><strong>내 화면 설정</strong><span>적용한 설정만 이 브라우저와 공유 링크에 저장됩니다.</span></p>
@@ -240,11 +247,11 @@
 
   <footer class="site-footer">
     <div class="footer-copy"><strong>Fear &amp; Greed Flow Lab</strong><p>비상업적 개인 연구 · 투자 권유 아님 · 출처: 한국거래소 통계정보, pykrx, yfinance</p></div>
-    <div class="footer-links"><a class="footer-primary" href="https://sonchanggi.github.io/quant-dashboard/">통합 대시보드</a><a href="data/summary.json">허브 요약 JSON</a><a href="data/dashboard.json">파생 대시보드 JSON</a><a href="data/history.json">파생 시계열 JSON</a><a href="data/strategy-comparison.json">전략 비교 JSON</a><a href="data/automation-status.json">자동화 상태</a><a href="docs/methodology.md">방법론</a><a href="https://github.com/SonChangGi/fearNgreed">GitHub</a></div>
+    <div class="footer-links"><a class="footer-primary" href="https://sonchanggi.github.io/quant-dashboard/">통합 대시보드</a><a href="data/summary.json">허브 요약 JSON</a><a href="data/live-signal.json">당일 잠정 신호 JSON</a><a href="data/dashboard.json">파생 대시보드 JSON</a><a href="data/history.json">파생 시계열 JSON</a><a href="data/strategy-comparison.json">전략 비교 JSON</a><a href="data/automation-status.json">자동화 상태</a><a href="docs/methodology.md">방법론</a><a href="https://github.com/SonChangGi/fearNgreed">GitHub</a></div>
   </footer>
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260720-refresh-freshness-v14"></script>
+  <script type="module" src="assets/app.js?v=20260720-live-signal-v15"></script>
 </body>
 </html>
