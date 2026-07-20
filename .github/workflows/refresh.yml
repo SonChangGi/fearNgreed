@@ -7,6 +7,10 @@ on:
     - cron: "30 11 * * 1-5"
   workflow_dispatch:
     inputs:
+      provider_probe_date:
+        description: Optional YYYY-MM-DD confirmed session for a no-write provider credential probe
+        required: false
+        type: string
       backfill_start_date:
         description: Optional YYYY-MM-DD historical rewrite boundary
         required: false
@@ -44,6 +48,7 @@ jobs:
         id: refresh
         shell: bash
         env:
+          PROVIDER_PROBE_DATE: ${{ inputs.provider_probe_date }}
           BACKFILL_START_DATE: ${{ inputs.backfill_start_date }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
@@ -59,6 +64,33 @@ jobs:
             printf -v missing_names '%s, ' "${missing_secrets[@]}"
             echo "::error title=Missing required Actions secrets::Missing required secret names: ${missing_names%, }"
             exit 1
+          fi
+
+          if [[ -n "$PROVIDER_PROBE_DATE" ]]; then
+            [[ "$EVENT_NAME" == "workflow_dispatch" ]]
+            [[ "$PROVIDER_PROBE_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+            [[ -z "$BACKFILL_START_DATE" ]]
+            umask 077
+            probe_receipt_file="$RUNNER_TEMP/fearngreed-provider-probe-receipt.json"
+            set +e
+            uv run --frozen python -m fearngreed.refresh \
+              --probe --date "$PROVIDER_PROBE_DATE" > "$probe_receipt_file"
+            probe_status=$?
+            set -e
+            uv run --frozen python -c "from pathlib import Path; from fearngreed.security import scan_public_files; assert not scan_public_files(Path('.'))"
+            cat "$probe_receipt_file"
+            [[ $probe_status -eq 0 ]]
+            echo "outcome=probe_success" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && -z "$BACKFILL_START_DATE" ]]; then
+            current_kst_time="$(TZ=Asia/Seoul date +%H%M)"
+            if (( 10#$current_kst_time < 1815 )); then
+              echo "outcome=retry_pending" >> "$GITHUB_OUTPUT"
+              echo "::notice title=Official refresh deferred::Manual final-data refresh is available from 18:15 KST."
+              exit 0
+            fi
           fi
 
           target_date="$(TZ=Asia/Seoul date +%F)"
@@ -105,6 +137,11 @@ jobs:
       - name: Enforce early-retry preservation boundary
         if: steps.refresh.outputs.outcome == 'retry_pending'
         run: git diff --quiet -- data
+      - name: Enforce provider probe no-write boundary
+        if: steps.refresh.outputs.outcome == 'probe_success'
+        shell: bash
+        run: |
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
       - name: Enforce failed-refresh mutation boundary
         if: steps.refresh.outputs.outcome == 'failure'
         shell: bash
@@ -207,7 +244,10 @@ jobs:
           exit 1
       - name: Report early retry pending
         if: steps.refresh.outputs.outcome == 'retry_pending'
-        run: echo "Today's official session is not ready yet; the next scheduled attempt will retry without publishing changes."
+        run: echo "Today's official session is not ready or its final-data window has not opened; a later attempt will retry without publishing changes."
       - name: Report already-current session
         if: steps.refresh.outputs.outcome == 'skipped'
         run: echo "Today's official session is already published; no files, commit, or deployment were created."
+      - name: Report provider credential probe
+        if: steps.refresh.outputs.outcome == 'probe_success'
+        run: echo "KRX Open API and authenticated pykrx provider checks passed without changing public data."

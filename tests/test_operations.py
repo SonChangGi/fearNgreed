@@ -23,6 +23,17 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert "failure_policy=preserve" in workflow
     assert "args+=(--require-end-session)" in workflow
     assert "args+=(--skip-if-current)" in workflow
+    assert "provider_probe_date" in workflow
+    assert "PROVIDER_PROBE_DATE" in workflow
+    assert '--probe --date "$PROVIDER_PROBE_DATE"' in workflow
+    assert '[[ -z "$BACKFILL_START_DATE" ]]' in workflow
+    assert "outcome=probe_success" in workflow
+    assert "Enforce provider probe no-write boundary" in workflow
+    assert "git status --porcelain --untracked-files=all" in workflow
+    assert "Report provider credential probe" in workflow
+    assert 'current_kst_time="$(TZ=Asia/Seoul date +%H%M)"' in workflow
+    assert "10#$current_kst_time < 1815" in workflow
+    assert "Manual final-data refresh is available from 18:15 KST" in workflow
     assert 'args+=(--failure-policy "$failure_policy")' in workflow
     assert "outcome=retry_pending" in workflow
     assert "outcome=skipped" in workflow

@@ -142,29 +142,59 @@ def _reject_public_date_regression(
 
 
 def probe(day: date) -> int:
-    result: dict[str, object] = {"date": day.isoformat()}
+    result: dict[str, object] = {"date": day.isoformat(), "ok": False}
+    open_api_ok = False
     try:
-        client = KRXOpenAPIClient.from_env(
-            cache_dir=repository_root() / "var" / "cache" / "krx-probe"
+        with tempfile.TemporaryDirectory(prefix="fearngreed-krx-probe-") as cache_dir:
+            client = KRXOpenAPIClient.from_env(cache_dir=Path(cache_dir))
+            kospi = client.get_kospi(day)
+            etfs = client.get_etfs(day, ETF_LISTING_DATES)
+            stocks = client.get_stocks(day, ["000660", "005930"])
+        result["krxKospi"] = kospi is not None
+        result["krxEtfCount"] = len(etfs)
+        result["krxStockCount"] = len(stocks)
+        open_api_ok = bool(
+            kospi is not None
+            and set(etfs) == set(ETF_LISTING_DATES)
+            and set(stocks) == {"000660", "005930"}
         )
-        result["krxKospi"] = client.get_kospi(day) is not None
-        result["krxEtfCount"] = len(client.get_etfs(day, ETF_LISTING_DATES))
-        result["krxStockCount"] = len(client.get_stocks(day, ["000660", "005930"]))
-    except ProviderError as error:
-        result["krxOpenApi"] = {"ok": False, "reason": str(error)}
-    try:
-        result["pykrxFlowRows"] = len(fetch_individual_flow(day, day))
-        result["pykrxKospiRows"] = len(fetch_kospi_index(day, day))
-        result["pykrxEtfRows"] = {
-            ticker: len(fetch_etf_prices(ticker, day, day)) for ticker in ETF_LISTING_DATES
+        result["krxOpenApi"] = {
+            "ok": open_api_ok,
+            **({} if open_api_ok else {"reason": "krx_open_api_probe_incomplete"}),
         }
-        result["pykrxStockRows"] = {
+    except ProviderError as error:
+        result["krxOpenApi"] = {"ok": False, "reason": _open_api_reason(error)}
+
+    authenticated_ok = False
+    try:
+        flow_rows = len(fetch_individual_flow(day, day))
+        kospi_rows = len(fetch_kospi_index(day, day))
+        etf_rows = {ticker: len(fetch_etf_prices(ticker, day, day)) for ticker in ETF_LISTING_DATES}
+        stock_rows = {
             ticker: len(fetch_stock_prices(ticker, day, day)) for ticker in ("000660", "005930")
         }
+        result["pykrxFlowRows"] = flow_rows
+        result["pykrxKospiRows"] = kospi_rows
+        result["pykrxEtfRows"] = etf_rows
+        result["pykrxStockRows"] = stock_rows
+        authenticated_ok = bool(
+            flow_rows > 0
+            and kospi_rows > 0
+            and all(rows > 0 for rows in etf_rows.values())
+            and all(rows > 0 for rows in stock_rows.values())
+        )
+        result["pykrx"] = {
+            "ok": authenticated_ok,
+            **({} if authenticated_ok else {"reason": "authenticated_pykrx_probe_incomplete"}),
+        }
     except ProviderError as error:
-        result["pykrx"] = {"ok": False, "reason": str(error)}
+        result["pykrx"] = {
+            "ok": False,
+            "reason": _public_failure_reason(str(error)),
+        }
+    result["ok"] = open_api_ok and authenticated_ok
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0 if result.get("krxKospi") and result.get("pykrxFlowRows") else 1
+    return 0 if result["ok"] else 1
 
 
 def refresh(

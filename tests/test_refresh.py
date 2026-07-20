@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import nullcontext
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -85,6 +86,169 @@ def _configure_fake_refresh_credentials(monkeypatch) -> None:
     monkeypatch.setenv("KRX_API_KEY", "api-key-canary")
     monkeypatch.setenv("KRX_ID", "login-id-canary")
     monkeypatch.setenv("KRX_PW", "password-canary")
+
+
+def _install_probe_fakes(monkeypatch, *, missing: str | None = None) -> list[Path]:
+    cache_paths: list[Path] = []
+
+    class FakeOpenClient:
+        def get_kospi(self, _day):
+            return None if missing == "open_kospi" else object()
+
+        def get_etfs(self, _day, tickers):
+            rows = {ticker: object() for ticker in tickers}
+            if missing == "open_etf":
+                rows.pop(next(iter(ETF_LISTING_DATES)))
+            return rows
+
+        def get_stocks(self, _day, tickers):
+            rows = {ticker: object() for ticker in tickers}
+            if missing == "open_stock":
+                rows.pop("000660")
+            return rows
+
+    def fake_from_env(**kwargs):
+        cache_dir = Path(kwargs["cache_dir"])
+        assert cache_dir.is_dir()
+        cache_paths.append(cache_dir)
+        return FakeOpenClient()
+
+    def frame(empty: bool = False) -> pd.DataFrame:
+        return pd.DataFrame() if empty else pd.DataFrame({"value": [1.0]})
+
+    first_etf = next(iter(ETF_LISTING_DATES))
+    monkeypatch.setattr(
+        refresh_module.KRXOpenAPIClient,
+        "from_env",
+        staticmethod(fake_from_env),
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "fetch_individual_flow",
+        lambda _start, _end: frame(missing == "pykrx_flow"),
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "fetch_kospi_index",
+        lambda _start, _end: frame(missing == "pykrx_kospi"),
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "fetch_etf_prices",
+        lambda ticker, _start, _end: frame(missing == "pykrx_etf" and ticker == first_etf),
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "fetch_stock_prices",
+        lambda ticker, _start, _end: frame(missing == "pykrx_stock" and ticker == "000660"),
+    )
+    return cache_paths
+
+
+def test_probe_requires_every_provider_surface_and_uses_temporary_cache(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    cache_paths = _install_probe_fakes(monkeypatch)
+    monkeypatch.setattr(
+        refresh_module,
+        "repository_root",
+        lambda: (_ for _ in ()).throw(AssertionError("probe must not use repository cache")),
+    )
+
+    assert refresh_module.probe(date(2026, 7, 16)) == 0
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["ok"] is True
+    assert receipt["krxOpenApi"] == {"ok": True}
+    assert receipt["pykrx"] == {"ok": True}
+    assert receipt["krxEtfCount"] == len(ETF_LISTING_DATES)
+    assert receipt["krxStockCount"] == 2
+    assert all(rows > 0 for rows in receipt["pykrxEtfRows"].values())
+    assert all(rows > 0 for rows in receipt["pykrxStockRows"].values())
+    assert len(cache_paths) == 1
+    with pytest.raises(ValueError):
+        cache_paths[0].relative_to(tmp_path)
+    assert not cache_paths[0].exists()
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "open_kospi",
+        "open_etf",
+        "open_stock",
+        "pykrx_flow",
+        "pykrx_kospi",
+        "pykrx_etf",
+        "pykrx_stock",
+    ],
+)
+def test_probe_fails_when_any_required_provider_surface_is_empty(
+    missing, monkeypatch, capsys
+) -> None:
+    _install_probe_fakes(monkeypatch, missing=missing)
+
+    assert refresh_module.probe(date(2026, 7, 16)) == 1
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["ok"] is False
+    if missing.startswith("open_"):
+        assert receipt["krxOpenApi"] == {
+            "ok": False,
+            "reason": "krx_open_api_probe_incomplete",
+        }
+    else:
+        assert receipt["pykrx"] == {
+            "ok": False,
+            "reason": "authenticated_pykrx_probe_incomplete",
+        }
+
+
+@pytest.mark.parametrize("provider", ["open", "pykrx"])
+def test_probe_redacts_provider_error_details(provider, monkeypatch, capsys) -> None:
+    _install_probe_fakes(monkeypatch)
+    canary = "FAKE_PROVIDER_SECRET_CANARY"
+    if provider == "open":
+        monkeypatch.setattr(
+            refresh_module.KRXOpenAPIClient,
+            "from_env",
+            staticmethod(
+                lambda **_kwargs: (_ for _ in ()).throw(
+                    ProviderError(f"KRX Open API failed {canary}")
+                )
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            refresh_module,
+            "fetch_individual_flow",
+            lambda _start, _end: (_ for _ in ()).throw(ProviderError(f"pykrx failed {canary}")),
+        )
+
+    assert refresh_module.probe(date(2026, 7, 16)) == 1
+
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    assert canary not in output
+    if provider == "open":
+        assert receipt["krxOpenApi"]["reason"] == "krx_open_api_unavailable"
+    else:
+        assert receipt["pykrx"]["reason"] == "authenticated_pykrx_unavailable"
+
+
+def test_main_probe_bypasses_refresh_and_public_failure_writes(monkeypatch) -> None:
+    observed: list[date] = []
+    monkeypatch.setattr(refresh_module, "probe", lambda day: observed.append(day) or 0)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("probe must bypass refresh and public status writes")
+
+    monkeypatch.setattr(refresh_module, "refresh_lock", unexpected)
+    monkeypatch.setattr(refresh_module, "refresh", unexpected)
+    monkeypatch.setattr(refresh_module, "mark_failed", unexpected)
+
+    assert refresh_module.main(["--probe", "--date", "2026-07-16"]) == 0
+    assert observed == [date(2026, 7, 16)]
 
 
 def test_refresh_fails_closed_when_official_latest_session_cannot_be_established(
