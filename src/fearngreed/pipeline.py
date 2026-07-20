@@ -1603,19 +1603,21 @@ def _semiconductor_diagnostics(
     aligned = align_us_before_krx(frame.index, adjusted["MU"]["close"], adjusted["KRW=X"]["close"])
     aligned["hynix"] = adjusted["000660.KS"]["close"].reindex(frame.index)
     aligned["samsung"] = adjusted["005930.KS"]["close"].reindex(frame.index)
-    aligned = aligned.dropna().tail(756)
+    aligned = aligned.dropna()
     if aligned.empty:
         return {"status": "unavailable", "reason": "no_aligned_sessions"}
+    for price_field in ("mu_close_krw", "hynix", "samsung"):
+        aligned[f"{price_field}_mdd252"] = drawdown(aligned[price_field])
+    aligned["mu_usd_mdd252"] = drawdown(aligned["mu_close_usd"])
+    aligned = aligned.tail(756).copy()
     for price_field in ("mu_close_krw", "hynix", "samsung"):
         aligned[f"{price_field}_indexed"] = (
             aligned[price_field] / aligned[price_field].iloc[0] * 100
         )
-        aligned[f"{price_field}_mdd252"] = drawdown(aligned[price_field])
     aligned["mu_hynix_ratio"] = aligned["mu_close_krw"] / aligned["hynix"]
     aligned["mu_hynix_ratio_indexed"] = (
         aligned["mu_hynix_ratio"] / aligned["mu_hynix_ratio"].iloc[0] * 100
     )
-    aligned["mu_usd_mdd252"] = drawdown(aligned["mu_close_usd"])
     aligned["mu_hynix_relative_spread"] = aligned["mu_close_krw_indexed"] - aligned["hynix_indexed"]
     replica = aligned.loc[aligned.index >= pd.Timestamp("2025-01-01")].copy()
     if not replica.empty:
@@ -1674,6 +1676,9 @@ def _semiconductor_diagnostics(
                 "muKrwIndexed": public_number(row["mu_close_krw_indexed"], digits=1),
                 "hynixIndexed": public_number(row["hynix_indexed"], digits=1),
                 "samsungIndexed": public_number(row["samsung_indexed"], digits=1),
+                "muMdd252": public_number(row["mu_close_krw_mdd252"], digits=6),
+                "hynixMdd252": public_number(row["hynix_mdd252"], digits=6),
+                "samsungMdd252": public_number(row["samsung_mdd252"], digits=6),
                 "muHynixRatio": public_number(row["mu_hynix_ratio"], digits=6),
                 "muHynixRatioIndexed": public_number(row["mu_hynix_ratio_indexed"], digits=2),
                 "muHynixRelativeSpread": public_number(row["mu_hynix_relative_spread"], digits=2),

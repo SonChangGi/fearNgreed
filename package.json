@@ -3,7 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --check assets/app.js && node --check assets/strategy-engine.js && node --test tests-js/*.test.mjs",
+    "test": "node --check assets/app.js && node --check assets/chart-navigation.js && node --check assets/strategy-engine.js && node --test tests-js/*.test.mjs",
     "check": "npm test"
+  },
+  "devDependencies": {
+    "happy-dom": "20.11.0"
   }
 }

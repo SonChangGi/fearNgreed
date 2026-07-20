@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from fearngreed.analysis import align_us_before_krx, drawdown
 from fearngreed.backtest import run_backtest
 from fearngreed.model import FlowSignal
 from fearngreed.pipeline import (
@@ -307,6 +308,9 @@ def test_semiconductor_diagnostics_publish_actual_ratio_and_official_crosschecks
     assert diagnostics["latest"]["muHynixRatio"] > 0
     assert diagnostics["series"][-1]["muHynixRatioIndexed"] is not None
     assert diagnostics["series"][-1]["muHynixRelativeSpread"] is not None
+    for field in ("muMdd252", "hynixMdd252", "samsungMdd252"):
+        assert all(field in row for row in diagnostics["series"])
+        assert diagnostics["series"][-1][field] == diagnostics["latest"][field]
     assert outputs.dashboard["crosschecks"]["stock"]["000660"]["state"] == "ok"
     assert outputs.dashboard["crosschecks"]["stock"]["005930"]["state"] == "ok"
 
@@ -320,6 +324,26 @@ def test_semiconductor_diagnostics_publish_actual_ratio_and_official_crosschecks
         "reason": "official_stock_crosscheck_failed",
         "failedTickers": ["000660"],
     }
+
+
+def test_semiconductor_history_calculates_mdd_before_display_window_is_trimmed() -> None:
+    inputs = _pipeline_inputs(periods=900)
+    diagnostics = _semiconductor_diagnostics(
+        pd.DataFrame(index=inputs.kospi.index),
+        inputs.adjusted,
+        {"000660": {"state": "ok"}, "005930": {"state": "ok"}},
+    )
+    first = diagnostics["series"][0]
+    first_date = pd.Timestamp(first["date"])
+    full = align_us_before_krx(
+        inputs.kospi.index,
+        inputs.adjusted["MU"]["close"],
+        inputs.adjusted["KRW=X"]["close"],
+    )
+    expected = drawdown(full["mu_close_krw"]).loc[first_date]
+
+    assert first["muMdd252"] is not None
+    assert first["muMdd252"] == pytest.approx(float(expected), abs=5e-7)
 
 
 def test_stale_official_stock_crosscheck_fails_diagnostics_closed() -> None:

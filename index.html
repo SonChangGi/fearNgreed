@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const q=new URLSearchParams(location.search).get("theme");const s=localStorage.getItem("quant-calm-theme");const p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=q==="dark"||q==="light"?q:(s||p)}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260720-analysis-usability-v10">
+  <link rel="stylesheet" href="assets/styles.css?v=20260720-analysis-usability-v12">
 </head>
 <body id="top">
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -52,14 +52,14 @@
     </header>
 
     <div class="view-toolbar" aria-label="화면 설정">
-      <p><strong>내 화면 설정</strong><span>선택값은 이 브라우저와 공유 링크에 저장됩니다.</span></p>
+      <p><strong>내 화면 설정</strong><span>적용한 설정만 이 브라우저와 공유 링크에 저장됩니다.</span></p>
       <div><button id="reset-controls" type="button">기본값 복원</button><button id="share-view" type="button">현재 화면 링크 복사</button></div>
       <span id="view-action-status" class="view-action-status" role="status" aria-live="polite"></span>
     </div>
 
     <section class="analysis-config" aria-labelledby="analysis-config-title">
       <div class="analysis-config-head">
-        <div><p class="eyebrow">ONE APPLIED SCENARIO</p><h2 id="analysis-config-title">분석 설정</h2><p>여기서 선택한 트랙·ETF·비용·청산선·기간으로 신호, 사건 연구, 차트와 성과표를 함께 다시 계산합니다.</p></div>
+        <div><p class="eyebrow">ONE APPLIED SCENARIO</p><h2 id="analysis-config-title">분석 설정</h2><p>선택값과 관련된 신호·사건·전략 결과를 같은 적용 시나리오로 다시 계산합니다.</p></div>
         <span class="scope-badge practical">학습·신호·전략 연동</span>
       </div>
       <div class="analysis-config-grid">
@@ -232,7 +232,7 @@
           </div>
           <p class="flow-normalization-conclusion">따라서 이 프로젝트는 순매수율을 “더 옳은 값”이 아니라 <strong>장기 시장 규모 영향을 줄이려는 기본 연구 입력</strong>으로 사용하며, 두 모델이 엇갈리면 신뢰도를 낮춰 해석합니다.</p>
         </aside>
-        <div><div class="card-head"><div><h3>보조 진단</h3><p>50일 이격도, MDD, 환율·세션 정렬 스프레드는 기본 신호와 분리한다.</p></div><button class="latest-button" type="button" data-chart-latest="diagnostic-chart">최신으로</button></div><dl id="diagnostic-list"></dl><div id="diagnostic-chart" class="chart compact-chart" role="img" aria-roledescription="대화형 상대 스프레드 차트" aria-label="Micron 환율 환산 대비 SK하이닉스 상대 스프레드" aria-describedby="diagnostic-help" tabindex="0"></div><p id="diagnostic-help" class="chart-help">최신 구간으로 자동 정렬됩니다. 좌우 화살표·Home·End로 날짜를 확인할 수 있습니다.</p><details class="data-alternative"><summary>최근 상대 진단 표로 보기</summary><div class="table-scroll" id="diagnostic-data-table"></div></details></div>
+        <div><div class="card-head"><div><h3>보조 진단</h3><p>50일 이격도, MDD, 환율·세션 정렬 스프레드를 선택 평가 기간에 맞춰 확인합니다.</p></div><button class="latest-button" type="button" data-chart-latest="diagnostic-chart">기간 끝으로</button></div><dl id="diagnostic-list"></dl><div id="diagnostic-chart" class="chart compact-chart" role="img" aria-roledescription="대화형 상대 스프레드 차트" aria-label="Micron 환율 환산 대비 SK하이닉스 상대 스프레드" aria-describedby="diagnostic-help" tabindex="0"></div><p id="diagnostic-help" class="chart-help">선택 평가 기간과 종료일을 따릅니다. 좌우 화살표·Home·End로 날짜를 확인할 수 있습니다.</p><details class="data-alternative"><summary>선택 기간 상대 진단 표로 보기</summary><div class="table-scroll" id="diagnostic-data-table"></div></details></div>
         <div><h3>분석 결과 연결 방식</h3><p>선택한 연구 트랙은 평가 종료일 신호·잔차·사건·전략에 함께 적용됩니다. 사건 연구는 신호일 종가 기준이고 전략은 다음 ETF 시가 체결 기준입니다.</p><p>절대 수급 모델은 PDF 아이디어의 방향을 비교하고, 규모보정·강건 회귀 모델은 시장 규모 변화와 이상값을 반영해 같은 아이디어를 확장합니다.</p><a class="text-link" href="docs/methodology.md">전체 계산 계약 읽기 →</a></div>
       </div>
     </details>
@@ -245,6 +245,6 @@
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260720-analysis-usability-v10"></script>
+  <script type="module" src="assets/app.js?v=20260720-analysis-usability-v12"></script>
 </body>
 </html>

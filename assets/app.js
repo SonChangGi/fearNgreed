@@ -12,6 +12,7 @@ import {
   fitDynamicSignalAt,
   runDynamicEventStudy
 } from "./signal-engine.js?v=20260717-actual-etf-v7";
+import { itemRatioAt, nearestItemIndexByRatio } from "./chart-navigation.js?v=20260720-analysis-usability-v12";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -672,28 +673,77 @@ function historyWindowLabel(value = store.window) {
   return ({ "1m": "최근 1개월", "3m": "최근 3개월", "6m": "최근 6개월", ytd: "연초 이후", "1y": "최근 1년", "3y": "최근 3년", all: "전체 기간", custom: "사용자 지정" })[value] || "선택 기간";
 }
 
+function setFormDirty(form, status, message) {
+  if (!form || !status) return;
+  form.dataset.dirty = "true";
+  status.dataset.state = "dirty";
+  status.textContent = message;
+}
+
+function clearFormDirty(form) {
+  if (form) delete form.dataset.dirty;
+}
+
+function hasUnappliedDrafts() {
+  return ["#exit-threshold-form", "#signal-settings-form", "#history-range-form"]
+    .some((selector) => $(selector)?.dataset.dirty === "true");
+}
+
+function historyAppliedStatus(rows = selectedHistory()) {
+  return rows.length
+    ? `${historyWindowLabel()} · ${rows[0].date}–${rows.at(-1).date} · ${rows.length.toLocaleString()}거래일`
+    : "선택한 기간에 표시할 거래일이 없습니다.";
+}
+
 function syncHistoryRangeControls(rows) {
   const allRows = activeHistoryRows();
   const firstDate = allRows[0]?.date || "";
   const latestDate = allRows.at(-1)?.date || "";
   const startInput = $("#history-start");
   const endInput = $("#history-end");
+  const form = $("#history-range-form");
   if (!startInput || !endInput || !firstDate || !latestDate) return;
   [startInput, endInput].forEach((input) => {
     input.min = firstDate;
     input.max = latestDate;
-    input.setAttribute("aria-invalid", "false");
   });
-  startInput.value = store.window === "custom" ? store.historyStart : (rows[0]?.date || firstDate);
-  endInput.value = store.window === "custom" ? store.historyEnd : (rows.at(-1)?.date || latestDate);
+  if (form?.dataset.dirty === "true") return;
+  const appliedStart = store.window === "custom" ? store.historyStart : (rows[0]?.date || firstDate);
+  const appliedEnd = store.window === "custom" ? store.historyEnd : (rows.at(-1)?.date || latestDate);
+  startInput.value = appliedStart;
+  endInput.value = appliedEnd;
+  startInput.setAttribute("aria-invalid", "false");
+  endInput.setAttribute("aria-invalid", "false");
+  form.dataset.appliedStart = appliedStart;
+  form.dataset.appliedEnd = appliedEnd;
   $("#history-range-status").dataset.state = "ok";
-  $("#history-range-status").textContent = rows.length
-    ? `${historyWindowLabel()} · ${rows[0].date}–${rows.at(-1).date} · ${rows.length.toLocaleString()}거래일`
-    : "선택한 기간에 표시할 거래일이 없습니다.";
+  $("#history-range-status").textContent = historyAppliedStatus(rows);
+}
+
+function updateHistoryDraftState() {
+  const form = $("#history-range-form");
+  const startInput = $("#history-start");
+  const endInput = $("#history-end");
+  const status = $("#history-range-status");
+  if (!form || !startInput || !endInput || !status) return false;
+  startInput.setAttribute("aria-invalid", "false");
+  endInput.setAttribute("aria-invalid", "false");
+  const dirty = startInput.value !== (form.dataset.appliedStart || "") || endInput.value !== (form.dataset.appliedEnd || "");
+  if (dirty) {
+    const rows = selectedHistory();
+    const applied = rows.length ? `${rows[0].date}–${rows.at(-1).date}` : "산출 불가";
+    setFormDirty(form, status, `미적용 변경 · 현재 결과는 ${applied} 기준입니다.`);
+  } else {
+    clearFormDirty(form);
+    status.dataset.state = "ok";
+    status.textContent = historyAppliedStatus();
+  }
+  return dirty;
 }
 
 function setHistoryRangeError(message, input = null) {
   const status = $("#history-range-status");
+  $("#history-range-form").dataset.dirty = "true";
   status.dataset.state = "error";
   status.textContent = message;
   if (input) {
@@ -716,15 +766,29 @@ function applyCustomHistoryRange(event) {
   if (start > end) return setHistoryRangeError("시작일은 종료일보다 늦을 수 없습니다.", startInput);
   if (start < firstDate || end > latestDate) return setHistoryRangeError(`공개 이력 범위 ${firstDate}–${latestDate} 안에서 선택해 주세요.`, start < firstDate ? startInput : endInput);
   if (!rows.some((row) => row.date >= start && row.date <= end)) return setHistoryRangeError("선택한 기간에 KOSPI 거래일이 없습니다.", startInput);
-  startInput.setAttribute("aria-invalid", "false");
-  endInput.setAttribute("aria-invalid", "false");
-  store.window = "custom";
-  store.historyStart = start;
-  store.historyEnd = end;
-  persistControlState();
-  updatePressed("[data-window]", store.window, "window");
-  scenarioCache.clear();
-  renderAll();
+  const form = event.currentTarget;
+  const status = $("#history-range-status");
+  const snapshot = captureResearchSnapshot();
+  try {
+    startInput.setAttribute("aria-invalid", "false");
+    endInput.setAttribute("aria-invalid", "false");
+    store.window = "custom";
+    store.historyStart = start;
+    store.historyEnd = end;
+    scenarioCache.clear();
+    clearFormDirty(form);
+    renderAll();
+    persistControlState();
+  } catch (error) {
+    restoreResearchSnapshot(snapshot);
+    form.dataset.dirty = "true";
+    try { renderAll(); } catch (_) { /* keep the last complete DOM if rollback rendering also fails */ }
+    startInput.value = start;
+    endInput.value = end;
+    form.dataset.dirty = "true";
+    status.dataset.state = "error";
+    status.textContent = `적용 실패 · 기존 기간 결과를 유지합니다. ${error instanceof Error ? error.message : ""}`.trim();
+  }
 }
 
 function compactDate(value) {
@@ -783,7 +847,7 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
   };
   const positionCrosshair = () => {
     if (!valid.length) return 0;
-    const ratio = valid.length <= 1 ? 1 : chart._chartIndex / (valid.length - 1);
+    const ratio = itemRatioAt(valid, chart._chartIndex, geometry.itemRatio);
     const left = Math.max(0, crosshairLeft(ratio));
     crosshair.style.left = `${left}px`;
     return left;
@@ -815,7 +879,7 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
     if (!current) return;
     const viewX = (event.clientX - current.svgRect.left) / Math.max(1, current.svgRect.width) * current.width;
     const ratio = Math.max(0, Math.min(1, (viewX - current.left) / Math.max(1, current.right - current.left)));
-    selectIndex(Math.round(ratio * (valid.length - 1)), { x: event.clientX, y: event.clientY });
+    selectIndex(nearestItemIndexByRatio(valid, ratio, geometry.itemRatio), { x: event.clientX, y: event.clientY });
   };
   chart.onpointermove = selectPointer;
   chart.onpointerdown = (event) => {
@@ -1481,14 +1545,21 @@ function renderResidual() {
   const eligibleRows = rows.map((row) => row.selectedEligible === true ? row : { ...row, selectedPercentile: null });
   const blockedRows = rows.map((row) => row.selectedEligible !== true ? row : { ...row, selectedPercentile: null });
   const blockedMarks = rows.map((row, index) => row.selectedEligible !== true && Number.isFinite(Number(row.selectedPercentile)) ? `<circle class="residual-blocked-point" cx="${x(index)}" cy="${y(row.selectedPercentile)}" r="2.5"><title>${esc(`${row.date} · 낮은 적합도, 거래 차단`)}</title></circle>` : "").join("");
-  const validRows = rows.filter((row) => Number.isFinite(Number(row.selectedPercentile)));
+  const validRows = rows
+    .map((row, sourceIndex) => ({ ...row, sourceIndex }))
+    .filter((row) => Number.isFinite(Number(row.selectedPercentile)));
   const latest = validRows.at(-1);
   const latestIndex = latest ? rows.findIndex((row) => row.date === latest.date) : -1;
   const latestMark = latest && latestIndex >= 0 ? `<circle class="line-end-dot strategy" cx="${x(latestIndex)}" cy="${y(latest.selectedPercentile)}" r="3"/><text class="line-end-label strategy" x="${w - p.r + 9}" y="${y(latest.selectedPercentile) + 4}">${esc(fmt.score(latest.selectedPercentile, 1))}</text>` : "";
   const dateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 20, maxTicks: 5 });
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/><rect class="residual-band-fear" x="${p.l}" y="${y(lowerExtreme)}" width="${w - p.l - p.r}" height="${y(0) - y(lowerExtreme)}"/><rect class="residual-band-greed" x="${p.l}" y="${y(100)}" width="${w - p.l - p.r}" height="${y(upperExtreme) - y(100)}"/>${dateAxis}${boundaries}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-primary">${pathSegments(eligibleRows, "selectedPercentile", x, y)}</g><g class="line-blocked">${pathSegments(blockedRows, "selectedPercentile", x, y)}</g>${blockedMarks}${latestMark}<text class="panel-title" x="${p.l}" y="18">잔차 경험적 백분위</text><text class="axis-unit" x="${w - p.r}" y="18" text-anchor="end">0–100 · 거래 차단은 회색 점선</text><text class="residual-zone-label fear" x="${w - p.r - 7}" y="${y(lowerExtreme / 2) + 3}" text-anchor="end">극단 공포 ≤${esc(lowerExtreme)}</text><text class="residual-zone-label greed" x="${w - p.r - 7}" y="${y((100 + upperExtreme) / 2) + 3}" text-anchor="end">극단 탐욕 ≥${esc(upperExtreme)}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   container.setAttribute("aria-label", `${compactModelName(kind)} 잔차 백분위 ${rows[0].date}부터 ${rows.at(-1).date}. 최신 ${latest ? fmt.score(latest.selectedPercentile) : "산출 불가"}.`);
-  attachChartNavigation(container, validRows, (row) => `${row.date}, ${compactModelName(kind)} 잔차 백분위 ${fmt.score(row.selectedPercentile)}, ${labels[row.selectedState] || row.selectedState}, 거래 사용 ${row.selectedEligible === true ? "가능" : "차단"}`, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
+  attachChartNavigation(container, validRows, (row) => `${row.date}, ${compactModelName(kind)} 잔차 백분위 ${fmt.score(row.selectedPercentile)}, ${labels[row.selectedState] || row.selectedState}, 거래 사용 ${row.selectedEligible === true ? "가능" : "차단"}`, {
+    viewBoxWidth: w,
+    plotLeft: p.l,
+    plotRight: w - p.r,
+    itemRatio: (row) => rows.length <= 1 ? 1 : row.sourceIndex / (rows.length - 1)
+  });
   const tableRows = recentRows(rows).map((row) => [row.date, fmt.score(row.selectedPercentile), labels[row.selectedState] || row.selectedState, row.selectedEligible === true ? "거래 가능" : "거래 차단"]);
   $("#residual-data-table").innerHTML = dataTable(["날짜", "백분위", "상태", "품질"], tableRows, `최근 ${tableRows.length}개 ${compactModelName(kind)} 잔차 백분위`);
 }
@@ -1663,6 +1734,103 @@ const dynamicEventCache = new Map();
 const dynamicEventErrors = new Map();
 let latestScenarioError = null;
 let latestEventError = null;
+
+const RESEARCH_FORM_STATUS = Object.freeze({
+  "#history-range-form": "#history-range-status",
+  "#signal-settings-form": "#signal-settings-status",
+  "#exit-threshold-form": "#exit-threshold-status"
+});
+
+function captureResearchFormState() {
+  return Object.entries(RESEARCH_FORM_STATUS).map(([formSelector, statusSelector]) => {
+    const form = $(formSelector);
+    const status = $(statusSelector);
+    return {
+      formSelector,
+      statusSelector,
+      dataset: form ? { ...form.dataset } : {},
+      ariaBusy: form?.getAttribute("aria-busy"),
+      inputs: form ? [...form.querySelectorAll("input")].map((input) => ({
+        id: input.id,
+        value: input.value,
+        ariaInvalid: input.getAttribute("aria-invalid")
+      })) : [],
+      statusDataset: status ? { ...status.dataset } : {},
+      statusText: status?.textContent || ""
+    };
+  });
+}
+
+function restoreResearchFormState(states = []) {
+  states.forEach((state) => {
+    const form = $(state.formSelector);
+    const status = $(state.statusSelector);
+    if (form) {
+      Object.keys(form.dataset).forEach((key) => delete form.dataset[key]);
+      Object.assign(form.dataset, state.dataset);
+      if (state.ariaBusy == null) form.removeAttribute("aria-busy");
+      else form.setAttribute("aria-busy", state.ariaBusy);
+      state.inputs.forEach(({ id, value, ariaInvalid }) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.value = value;
+        if (ariaInvalid == null) input.removeAttribute("aria-invalid");
+        else input.setAttribute("aria-invalid", ariaInvalid);
+      });
+    }
+    if (status) {
+      Object.keys(status.dataset).forEach((key) => delete status.dataset[key]);
+      Object.assign(status.dataset, state.statusDataset);
+      status.textContent = state.statusText;
+    }
+  });
+}
+
+function captureResearchSnapshot() {
+  return {
+    controls: Object.fromEntries(Object.keys(CONTROL_QUERY).map((key) => [key, store[key]])),
+    activeSeries: store.activeSeries,
+    activeSignalMeta: store.activeSignalMeta,
+    scenarioCache: new Map(scenarioCache),
+    dynamicEventCache: new Map(dynamicEventCache),
+    dynamicEventErrors: new Map(dynamicEventErrors),
+    latestScenarioError,
+    latestEventError,
+    formState: captureResearchFormState()
+  };
+}
+
+function restoreMap(target, source) {
+  target.clear();
+  source.forEach((value, key) => target.set(key, value));
+}
+
+function restoreResearchSnapshot(snapshot) {
+  Object.assign(store, snapshot.controls);
+  store.activeSeries = snapshot.activeSeries;
+  store.activeSignalMeta = snapshot.activeSignalMeta;
+  restoreMap(scenarioCache, snapshot.scenarioCache);
+  restoreMap(dynamicEventCache, snapshot.dynamicEventCache);
+  restoreMap(dynamicEventErrors, snapshot.dynamicEventErrors);
+  latestScenarioError = snapshot.latestScenarioError;
+  latestEventError = snapshot.latestEventError;
+  restoreResearchFormState(snapshot.formState);
+}
+
+function applySynchronousControlChange(mutate, render = renderAll) {
+  const snapshot = captureResearchSnapshot();
+  try {
+    mutate();
+    render();
+    persistControlState();
+    return true;
+  } catch (error) {
+    restoreResearchSnapshot(snapshot);
+    try { renderAll(); } catch (_) { /* retain the last complete DOM if rollback rendering also fails */ }
+    announceViewAction(`설정을 적용하지 못해 기존 결과를 유지합니다. ${error instanceof Error ? error.message : ""}`.trim());
+    return false;
+  }
+}
 
 function scenarioResultFor(policyId, { proxy, period, variant, cost }) {
   if (policyId === "long_inverse_cash" && variant === "disparity") return null;
@@ -1998,10 +2166,22 @@ function renderPdfSnapshot() {
 function renderDiagnostics() {
   const base = analysisEntity();
   const diag = store.dashboard.diagnostics || {};
-  const latest = diag.latest || {};
+  const appliedRows = selectedHistory();
+  const periodStart = appliedRows[0]?.date || null;
+  const periodEnd = appliedRows.at(-1)?.date || base.date || store.summary?.dataAsOf || null;
+  const allRows = (diag.series || []).filter((row) => row?.date);
+  const snapshotRow = [...allRows].reverse().find((row) => !periodEnd || row.date <= periodEnd) || null;
+  const latest = snapshotRow && snapshotRow.date === diag.latest?.date
+    ? { ...snapshotRow, ...diag.latest }
+    : (snapshotRow || {});
+  const rows = allRows.filter((row) => (!periodStart || row.date >= periodStart) && (!periodEnd || row.date <= periodEnd) && (row.muHynixRelativeSpread != null || row.muHynixRatioIndexed != null));
+  const kospiBasisLabel = base.date || periodEnd || "산출 불가";
+  const semiconductorBasisLabel = latest.date || "산출 불가";
   $("#diagnostic-list").innerHTML = [
+    ["KOSPI 기준일", kospiBasisLabel],
     ["KOSPI 50일 이격도", fmt.score(base.disparity50, 1)],
     ["KOSPI MDD252", fmt.pct(base.mdd252)],
+    ["반도체 기준일", semiconductorBasisLabel],
     ["Micron KRW MDD252", fmt.pct(latest.muMdd252)],
     ["SK하이닉스 MDD252", fmt.pct(latest.hynixMdd252)],
     ["삼성전자 MDD252", fmt.pct(latest.samsungMdd252)],
@@ -2010,9 +2190,13 @@ function renderDiagnostics() {
     ["MU / 하이닉스 상대 스프레드", latest.muHynixRelativeSpread == null ? "—" : `${fmt.score(latest.muHynixRelativeSpread, 2)}p`],
     ["미국 세션 정렬", diag.status === "ok" ? "KRX일 이전 세션" : "산출 불가"]
   ].map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("");
-  const rows = (diag.series || []).filter((row) => row.muHynixRelativeSpread != null || row.muHynixRatioIndexed != null);
   const container = $("#diagnostic-chart");
-  if (rows.length < 2) return showEmpty(container, "상대 스프레드 산출 불가");
+  const tableRows = recentRows(rows).map((row) => [row.date, fmt.score(row.muHynixRatio, 4), fmt.score(row.muHynixRatioIndexed, 1), row.muHynixRelativeSpread == null ? "—" : `${fmt.score(row.muHynixRelativeSpread, 2)}p`]);
+  $("#diagnostic-data-table").innerHTML = dataTable(["날짜", "MU/하이닉스 비율", "비율지수", "상대 스프레드"], tableRows, `선택 기간 최근 ${tableRows.length}개 상대 진단`);
+  if (rows.length < 2) {
+    const message = rows.length ? `${rows[0].date} 관측 1개 · 차트에는 2개 이상 필요` : "선택 기간 상대 스프레드 산출 불가";
+    return showEmpty(container, message);
+  }
   const field = rows.some((row) => Number.isFinite(Number(row.muHynixRelativeSpread))) ? "muHynixRelativeSpread" : "muHynixRatioIndexed";
   const values = rows.map((row) => Number(row[field])).filter(Number.isFinite);
   const w = 600, h = 280, p = { l: 68, r: 22, t: 34, b: 48 };
@@ -2024,10 +2208,8 @@ function renderDiagnostics() {
   const reference = field === "muHynixRelativeSpread" && min <= 0 && max >= 0 ? `<line class="reference-line" x1="${p.l}" y1="${y(0)}" x2="${w - p.r}" y2="${y(0)}"/>` : field === "muHynixRatioIndexed" && min <= 100 && max >= 100 ? `<line class="reference-line" x1="${p.l}" y1="${y(100)}" x2="${w - p.r}" y2="${y(100)}"/>` : "";
   const dateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 19, maxTicks: 5 });
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${dateAxis}${ticks}${reference}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-accent">${pathSegments(rows, field, x, y)}</g><text class="panel-title" x="${p.l}" y="19">${field === "muHynixRelativeSpread" ? "MU 대비 하이닉스 상대 스프레드 (지수포인트)" : "MU / 하이닉스 비율지수"}</text><text class="axis-unit" x="${w - p.r}" y="19" text-anchor="end">${field === "muHynixRelativeSpread" ? "미국 선행 세션 · 환율 환산" : "시작 = 100"}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 4}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
-  container.setAttribute("aria-label", `${rows[0].date}부터 ${rows.at(-1).date}까지 ${field === "muHynixRelativeSpread" ? "Micron 대비 SK하이닉스 상대 스프레드" : "Micron 대 SK하이닉스 비율지수"}. 최신 ${formatValue(rows.at(-1)[field])}.`);
+  container.setAttribute("aria-label", `${rows[0].date}부터 ${rows.at(-1).date}까지 선택 평가 기간의 ${field === "muHynixRelativeSpread" ? "Micron 대비 SK하이닉스 상대 스프레드" : "Micron 대 SK하이닉스 비율지수"}. 기간 끝 관측 ${formatValue(rows.at(-1)[field])}.`);
   attachChartNavigation(container, rows, (row) => `${row.date}, ${field === "muHynixRelativeSpread" ? "상대 스프레드" : "비율지수"} ${formatValue(row[field])}`, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
-  const tableRows = recentRows(rows).map((row) => [row.date, fmt.score(row.muHynixRatio, 4), fmt.score(row.muHynixRatioIndexed, 1), row.muHynixRelativeSpread == null ? "—" : `${fmt.score(row.muHynixRelativeSpread, 2)}p`]);
-  $("#diagnostic-data-table").innerHTML = dataTable(["날짜", "MU/하이닉스 비율", "비율지수", "상대 스프레드"], tableRows, `최근 ${tableRows.length}개 상대 진단`);
 }
 
 function renderFlowChannels() {
@@ -2088,6 +2270,8 @@ function updatePressed(selector, value, key) {
 }
 
 function syncSignalSettingControls() {
+  const form = $("#signal-settings-form");
+  const dirty = form?.dataset.dirty === "true";
   const values = {
     "#signal-lookback-input": store.signalLookback,
     "#signal-min-r2-input": store.signalMinimumR2,
@@ -2096,14 +2280,65 @@ function syncSignalSettingControls() {
   };
   Object.entries(values).forEach(([selector, value]) => {
     const input = $(selector);
-    if (input && document.activeElement !== input) input.value = String(value);
+    if (input && !dirty && document.activeElement !== input) input.value = String(value);
   });
+  const displayed = dirty ? {
+    lookback: Number($("#signal-lookback-input")?.value),
+    extremeTail: Number($("#signal-tail-input")?.value),
+    maxHolding: Number($("#signal-max-holding-input")?.value)
+  } : {
+    lookback: Number(store.signalLookback),
+    extremeTail: Number(store.signalExtremeTail),
+    maxHolding: Number(store.signalMaxHolding)
+  };
   const lookbackHelp = $("#signal-lookback-help");
-  if (lookbackHelp) lookbackHelp.textContent = `${Math.round(Number(store.signalLookback) / 21)}개월 상당 · 최소 ${Math.min(store.signalLookback, Math.max(40, Math.min(200, Math.ceil(store.signalLookback * .8))))}개 관측`;
+  if (lookbackHelp && Number.isFinite(displayed.lookback)) lookbackHelp.textContent = `${Math.round(displayed.lookback / 21)}개월 상당 · 최소 ${Math.min(displayed.lookback, Math.max(40, Math.min(200, Math.ceil(displayed.lookback * .8))))}개 관측${dirty ? " · 미적용" : ""}`;
   const tailHelp = $("#signal-tail-help");
-  if (tailHelp) tailHelp.textContent = `공포 ≤${store.signalExtremeTail} · 탐욕 ≥${100 - store.signalExtremeTail}`;
+  if (tailHelp && Number.isFinite(displayed.extremeTail)) tailHelp.textContent = `공포 ≤${displayed.extremeTail} · 탐욕 ≥${100 - displayed.extremeTail}${dirty ? " · 미적용" : ""}`;
   const holdingHelp = $("#signal-max-holding-help");
-  if (holdingHelp) holdingHelp.textContent = `회복이 없으면 ${store.signalMaxHolding}번째 보유 세션 종가 확인 후 다음 시가 청산`;
+  if (holdingHelp && Number.isFinite(displayed.maxHolding)) holdingHelp.textContent = `회복이 없으면 ${displayed.maxHolding}번째 보유 세션 종가 확인 후 다음 시가 청산${dirty ? " · 미적용" : ""}`;
+}
+
+function signalAppliedStatusText() {
+  return `적용됨 · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail} · 최대 ${store.signalMaxHolding}일`;
+}
+
+function updateSignalDraftState() {
+  const form = $("#signal-settings-form");
+  const status = $("#signal-settings-status");
+  const fields = [
+    ["#signal-lookback-input", store.signalLookback],
+    ["#signal-min-r2-input", store.signalMinimumR2],
+    ["#signal-tail-input", store.signalExtremeTail],
+    ["#signal-max-holding-input", store.signalMaxHolding]
+  ];
+  const dirty = fields.some(([selector, applied]) => {
+    const input = $(selector);
+    return !input || input.value.trim() === "" || !Number.isFinite(Number(input.value)) || Number(input.value) !== Number(applied);
+  });
+  if (dirty) setFormDirty(form, status, "미적용 변경 · 적용하면 관련 신호·사건·전략을 다시 계산합니다.");
+  else {
+    clearFormDirty(form);
+    status.dataset.state = "ok";
+    status.textContent = signalAppliedStatusText();
+  }
+  syncSignalSettingControls();
+  return dirty;
+}
+
+function updateExitDraftState() {
+  const form = $("#exit-threshold-form");
+  const input = $("#exit-threshold-input");
+  const status = $("#exit-threshold-status");
+  const dirty = !input || input.value.trim() === "" || !Number.isFinite(Number(input.value)) || Number(input.value) !== Number(store.longExitPercentile);
+  input?.setAttribute("aria-invalid", "false");
+  if (dirty) setFormDirty(form, status, `미적용 변경 · 현재 전략 결과는 롱 ${store.longExitPercentile} / 인버스 ${100 - store.longExitPercentile} 청산 기준입니다.`);
+  else {
+    clearFormDirty(form);
+    status.dataset.state = "ok";
+    status.textContent = `적용됨 · 롱 ≥${store.longExitPercentile} · 인버스 ≤${100 - store.longExitPercentile}`;
+  }
+  return dirty;
 }
 
 function updateBacktestControls() {
@@ -2129,7 +2364,7 @@ function updateBacktestControls() {
   $("#backtest-selection-note").textContent = available ? `${pairLabel(store.backtestProxy)} · ${modelName()} · 학습 ${store.signalLookback}일 · 극단 ${store.signalExtremeTail}% · 롱 청산 ${store.longExitPercentile}, 인버스 청산 ${100 - store.longExitPercentile} · 최대 ${store.signalMaxHolding}일${applied}` : "선택한 실제 ETF 페어의 조정가격 이력을 확인 중입니다.";
   $("#exit-threshold-value").textContent = `${store.longExitPercentile}`;
   $("#inverse-exit-threshold-value").textContent = `${100 - store.longExitPercentile}`;
-  $("#exit-threshold-input").value = String(store.longExitPercentile);
+  if ($("#exit-threshold-form")?.dataset.dirty !== "true") $("#exit-threshold-input").value = String(store.longExitPercentile);
   syncSignalSettingControls();
 }
 
@@ -2215,7 +2450,7 @@ function setResearchControlsEnabled(enabled) {
     "[data-backtest-pair]", "[data-backtest-policy]", "[data-backtest-variant]",
     "[data-backtest-cost]", "[data-backtest-period]", "#history-range-form input",
     "#history-range-form button", "#signal-settings-form input", "#signal-settings-form button",
-    "#exit-threshold-form input", "#exit-threshold-form button", "#reset-controls"
+    "#exit-threshold-form input", "#exit-threshold-form button", "#reset-controls", "#share-view"
   ].join(",");
   $$(selector).forEach((control) => {
     if (!enabled) {
@@ -2230,11 +2465,16 @@ function setResearchControlsEnabled(enabled) {
 }
 
 async function shareCurrentView() {
+  if ($(".analysis-config")?.getAttribute("aria-busy") === "true") {
+    announceViewAction("계산이 끝난 뒤 적용된 설정 링크를 복사할 수 있습니다.");
+    return;
+  }
   persistControlState();
   const text = location.href;
+  const draftNote = hasUnappliedDrafts() ? " 미적용 변경은 제외됩니다." : "";
   try {
     await navigator.clipboard.writeText(text);
-    announceViewAction("현재 화면 링크를 복사했습니다.");
+    announceViewAction(`적용된 설정 링크를 복사했습니다.${draftNote}`);
   } catch (_) {
     const input = document.createElement("input");
     input.value = text;
@@ -2243,45 +2483,54 @@ async function shareCurrentView() {
     input.select();
     const copied = document.execCommand?.("copy");
     input.remove();
-    announceViewAction(copied ? "현재 화면 링크를 복사했습니다." : "주소창의 링크를 복사해 주세요.");
+    announceViewAction(copied ? `적용된 설정 링크를 복사했습니다.${draftNote}` : "주소창의 링크를 복사해 주세요.");
   }
 }
 
 function resetControls() {
-  Object.assign(store, DEFAULT_CONTROLS);
-  syncStrategyTrack();
-  recomputeDynamicResearch();
-  const exitInput = $("#exit-threshold-input");
-  const exitStatus = $("#exit-threshold-status");
-  exitInput?.removeAttribute("aria-invalid");
-  if (exitStatus) {
-    delete exitStatus.dataset.state;
-    exitStatus.textContent = "";
+  const snapshot = captureResearchSnapshot();
+  try {
+    ["#exit-threshold-form", "#signal-settings-form", "#history-range-form"].forEach((selector) => clearFormDirty($(selector)));
+    Object.assign(store, DEFAULT_CONTROLS);
+    syncStrategyTrack();
+    recomputeDynamicResearch();
+    const exitInput = $("#exit-threshold-input");
+    const exitStatus = $("#exit-threshold-status");
+    exitInput?.removeAttribute("aria-invalid");
+    if (exitStatus) {
+      delete exitStatus.dataset.state;
+      exitStatus.textContent = "";
+    }
+    const signalStatus = $("#signal-settings-status");
+    if (signalStatus) {
+      signalStatus.dataset.state = "ok";
+      signalStatus.textContent = "기본값 적용 · 학습창 252일 · 최소 R² 0.20 · 극단 꼬리 5% · 최대 보유 20일";
+    }
+    ["#signal-lookback-input", "#signal-min-r2-input", "#signal-tail-input", "#signal-max-holding-input"].forEach((selector) => $(selector)?.removeAttribute("aria-invalid"));
+    ["#history-start", "#history-end"].forEach((selector) => $(selector)?.removeAttribute("aria-invalid"));
+    if (!modelPayload("robust")) store.model = modelPayload("scaled") ? "scaled" : "raw";
+    ensureBacktestSelection();
+    renderAll();
+    persistControlState();
+    announceViewAction("모든 화면 설정을 기본값으로 복원했습니다.");
+  } catch (error) {
+    restoreResearchSnapshot(snapshot);
+    try { renderAll(); } catch (_) { /* retain the last complete DOM if rollback rendering also fails */ }
+    announceViewAction(`기본값 복원에 실패해 기존 결과를 유지합니다. ${error instanceof Error ? error.message : ""}`.trim());
   }
-  const signalStatus = $("#signal-settings-status");
-  if (signalStatus) {
-    signalStatus.dataset.state = "ok";
-    signalStatus.textContent = "기본값 적용 · 학습창 252일 · 최소 R² 0.20 · 극단 꼬리 5% · 최대 보유 20일";
-  }
-  ["#signal-lookback-input", "#signal-min-r2-input", "#signal-tail-input", "#signal-max-holding-input"].forEach((selector) => $(selector)?.removeAttribute("aria-invalid"));
-  if (!modelPayload("robust")) store.model = modelPayload("scaled") ? "scaled" : "raw";
-  ensureBacktestSelection();
-  persistControlState();
-  renderAll();
-  announceViewAction("모든 화면 설정을 기본값으로 복원했습니다.");
 }
 
 function bindControls() {
   $$('[data-window]').forEach((button) => button.addEventListener("click", () => {
-    store.window = button.dataset.window;
-    scenarioCache.clear();
-    persistControlState();
-    updatePressed("[data-window]", store.window, "window");
-    renderAll();
+    applySynchronousControlChange(() => {
+      clearFormDirty($("#history-range-form"));
+      store.window = button.dataset.window;
+      scenarioCache.clear();
+    });
   }));
   $$('[data-model]').forEach((button) => button.addEventListener("click", async () => {
     if (button.disabled) return;
-    const previous = store.model;
+    const snapshot = captureResearchSnapshot();
     store.model = button.dataset.model;
     syncStrategyTrack();
     const status = $("#signal-settings-status");
@@ -2295,72 +2544,87 @@ function bindControls() {
       await recomputeDynamicResearchAsync({ onProgress: ({ ratio }) => {
         status.textContent = `${modelName()} 신호 이력을 과거 정보만으로 다시 계산하는 중입니다… ${Math.round(ratio * 100)}%`;
       } });
+      renderAll();
       persistControlState();
-      renderAll();
-      status.dataset.state = "ok";
-      status.textContent = `적용됨 · ${modelName()} · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail}`;
+      if (!updateSignalDraftState()) status.textContent = `적용됨 · ${modelName()} · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail}`;
     } catch (error) {
-      store.model = previous;
-      syncStrategyTrack();
-      recomputeDynamicResearch();
+      restoreResearchSnapshot(snapshot);
       renderAll();
-      status.dataset.state = "error";
-      status.textContent = error instanceof Error ? error.message : "연구 트랙을 다시 계산할 수 없습니다.";
+      if (!updateSignalDraftState()) {
+        status.dataset.state = "error";
+        status.textContent = error instanceof Error ? error.message : "연구 트랙을 다시 계산할 수 없습니다.";
+      }
     } finally {
       setResearchControlsEnabled(true);
       form.setAttribute("aria-busy", "false");
     }
   }));
   $$('[data-event-asset]').forEach((button) => button.addEventListener("click", () => {
-    store.eventAsset = button.dataset.eventAsset;
-    persistControlState();
-    updatePressed("[data-event-asset]", store.eventAsset, "eventAsset");
-    renderEvents();
-    renderConclusion();
+    applySynchronousControlChange(
+      () => { store.eventAsset = button.dataset.eventAsset; },
+      () => {
+        updatePressed("[data-event-asset]", store.eventAsset, "eventAsset");
+        renderEvents();
+        renderConclusion();
+      }
+    );
   }));
   $$('[data-event-sample]').forEach((button) => button.addEventListener("click", () => {
-    store.eventSample = button.dataset.eventSample;
-    persistControlState();
-    updatePressed("[data-event-sample]", store.eventSample, "eventSample");
-    renderEvents();
-    renderConclusion();
+    applySynchronousControlChange(
+      () => { store.eventSample = button.dataset.eventSample; },
+      () => {
+        updatePressed("[data-event-sample]", store.eventSample, "eventSample");
+        renderEvents();
+        renderConclusion();
+      }
+    );
   }));
   $$('[data-backtest-pair]').forEach((button) => button.addEventListener("click", () => {
-    store.backtestProxy = button.dataset.backtestPair;
-    scenarioCache.clear();
-    ensureBacktestSelection();
-    persistControlState();
-    renderAll();
+    applySynchronousControlChange(() => {
+      store.backtestProxy = button.dataset.backtestPair;
+      scenarioCache.clear();
+      ensureBacktestSelection();
+    });
   }));
   $$('[data-backtest-policy]').forEach((button) => button.addEventListener("click", () => {
-    store.backtestPolicy = button.dataset.backtestPolicy;
-    scenarioCache.clear();
-    persistControlState();
-    renderAll();
+    applySynchronousControlChange(() => {
+      store.backtestPolicy = button.dataset.backtestPolicy;
+      scenarioCache.clear();
+    });
   }));
   $$('[data-backtest-variant]').forEach((button) => button.addEventListener("click", () => {
-    store.backtestVariant = button.dataset.backtestVariant;
-    store.model = ({ scaled_huber: "robust", scaled_ols: "scaled", raw_ols: "raw" })[store.backtestVariant] || store.model;
-    scenarioCache.clear();
-    ensureBacktestSelection();
-    persistControlState();
-    renderAll();
+    applySynchronousControlChange(() => {
+      store.backtestVariant = button.dataset.backtestVariant;
+      store.model = ({ scaled_huber: "robust", scaled_ols: "scaled", raw_ols: "raw" })[store.backtestVariant] || store.model;
+      scenarioCache.clear();
+      ensureBacktestSelection();
+    });
   }));
   $$('[data-backtest-cost]').forEach((button) => button.addEventListener("click", () => {
-    store.backtestCost = Number(button.dataset.backtestCost);
-    scenarioCache.clear();
-    ensureBacktestSelection();
-    persistControlState();
-    renderAll();
+    applySynchronousControlChange(() => {
+      store.backtestCost = Number(button.dataset.backtestCost);
+      scenarioCache.clear();
+      ensureBacktestSelection();
+    });
   }));
   $$('[data-backtest-period]').forEach((button) => button.addEventListener("click", () => {
-    store.backtestPeriod = button.dataset.backtestPeriod;
-    scenarioCache.clear();
-    ensureBacktestSelection();
-    persistControlState();
-    renderAll();
+    applySynchronousControlChange(() => {
+      store.backtestPeriod = button.dataset.backtestPeriod;
+      scenarioCache.clear();
+      ensureBacktestSelection();
+    });
   }));
   $$('[data-chart-latest]').forEach((button) => button.addEventListener("click", () => scrollChartLatest(button.dataset.chartLatest)));
+  $("#history-start").addEventListener("input", updateHistoryDraftState);
+  $("#history-end").addEventListener("input", updateHistoryDraftState);
+  ["#signal-lookback-input", "#signal-min-r2-input", "#signal-tail-input", "#signal-max-holding-input"].forEach((selector) => {
+    const input = $(selector);
+    input.addEventListener("input", () => {
+      input.setAttribute("aria-invalid", "false");
+      updateSignalDraftState();
+    });
+  });
+  $("#exit-threshold-input").addEventListener("input", updateExitDraftState);
   $("#history-range-form").addEventListener("submit", applyCustomHistoryRange);
   $("#signal-settings-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2373,14 +2637,36 @@ function bindControls() {
     };
     const status = $("#signal-settings-status");
     const button = $("#apply-signal-settings");
-    const previous = Object.fromEntries(Object.keys(inputs).map((key) => [key, store[key]]));
+    const draft = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, Number(input.value)]));
+    const invalidInput = Object.values(inputs).find((input) => input.value.trim() === "" || !input.checkValidity());
+    if (invalidInput) {
+      Object.values(inputs).forEach((input) => input.setAttribute("aria-invalid", String(input === invalidInput)));
+      form.dataset.dirty = "true";
+      status.dataset.state = "error";
+      status.textContent = "입력 범위에 맞는 신호 학습 값을 확인해 주세요. 기존 결과는 유지됩니다.";
+      invalidInput.focus();
+      return;
+    }
     try {
-      if (Object.values(inputs).some((input) => input.value.trim() === "")) throw new Error("신호 학습 설정의 모든 값을 입력해 주세요.");
+      normalizeSignalConfig({
+        track: store.model,
+        lookback: draft.signalLookback,
+        minimumR2: draft.signalMinimumR2,
+        extremeTail: draft.signalExtremeTail
+      });
+      if (!Number.isInteger(draft.signalMaxHolding) || draft.signalMaxHolding < 1 || draft.signalMaxHolding > 60) throw new Error("최대 보유기간은 1~60 거래일 사이 정수여야 합니다.");
+    } catch (error) {
+      form.dataset.dirty = "true";
+      status.dataset.state = "error";
+      status.textContent = `${error instanceof Error ? error.message : "신호 학습 값을 확인해 주세요."} 기존 결과는 유지됩니다.`;
+      return;
+    }
+    const snapshot = captureResearchSnapshot();
+    try {
       Object.entries(inputs).forEach(([key, input]) => {
-        store[key] = Number(input.value);
+        store[key] = draft[key];
         input.removeAttribute("aria-invalid");
       });
-      currentSignalConfig();
       button.disabled = true;
       form.setAttribute("aria-busy", "true");
       status.dataset.state = "pending";
@@ -2396,16 +2682,22 @@ function bindControls() {
         throw latestScenarioError || new Error("선택 설정의 전략 경로를 계산할 수 없습니다.");
       }
       if (!selectedEventSection() && latestEventError) throw latestEventError;
-      persistControlState();
+      clearFormDirty(form);
       renderAll();
+      persistControlState();
       status.dataset.state = "ok";
-      status.textContent = `적용됨 · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail} · 최대 ${store.signalMaxHolding}일`;
+      status.textContent = signalAppliedStatusText();
     } catch (error) {
-      Object.assign(store, previous);
-      try { recomputeDynamicResearch(); } catch (_) { /* retain last display if rollback refit fails */ }
-      Object.values(inputs).forEach((input) => input.setAttribute("aria-invalid", "true"));
+      restoreResearchSnapshot(snapshot);
+      form.dataset.dirty = "true";
+      try { renderAll(); } catch (_) { /* keep the last complete DOM if rollback rendering also fails */ }
+      Object.entries(inputs).forEach(([key, input]) => {
+        input.value = String(draft[key]);
+        input.setAttribute("aria-invalid", "false");
+      });
+      syncSignalSettingControls();
       status.dataset.state = "error";
-      status.textContent = error instanceof Error ? error.message : "신호 학습 설정을 적용할 수 없습니다.";
+      status.textContent = `적용 실패 · 기존 결과를 유지합니다. ${error instanceof Error ? error.message : "신호 학습 설정을 적용할 수 없습니다."}`;
     } finally {
       setResearchControlsEnabled(true);
       button.disabled = false;
@@ -2416,10 +2708,23 @@ function bindControls() {
     event.preventDefault();
     const input = $("#exit-threshold-input");
     const status = $("#exit-threshold-status");
-    const previous = store.longExitPercentile;
+    const form = event.currentTarget;
+    let candidate;
+    try {
+      if (input.value.trim() === "" || !input.checkValidity()) throw new Error("청산 기준은 50~94 사이 정수로 입력해 주세요.");
+      candidate = normalizeLongExitPercentile(input.value);
+    } catch (error) {
+      form.dataset.dirty = "true";
+      input.setAttribute("aria-invalid", "true");
+      status.dataset.state = "error";
+      status.textContent = `${error instanceof Error ? error.message : "청산 기준을 확인해 주세요."} 기존 결과는 유지됩니다.`;
+      input.focus();
+      return;
+    }
+    const snapshot = captureResearchSnapshot();
     try {
       if (!store.dashboard || !store.history || !store.strategyComparison) throw new Error("공개 데이터를 불러온 뒤 다시 적용해 주세요.");
-      store.longExitPercentile = normalizeLongExitPercentile(input.value);
+      store.longExitPercentile = candidate;
       scenarioCache.clear();
       latestScenarioError = null;
       const scenarioResults = resultsForPolicySelection().filter(({ result }) => result?.metrics);
@@ -2427,16 +2732,19 @@ function bindControls() {
       const expectedCount = store.backtestPolicy === "compare" ? 2 : 1;
       if (scenarioResults.length !== expectedCount) throw new Error("선택한 정책의 사용자 시나리오를 계산할 수 없습니다.");
       input.removeAttribute("aria-invalid");
-      status.dataset.state = "ok";
-      status.textContent = `적용됨: 롱 ≥${store.longExitPercentile}, 인버스 ≤${100 - store.longExitPercentile}`;
-      persistControlState();
+      clearFormDirty(form);
       renderAll();
+      persistControlState();
+      status.dataset.state = "ok";
+      status.textContent = `적용됨 · 롱 ≥${store.longExitPercentile} · 인버스 ≤${100 - store.longExitPercentile}`;
     } catch (error) {
-      store.longExitPercentile = previous;
-      scenarioCache.clear();
-      input.setAttribute("aria-invalid", "true");
+      restoreResearchSnapshot(snapshot);
+      form.dataset.dirty = "true";
+      try { renderAll(); } catch (_) { /* keep the last complete DOM if rollback rendering also fails */ }
+      input.value = String(candidate);
+      input.setAttribute("aria-invalid", "false");
       status.dataset.state = "error";
-      status.textContent = error.message;
+      status.textContent = `적용 실패 · 기존 결과를 유지합니다. ${error instanceof Error ? error.message : "청산 기준을 적용할 수 없습니다."}`;
     }
   });
   $("#reset-controls").addEventListener("click", resetControls);
@@ -2517,7 +2825,7 @@ Promise.all([loadJson("data/summary.json"), loadJson("data/dashboard.json"), loa
     renderAll();
     const signalStatus = $("#signal-settings-status");
     signalStatus.dataset.state = "ok";
-    signalStatus.textContent = `적용됨 · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail} · 최대 ${store.signalMaxHolding}일`;
+    signalStatus.textContent = signalAppliedStatusText();
     if (!rangeAvailable) announceViewAction("저장된 사용자 기간이 공개 이력 밖이어서 최근 3년으로 복원했습니다.");
   })
   .catch((error) => {

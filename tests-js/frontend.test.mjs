@@ -16,7 +16,7 @@ test('dashboard exposes one unified scenario control surface with pressed state'
     'data-backtest-period="full"','data-backtest-period="common"'
   ]) assert.match(html,new RegExp(token));
   assert.ok((html.match(/aria-pressed=/g)||[]).length>=17);
-  assert.match(html,/트랙·ETF·비용·청산선·기간으로 신호, 사건 연구, 차트와 성과표를 함께 다시 계산/);
+  assert.match(html,/선택값과 관련된 신호·사건·전략 결과를 같은 적용 시나리오로 다시 계산/);
   for(const id of ['signal-settings-form','signal-lookback-input','signal-min-r2-input','signal-tail-input','signal-max-holding-input','signal-settings-status']) assert.match(html,new RegExp(`id="${id}"`));
   assert.match(html,/id="linked-strategy-rule"/);
   assert.match(app,/robust: "scaled_huber"/);
@@ -91,8 +91,9 @@ test('dynamic exit submit validates loaded data and scenario success before anno
   const resultGuard=submit.indexOf('if (scenarioResults.length !== expectedCount)');
   const success=submit.indexOf('status.dataset.state = "ok"');
   assert.ok(dataGuard>=0 && errorGuard>dataGuard && resultGuard>errorGuard && success>resultGuard);
-  assert.match(submit,/const previous = store\.longExitPercentile/);
-  assert.match(submit,/store\.longExitPercentile = previous/);
+  assert.match(submit,/const snapshot = captureResearchSnapshot\(\)/);
+  assert.match(submit,/restoreResearchSnapshot\(snapshot\)/);
+  assert.ok(submit.indexOf('renderAll();') < submit.indexOf('persistControlState();'));
   assert.match(submit,/status\.dataset\.state = "error"/);
 });
 
