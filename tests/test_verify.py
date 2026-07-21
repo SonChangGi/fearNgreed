@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from copy import deepcopy
 from pathlib import Path
 
@@ -86,16 +87,43 @@ def test_verify_local_reports_hashes_and_headroom() -> None:
     }
 
 
-def test_verify_local_can_require_an_exact_official_data_date() -> None:
+def test_verify_local_can_require_an_exact_official_data_date(tmp_path) -> None:
     root = Path(__file__).resolve().parents[1]
-    actual = json.loads((root / "data" / "summary.json").read_text(encoding="utf-8"))["dataAsOf"]
+    shutil.copytree(root / "data", tmp_path / "data")
+    shutil.copytree(root / "schemas", tmp_path / "schemas")
+    summary_path = tmp_path / "data" / "summary.json"
+    automation_path = tmp_path / "data" / "automation-status.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    automation = json.loads(automation_path.read_text(encoding="utf-8"))
+    actual = summary["dataAsOf"]
+    status = summary["status"]
+    status.update(
+        {
+            "state": "degraded",
+            "label": "데이터 저하",
+            "freshnessBasis": "official_krx_latest_completed_session",
+            "expectedDataAsOf": actual,
+            "sourceFreshnessPassed": True,
+        }
+    )
+    summary["automation"]["state"] = "degraded"
+    automation.update(
+        {
+            "state": "degraded",
+            "freshnessBasis": "official_krx_latest_completed_session",
+            "expectedDataAsOf": actual,
+            "sourceFreshnessPassed": True,
+        }
+    )
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+    automation_path.write_text(json.dumps(automation, ensure_ascii=False), encoding="utf-8")
 
     assert (
-        verify_local(root, minimum_headroom_ratio=0, expected_data_as_of=actual)["dataAsOf"]
+        verify_local(tmp_path, minimum_headroom_ratio=0, expected_data_as_of=actual)["dataAsOf"]
         == actual
     )
     with pytest.raises(ValueError, match="required official KRX session"):
-        verify_local(root, minimum_headroom_ratio=0, expected_data_as_of="1999-01-04")
+        verify_local(tmp_path, minimum_headroom_ratio=0, expected_data_as_of="1999-01-04")
 
 
 def _freshness_summary(

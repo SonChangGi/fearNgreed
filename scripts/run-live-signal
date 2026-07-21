@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 REPOSITORY_ROOT="${SCRIPT_DIR:h}"
+TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout"
+CAPTURE_TIMEOUT_SECONDS=120
 OUTPUT_PATH="$REPOSITORY_ROOT/var/live-signal-local.json"
 SEOUL_DATE="$(TZ=Asia/Seoul date +%F)"
 SEOUL_WEEKDAY="$(TZ=Asia/Seoul date +%u)"
@@ -59,9 +61,14 @@ for attempt in 1 2 3 4; do
 
   : >"$receipt_file"
   rm -f "$OUTPUT_PATH"
-  if with-krx-keychain uv run --frozen python -m fearngreed.live_signal \
+  set +e
+  python3 "$TIMEOUT_RUNNER" "$CAPTURE_TIMEOUT_SECONDS" \
+    with-krx-keychain uv run --frozen python -m fearngreed.live_signal \
     --date "$SEOUL_DATE" \
-    --output "$OUTPUT_PATH" >"$receipt_file" 2>/dev/null; then
+    --output "$OUTPUT_PATH" >"$receipt_file" 2>/dev/null
+  capture_status=$?
+  set -e
+  if (( capture_status == 0 )); then
     if ! inside_capture_window; then
       echo "live-signal skipped: capture completed after 16:00 KST"
       exit 0
@@ -82,9 +89,13 @@ for attempt in 1 2 3 4; do
     exit 0
   fi
 
-  reason="$(receipt_field reason || true)"
+  if (( capture_status == 124 )); then
+    reason="live_capture_timeout"
+  else
+    reason="$(receipt_field reason || true)"
+  fi
   case "$reason" in
-    live_kospi_session_unavailable | live_flow_session_unavailable | live_kospi_date_mismatch | live_flow_date_mismatch | live_observation_invalid | live_capture_window_closed)
+    live_kospi_session_unavailable | live_flow_session_unavailable | live_kospi_date_mismatch | live_flow_date_mismatch | live_observation_invalid | live_capture_window_closed | live_capture_timeout)
       ;;
     *)
       echo "live-signal failed: capture pipeline error"

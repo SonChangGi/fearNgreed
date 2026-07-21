@@ -13,6 +13,10 @@ def test_live_signal_wrapper_is_bounded_and_never_mutates_git() -> None:
     assert "for attempt in 1 2 3 4" in script
     assert "sleep 180" in script
     assert "with-krx-keychain uv run --frozen python -m fearngreed.live_signal" in script
+    assert 'TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout"' in script
+    assert '"$CAPTURE_TIMEOUT_SECONDS"' in script
+    assert "capture_status == 124" in script
+    assert "live_capture_timeout" in script
     assert '--output "$OUTPUT_PATH"' in script
     assert 'OUTPUT_PATH="$REPOSITORY_ROOT/var/live-signal-local.json"' in script
     assert '>"$receipt_file" 2>/dev/null' in script

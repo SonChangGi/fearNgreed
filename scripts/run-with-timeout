@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Run one command with a bounded wall clock and terminate its process group."""
+
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+import time
+
+TERMINATION_GRACE_SECONDS = 10
+
+
+def _signal_process_group(process: subprocess.Popen, signum: int) -> None:
+    try:
+        os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 3:
+        print("usage: run-with-timeout <seconds> <command> [args...]", file=sys.stderr)
+        return 2
+    try:
+        seconds = float(argv[1])
+    except ValueError:
+        print("run-with-timeout: seconds must be numeric", file=sys.stderr)
+        return 2
+    if seconds <= 0:
+        print("run-with-timeout: seconds must be positive", file=sys.stderr)
+        return 2
+
+    process = subprocess.Popen(argv[2:], start_new_session=True)
+    forwarded_signal: int | None = None
+
+    def forward_signal(signum: int, _frame: object) -> None:
+        nonlocal forwarded_signal
+        if forwarded_signal is None:
+            forwarded_signal = signum
+        _signal_process_group(process, signum)
+
+    previous_handlers = {
+        signum: signal.signal(signum, forward_signal) for signum in (signal.SIGTERM, signal.SIGINT)
+    }
+    deadline = time.monotonic() + seconds
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            try:
+                status = process.wait(timeout=max(0.0, min(remaining, 0.2)))
+                return 128 + forwarded_signal if forwarded_signal is not None else status
+            except subprocess.TimeoutExpired:
+                if forwarded_signal is not None:
+                    try:
+                        process.wait(timeout=TERMINATION_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        _signal_process_group(process, signal.SIGKILL)
+                        process.wait()
+                    return 128 + forwarded_signal
+                if remaining <= 0:
+                    _signal_process_group(process, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=TERMINATION_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        _signal_process_group(process, signal.SIGKILL)
+                        process.wait()
+                    return 124
+    finally:
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

@@ -2,6 +2,10 @@
 set -euo pipefail
 
 REPOSITORY_URL="https://github.com/SonChangGi/fearNgreed.git"
+TIMEOUT_RUNNER="${0:A:h}/run-with-timeout"
+NETWORK_TIMEOUT_SECONDS=300
+REFRESH_TIMEOUT_SECONDS=2100
+VALIDATION_TIMEOUT_SECONDS=900
 SEOUL_DATE="$(TZ=Asia/Seoul date +%F)"
 SEOUL_WEEKDAY="$(TZ=Asia/Seoul date +%u)"
 SEOUL_TIME="$(TZ=Asia/Seoul date +%H%M)"
@@ -33,7 +37,8 @@ RECEIPT="$WORK_ROOT/refresh-receipt.json"
 trap '/bin/rm -rf -- "$WORK_ROOT"' EXIT
 
 export GIT_TERMINAL_PROMPT=0
-git clone --quiet --depth 1 --branch main "$REPOSITORY_URL" "$CHECKOUT"
+python3 "$TIMEOUT_RUNNER" "$NETWORK_TIMEOUT_SECONDS" \
+  git clone --quiet --depth 1 --branch main "$REPOSITORY_URL" "$CHECKOUT"
 BASE_HEAD="$(git -C "$CHECKOUT" rev-parse HEAD)"
 
 refresh_args=(--date "$SEOUL_DATE" --skip-if-current)
@@ -46,11 +51,20 @@ fi
 set +e
 (
   cd "$CHECKOUT"
-  with-krx-keychain uv run --frozen python -m fearngreed.refresh \
+  python3 "$TIMEOUT_RUNNER" "$REFRESH_TIMEOUT_SECONDS" \
+    with-krx-keychain uv run --frozen python -m fearngreed.refresh \
     "${refresh_args[@]}" >"$RECEIPT" 2>/dev/null
 )
 refresh_status=$?
 set -e
+
+if (( refresh_status == 124 )) && [[ "$terminal_run" == "true" ]]; then
+  (
+    cd "$CHECKOUT"
+    python3 "$TIMEOUT_RUNNER" 120 uv run --frozen python -c \
+      "from fearngreed.refresh import mark_failed; mark_failed('refresh_timeout')"
+  )
+fi
 
 if (( refresh_status != 0 )) && [[ "$terminal_run" != "true" ]]; then
   git -C "$CHECKOUT" diff --quiet -- data
@@ -93,14 +107,14 @@ fi
 
 (
   cd "$CHECKOUT"
-  uv run --frozen pytest
-  uv run --frozen ruff check .
-  uv run --frozen ruff format --check .
-  npm ci --silent
-  npm test
-  uv run --frozen python -m fearngreed.verify
-  uv run --frozen python -m fearngreed.site --output dist
-  with-krx-keychain uv run --frozen python -c \
+  python3 "$TIMEOUT_RUNNER" "$VALIDATION_TIMEOUT_SECONDS" uv run --frozen pytest
+  python3 "$TIMEOUT_RUNNER" 300 uv run --frozen ruff check .
+  python3 "$TIMEOUT_RUNNER" 300 uv run --frozen ruff format --check .
+  python3 "$TIMEOUT_RUNNER" "$VALIDATION_TIMEOUT_SECONDS" npm ci --silent
+  python3 "$TIMEOUT_RUNNER" "$VALIDATION_TIMEOUT_SECONDS" npm test
+  python3 "$TIMEOUT_RUNNER" 300 uv run --frozen python -m fearngreed.verify
+  python3 "$TIMEOUT_RUNNER" 300 uv run --frozen python -m fearngreed.site --output dist
+  python3 "$TIMEOUT_RUNNER" 300 with-krx-keychain uv run --frozen python -c \
     "from pathlib import Path; from fearngreed.security import scan_public_files; assert not scan_public_files(Path('.'))"
 )
 
@@ -115,10 +129,11 @@ else
   commit_message="data: publish degraded refresh status"
 fi
 git -C "$CHECKOUT" diff --cached --check
-git -C "$CHECKOUT" fetch --quiet origin main
+python3 "$TIMEOUT_RUNNER" "$NETWORK_TIMEOUT_SECONDS" git -C "$CHECKOUT" fetch --quiet origin main
 [[ "$(git -C "$CHECKOUT" rev-parse origin/main)" == "$BASE_HEAD" ]]
 git -C "$CHECKOUT" commit --quiet -m "$commit_message"
-git -C "$CHECKOUT" push --quiet origin HEAD:main
+python3 "$TIMEOUT_RUNNER" "$NETWORK_TIMEOUT_SECONDS" \
+  git -C "$CHECKOUT" push --quiet origin HEAD:main
 
 if (( refresh_status == 0 )); then
   echo "official-refresh published: $SEOUL_DATE"

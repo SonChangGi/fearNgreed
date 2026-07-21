@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const q=new URLSearchParams(location.search).get("theme");const s=localStorage.getItem("quant-calm-theme");const p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=q==="dark"||q==="light"?q:(s||p)}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260721-recommended-defaults-v16">
+  <link rel="stylesheet" href="assets/styles.css?v=20260721-open-trade-v17">
 </head>
 <body id="top">
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -72,7 +72,7 @@
       <div class="analysis-config-grid">
         <fieldset class="config-field config-track">
           <legend class="control-label">연구 트랙</legend>
-          <div class="segmented" role="group" aria-label="연구 트랙"><button type="button" data-model="robust" aria-pressed="false">실전 신호 · 강건 회귀</button><button type="button" data-model="scaled" aria-pressed="false">OLS 기준선 · 규모 보정</button><button type="button" data-model="raw" aria-pressed="true">PDF 원문 근사 · 절대 수급</button></div>
+          <div class="segmented" role="group" aria-label="연구 트랙"><button type="button" data-model="robust" aria-pressed="false">실전 신호 · 강건 회귀</button><button type="button" data-model="scaled" aria-pressed="false">OLS 기준선 · 규모 보정</button><button type="button" data-model="raw" aria-pressed="true">절대수급 OLS · 규모 미보정</button></div>
         </fieldset>
         <fieldset class="config-field">
           <legend class="control-label">포지션 정책</legend>
@@ -90,7 +90,7 @@
           <legend class="control-label">가격 표본</legend>
           <div class="segmented" role="group" aria-label="백테스트 가격 표본"><button type="button" data-backtest-period="full" aria-pressed="false">선택 페어 가능 기간</button><button type="button" data-backtest-period="common" aria-pressed="true">4개 ETF 공통 기간</button></div>
         </fieldset>
-        <div class="config-field config-rule linked-rule" aria-live="polite"><span class="control-label">전략 신호</span><strong id="linked-strategy-rule">연구 트랙과 자동 연동</strong><small>강건 회귀→실전, 규모보정 OLS→기준선, 절대 수급→원문 근사</small></div>
+        <div class="config-field config-rule linked-rule" aria-live="polite"><span class="control-label">전략 신호</span><strong id="linked-strategy-rule">연구 트랙과 자동 연동</strong><small>강건 회귀→실전, 규모보정 OLS→기준선, 절대수급 OLS→규모 미보정 비교</small></div>
         <form id="exit-threshold-form" class="exit-threshold-form config-exit" novalidate><label for="exit-threshold-input"><span>사용자 청산 기준</span><small>롱은 입력값 이상, 인버스는 대칭값 이하</small></label><div class="exit-threshold-entry"><input id="exit-threshold-input" name="exit-threshold" type="number" min="50" max="94" step="1" value="80" inputmode="numeric" aria-describedby="exit-threshold-help exit-threshold-status"><button type="submit">적용</button></div><p id="exit-threshold-help">현재: 롱 ≥<strong id="exit-threshold-value">80</strong> · 인버스 ≤<strong id="inverse-exit-threshold-value">20</strong>. 입력 범위 50~94.</p><details class="control-details"><summary>입력 범위 기준</summary><p class="exit-range-rationale">50 미만은 공포에서 중립 이상으로 회복했다는 의미가 사라지고, 95 이상은 사전 정의한 극단 탐욕·ETF 교체 구간과 겹칩니다.</p></details><p id="exit-threshold-status" class="history-range-status" role="status" aria-live="polite"></p></form>
       </div>
       <form id="signal-settings-form" class="signal-learning-panel" aria-labelledby="signal-learning-title" novalidate>
@@ -217,6 +217,10 @@
         <article class="card secondary-detail-card"><div class="card-head"><div><span class="detail-kicker">PERFORMANCE DETAIL</span><h3 id="equity-title">선택 모형 누적수익률과 낙폭</h3><p id="equity-subtitle">통합 차트와 같은 성과 경로를 수익률·낙폭 축으로 확대합니다.</p></div><button class="latest-button" type="button" data-chart-latest="equity-chart">기간 끝으로</button></div><div class="legend"><span id="equity-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="equity-legend-long-inverse"><i class="legend-line longshort"></i>롱 / 인버스 / 현금</span><span><i class="legend-line buyhold"></i>롱 ETF 매수·보유</span></div><div id="equity-chart" class="chart chart-stack" role="img" aria-roledescription="대화형 보조 성과 차트" aria-label="선택 실제 ETF 페어의 롱 현금, 롱 인버스 현금, 매수 보유 누적수익률 및 낙폭 상세" aria-describedby="equity-help" tabindex="0"></div><p id="equity-help" class="chart-help">위 통합 차트와 같은 설정을 사용하며 첫 평가일을 0%로 재기준화한 누적수익률과 고점 대비 낙폭을 분리해 확대합니다. 좌우 화살표·Home·End로 날짜를 확인할 수 있습니다.</p><details class="data-alternative"><summary>차트 끝값 표로 보기</summary><div class="table-scroll" id="equity-data-table"></div></details></article>
         <article class="card"><div class="card-head"><div><h3>평가 종료일 성과</h3><p id="backtest-card-subtitle">평가 종료일과 적용 조건을 불러오는 중입니다.</p></div></div><div id="backtest-cards" class="backtest-cards" aria-live="polite"></div></article>
       </div>
+      <article id="open-trade-card" class="card open-trade-card" aria-labelledby="open-trade-title">
+        <div class="card-head"><div><h3 id="open-trade-title">평가 종료일 현재 거래</h3><p id="open-trade-subtitle">선택한 정책의 미청산 ETF를 평가 종료일 종가로 확인합니다.</p></div><span class="tag">Open position</span></div>
+        <div id="open-trades" class="open-trades" aria-live="polite"></div>
+      </article>
       <article id="policy-comparison-card" class="card proxy-comparison-card" hidden><div class="card-head"><div><h3>포지션 정책 나란히 비교</h3><p id="policy-comparison-subtitle">같은 실제 ETF 페어·신호·비용·기간에서 정책만 바꿉니다.</p></div><span class="tag">Same inputs</span></div><div id="policy-comparison" class="proxy-comparison" aria-live="polite"></div><div id="strategy-exposure" class="strategy-exposure" aria-label="정책별 롱 인버스 현금 노출도"></div><div id="exit-sensitivity" class="exit-sensitivity"></div><p class="chart-note">정책 외의 모든 입력은 동일하게 유지됩니다.</p></article>
       <article id="proxy-comparison-card" class="card proxy-comparison-card" hidden>
         <div class="card-head"><div><h3>1X · 2X 실제 ETF 페어 비교</h3><p id="proxy-comparison-subtitle">같은 신호·비용·4개 ETF 공통기간으로 배율만 비교합니다.</p></div><span class="tag">Four ETFs</span></div>
@@ -228,19 +232,18 @@
     </section>
 
     <details class="card research-details" id="method">
-      <summary>원문 비교 · 보조 진단 · 계산 방법</summary>
+      <summary>보조 진단 · 계산 방법</summary>
       <div class="details-grid">
-        <div class="span-details"><div class="card-head"><div><h3>PDF 주석 사건 스냅샷</h3><p>원문에 표시된 공포 6일·탐욕 5일을 독립 수집 데이터로 대조한다.</p></div><span class="scope-badge replica">절대 수급 원문 근사</span></div><div id="pdf-snapshot" class="pdf-snapshot" aria-live="polite"></div></div>
         <aside class="span-details flow-normalization-card" aria-labelledby="flow-normalization-title">
           <div class="card-head"><div><h3 id="flow-normalization-title">왜 개인 순매수율을 실전 기준선으로 쓰는가</h3><p>규모 보정은 장기 비교를 돕지만 절대 수급을 대체하는 유일한 정답은 아닙니다.</p></div><span class="scope-badge baseline">두 트랙 병렬 검증</span></div>
           <div class="flow-normalization-grid">
             <section><strong>규모 보정의 장점</strong><p><code>개인 순매수대금 ÷ KOSPI 거래대금</code>은 시장 규모와 명목 거래대금이 달라진 시기 사이에서 수급 강도를 같은 단위로 비교하기 쉽습니다. 장기 회귀의 규모 변화와 분산 불안정을 줄이려는 실전 선택입니다.</p></section>
-            <section><strong>반드시 함께 볼 한계</strong><p>거래대금은 공포·급등락 구간에 함께 커지는 내생적 분모입니다. 극단 수급을 축소하거나 다른 방향으로 보이게 할 수 있으므로, 절대 순매수대금 모델을 PDF 원문 근사·강건성 대조군으로 계속 공개합니다.</p></section>
+            <section><strong>절대수급과 함께 비교</strong><p>거래대금은 공포·급등락 구간에 함께 커지는 내생적 분모입니다. 극단 수급을 축소하거나 다른 방향으로 보이게 할 수 있으므로, 규모를 보정하지 않은 절대수급 OLS도 독립 연구 트랙으로 제공합니다.</p></section>
           </div>
-          <p class="flow-normalization-conclusion">따라서 서버 정식 모형은 순매수율을 “더 옳은 값”이 아니라 <strong>장기 시장 규모 영향을 줄이려는 연구 입력</strong>으로 사용합니다. 페이지 권장 시작값은 PDF 비교에 맞춘 절대수급이며, 두 트랙은 언제든 같은 입력 패널에서 바꿔 볼 수 있습니다.</p>
+          <p class="flow-normalization-conclusion">따라서 서버 정식 모형은 순매수율을 “더 옳은 값”이 아니라 <strong>장기 시장 규모 영향을 줄이려는 연구 입력</strong>으로 사용합니다. 페이지는 절대수급 OLS로 시작하며, 세 연구 트랙은 같은 입력 패널에서 언제든 바꿔 볼 수 있습니다.</p>
         </aside>
         <div><div class="card-head"><div><h3>보조 진단</h3><p>50일 이격도, MDD, 환율·세션 정렬 스프레드를 선택 평가 기간에 맞춰 확인합니다.</p></div><button class="latest-button" type="button" data-chart-latest="diagnostic-chart">기간 끝으로</button></div><dl id="diagnostic-list"></dl><div id="diagnostic-chart" class="chart compact-chart" role="img" aria-roledescription="대화형 상대 스프레드 차트" aria-label="Micron 환율 환산 대비 SK하이닉스 상대 스프레드" aria-describedby="diagnostic-help" tabindex="0"></div><p id="diagnostic-help" class="chart-help">선택 평가 기간과 종료일을 따릅니다. 좌우 화살표·Home·End로 날짜를 확인할 수 있습니다.</p><details class="data-alternative"><summary>선택 기간 상대 진단 표로 보기</summary><div class="table-scroll" id="diagnostic-data-table"></div></details></div>
-        <div><h3>분석 결과 연결 방식</h3><p>선택한 연구 트랙은 평가 종료일 신호·잔차·사건·전략에 함께 적용됩니다. 사건 연구는 신호일 종가 기준이고 전략은 다음 ETF 시가 체결 기준입니다.</p><p>절대 수급 모델은 PDF 아이디어의 방향을 비교하고, 규모보정·강건 회귀 모델은 시장 규모 변화와 이상값을 반영해 같은 아이디어를 확장합니다.</p><a class="text-link" href="docs/methodology.md">전체 계산 계약 읽기 →</a></div>
+        <div><h3>분석 결과 연결 방식</h3><p>선택한 연구 트랙은 평가 종료일 신호·잔차·사건·전략에 함께 적용됩니다. 사건 연구는 신호일 종가 기준이고 전략은 다음 ETF 시가 체결 기준입니다.</p><p>절대수급 OLS는 명목 원화 수급을, 규모보정 OLS와 강건 회귀는 시장 거래대금 대비 수급 강도를 측정합니다. 같은 입력에서 세 결과를 바꿔 보며 시장 구조 변화와 이상값 민감도를 비교할 수 있습니다.</p><a class="text-link" href="docs/methodology.md">전체 계산 계약 읽기 →</a></div>
       </div>
     </details>
   </main>
@@ -252,6 +255,6 @@
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260721-recommended-defaults-v16"></script>
+  <script type="module" src="assets/app.js?v=20260721-open-trade-v17"></script>
 </body>
 </html>

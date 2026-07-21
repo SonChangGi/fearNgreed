@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 import os
 from collections.abc import Callable
@@ -10,6 +11,8 @@ from typing import Any
 import pandas as pd
 
 from .common import ProviderError
+
+PYKRX_REQUEST_TIMEOUT_SECONDS = 20
 
 
 def fetch_kospi_index(start: date, end: date) -> pd.DataFrame:
@@ -183,7 +186,8 @@ def _run_authenticated(request_name: str, request: Callable[[Any], pd.DataFrame]
             is_valid = getattr(session, "is_valid", None)
             if session is None or not callable(is_valid) or not bool(is_valid()):
                 raise ProviderError("authenticated pykrx session is unavailable")
-            frame = request(stock)
+            with _authenticated_request_timeout(session):
+                frame = request(stock)
     except ProviderError:
         raise
     except Exception:
@@ -191,3 +195,30 @@ def _run_authenticated(request_name: str, request: Callable[[Any], pd.DataFrame]
     if not isinstance(frame, pd.DataFrame):
         raise ProviderError(f"pykrx {request_name} response contract changed")
     return frame
+
+
+@contextlib.contextmanager
+def _authenticated_request_timeout(session: Any):
+    """Give pykrx's authenticated requests.Session a fail-closed default timeout.
+
+    pykrx 1.2.8 calls the underlying ``Session.get/post`` without a timeout.
+    Patching the instance ``request`` method keeps an explicit upstream timeout
+    intact while bounding every otherwise-unbounded KRX data request.  The
+    original method is restored immediately after this adapter call.
+    """
+    raw_session = getattr(session, "session", None)
+    original_request = getattr(raw_session, "request", None)
+    if not callable(original_request):
+        raise ProviderError("authenticated pykrx session is unavailable")
+
+    @functools.wraps(original_request)
+    def request_with_timeout(method: str, url: str, **kwargs: Any):
+        kwargs.setdefault("timeout", PYKRX_REQUEST_TIMEOUT_SECONDS)
+        return original_request(method, url, **kwargs)
+
+    raw_session.request = request_with_timeout
+    try:
+        yield
+    finally:
+        if getattr(raw_session, "request", None) is request_with_timeout:
+            raw_session.request = original_request

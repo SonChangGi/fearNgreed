@@ -840,7 +840,7 @@ def test_frozen_history_rejects_any_public_row_drift_until_explicit_backfill():
     regenerated[2]["percentile"] = 11.5
     columns = list(rows[0])
     outputs = PipelineOutputs(
-        summary={},
+        summary={"dataAsOf": rows[-1]["date"]},
         dashboard={},
         history={
             "methodologyVersion": "fear-flow-v3",
@@ -850,8 +850,78 @@ def test_frozen_history_rejects_any_public_row_drift_until_explicit_backfill():
         automation_status={},
     )
 
-    with pytest.raises(RefreshStageError, match="frozen_history_drift_requires_backfill"):
+    with pytest.raises(
+        RefreshStageError, match="frozen_history_drift_requires_backfill"
+    ) as captured:
         _preserve_frozen_history(seed, outputs)
+    assert captured.value.expected_as_of == dates[-1].date()
+
+
+@pytest.mark.parametrize(
+    ("field", "delta"),
+    (
+        ("kospiClose", 1e-12),
+        ("flowShare", 1e-12),
+        ("rawFlowTrillion", 1e-12),
+        ("percentile", 1e-12),
+    ),
+)
+def test_frozen_history_keeps_market_and_signal_numbers_exact(field, delta):
+    previous = {
+        "date": "2026-07-01",
+        "kospiClose": 100.0,
+        "flowShare": -0.01,
+        "rawFlowTrillion": -1.0,
+        "percentile": 2.0,
+        "state": "extreme_fear",
+        "sourceHash": "source-hash",
+    }
+    current = dict(previous)
+    current[field] = float(current[field]) + delta
+
+    assert refresh_module._history_rows_equivalent([previous], [current]) is False
+
+
+@pytest.mark.parametrize(
+    ("field", "accepted_delta", "rejected_delta"),
+    (
+        ("residualZ", 4.99e-6, 5.01e-6),
+        ("fitScore", 0.99e-7, 1.01e-7),
+    ),
+)
+def test_frozen_history_allows_only_bounded_model_serialization_noise(
+    field, accepted_delta, rejected_delta
+):
+    previous = {
+        "date": "2026-07-01",
+        "residualZ": -1.25,
+        "fitScore": 0.5,
+        "state": "neutral",
+        "sourceHash": "source-hash",
+    }
+    accepted = dict(previous)
+    accepted[field] = float(accepted[field]) + accepted_delta
+    rejected = dict(previous)
+    rejected[field] = float(rejected[field]) + rejected_delta
+
+    assert refresh_module._history_rows_equivalent([previous], [accepted]) is True
+    assert refresh_module._history_rows_equivalent([previous], [rejected]) is False
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    (("state", "fear"), ("sourceHash", "different-source-hash")),
+)
+def test_frozen_history_keeps_state_and_provenance_exact(field, changed):
+    previous = {
+        "date": "2026-07-01",
+        "state": "neutral",
+        "sourceHash": "source-hash",
+    }
+    current = dict(previous)
+    current[field] = changed
+
+    assert refresh_module._history_rows_equivalent([previous], [current]) is False
 
 
 def test_frozen_history_preserves_old_rows_when_all_public_values_match():
@@ -861,6 +931,7 @@ def test_frozen_history_preserves_old_rows_when_all_public_values_match():
             "date": timestamp.date().isoformat(),
             "kospiClose": 100.0 + index,
             "percentile": 10.0 + index,
+            "residualZ": -1.0 + index / 10,
             "state": "neutral",
             "position": "cash",
         }
@@ -879,7 +950,7 @@ def test_frozen_history_preserves_old_rows_when_all_public_values_match():
     )
     columns = list(rows[0])
     regenerated = [dict(row) for row in rows]
-    regenerated[0]["percentile"] += 4e-8
+    regenerated[0]["residualZ"] += 4e-6
     regenerated[-1]["kospiClose"] = 999.0
     outputs = PipelineOutputs(
         summary={},

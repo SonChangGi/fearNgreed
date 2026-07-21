@@ -39,9 +39,22 @@ class FakeSession:
 class FakeAuthSession:
     def __init__(self, valid: bool = True):
         self.valid = valid
+        self.session = FakeAuthenticatedRequestsSession()
 
     def is_valid(self) -> bool:
         return self.valid
+
+
+class FakeAuthenticatedRequestsSession:
+    def __init__(self):
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        return FakeResponse({})
+
+    def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
 
 
 def install_fake_pykrx(monkeypatch, stock, *, valid: bool = True, auth_message: str = ""):
@@ -52,10 +65,12 @@ def install_fake_pykrx(monkeypatch, stock, *, valid: bool = True, auth_message: 
     website.__path__ = []
     comm = types.ModuleType("pykrx.website.comm")
 
+    auth_session = FakeAuthSession(valid)
+
     def get_auth_session():
         if auth_message:
             print(auth_message)
-        return FakeAuthSession(valid)
+        return auth_session
 
     comm.get_auth_session = get_auth_session
     website.comm = comm
@@ -63,6 +78,7 @@ def install_fake_pykrx(monkeypatch, stock, *, valid: bool = True, auth_message: 
     monkeypatch.setitem(sys.modules, "pykrx", fake)
     monkeypatch.setitem(sys.modules, "pykrx.website", website)
     monkeypatch.setitem(sys.modules, "pykrx.website.comm", comm)
+    return auth_session
 
 
 def test_krx_header_is_used_without_logging_secret(capsys) -> None:
@@ -242,6 +258,40 @@ def test_pykrx_auth_output_is_suppressed(monkeypatch, capsys) -> None:
     output = capsys.readouterr()
     assert "login-id-canary" not in output.out + output.err
     assert "password-canary" not in output.out + output.err
+
+
+def test_pykrx_authenticated_requests_receive_a_default_timeout(monkeypatch) -> None:
+    stock = types.SimpleNamespace()
+    session = install_fake_pykrx(monkeypatch, stock)
+
+    def fetch(*_args, **_kwargs):
+        session.session.get("https://data.krx.example/flow")
+        return pd.DataFrame({"개인": [123.0]}, index=pd.to_datetime(["2026-07-15"]))
+
+    stock.get_market_trading_value_by_date = fetch
+    monkeypatch.setenv("KRX_ID", "login-id-canary")
+    monkeypatch.setenv("KRX_PW", "password-canary")
+
+    fetch_individual_flow(date(2026, 7, 15), date(2026, 7, 15))
+
+    assert session.session.calls[0][2]["timeout"] == 20
+
+
+def test_pykrx_explicit_request_timeout_is_not_overwritten(monkeypatch) -> None:
+    stock = types.SimpleNamespace()
+    session = install_fake_pykrx(monkeypatch, stock)
+
+    def fetch(*_args, **_kwargs):
+        session.session.get("https://data.krx.example/flow", timeout=3)
+        return pd.DataFrame({"개인": [123.0]}, index=pd.to_datetime(["2026-07-15"]))
+
+    stock.get_market_trading_value_by_date = fetch
+    monkeypatch.setenv("KRX_ID", "login-id-canary")
+    monkeypatch.setenv("KRX_PW", "password-canary")
+
+    fetch_individual_flow(date(2026, 7, 15), date(2026, 7, 15))
+
+    assert session.session.calls[0][2]["timeout"] == 3
 
 
 def test_pykrx_invalid_login_fails_closed_even_if_public_data_would_return(

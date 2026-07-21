@@ -21,6 +21,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -105,7 +106,7 @@ jobs:
             : > "$receipt_file"
             rm -f "$candidate_file"
             set +e
-            uv run --frozen python -m fearngreed.live_signal \
+            timeout --signal=TERM --kill-after=10s 120s uv run --frozen python -m fearngreed.live_signal \
               --date "$target_date" \
               --output "$candidate_file" > "$receipt_file"
             capture_status=$?
@@ -138,9 +139,13 @@ jobs:
               exit 0
             fi
 
-            reason="$(receipt_field reason 2>/dev/null || true)"
+            if (( capture_status == 124 )); then
+              reason="live_capture_timeout"
+            else
+              reason="$(receipt_field reason 2>/dev/null || true)"
+            fi
             case "$reason" in
-              live_kospi_session_unavailable|live_flow_session_unavailable|live_kospi_date_mismatch|live_flow_date_mismatch|live_observation_invalid|live_capture_window_closed)
+              live_kospi_session_unavailable|live_flow_session_unavailable|live_kospi_date_mismatch|live_flow_date_mismatch|live_observation_invalid|live_capture_window_closed|live_capture_timeout)
                 ;;
               *)
                 echo "::error title=Fast signal capture failed::Authenticated capture failed with a non-transient pipeline error."

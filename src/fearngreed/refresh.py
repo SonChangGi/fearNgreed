@@ -48,7 +48,15 @@ PUBLIC_LIMITS = {
 DIAGNOSTIC_YAHOO_TICKERS = ["MU", "000660.KS", "005930.KS", "KRW=X"]
 ADJUSTED_ANCHOR_LOOKBACK_DAYS = 45
 ADJUSTED_SCALE_TOLERANCE = 0.005
-PUBLIC_NUMERIC_DRIFT_TOLERANCE = 5e-8
+# Frozen public rows are compared exactly by default.  These two model-only
+# fields can move by a few final decimals when a row already rounded to the
+# public eight-decimal contract is used to rebuild the rolling Huber fit.
+# The bounds cover the observed serialization round-trip (2.48e-6 and 7e-8)
+# without relaxing prices, flows, signals, states, or source hashes.
+FROZEN_DERIVED_SERIALIZATION_ABS_TOLERANCES = {
+    "residualZ": 5e-6,
+    "fitScore": 1e-7,
+}
 ETF_LISTING_DATES = {
     "069500": date(2010, 1, 4),
     "114800": date(2010, 1, 4),
@@ -686,7 +694,10 @@ def _preserve_frozen_history(seed: IncrementalSeed, outputs: PipelineOutputs) ->
         raise ValueError("public history rows cannot be decoded")
     regenerated_frozen = [row for row in output_rows if str(row["date"]) < boundary]
     if not _history_rows_equivalent(frozen, regenerated_frozen):
-        raise RefreshStageError("frozen_history_drift_requires_backfill")
+        raise RefreshStageError(
+            "frozen_history_drift_requires_backfill",
+            expected_as_of=_parse_public_date(outputs.summary.get("dataAsOf")),
+        )
     mutable = [row for row in output_rows if str(row["date"]) >= boundary]
     _replace_history_rows(outputs.history, [*frozen, *mutable])
 
@@ -694,7 +705,7 @@ def _preserve_frozen_history(seed: IncrementalSeed, outputs: PipelineOutputs) ->
 def _history_rows_equivalent(
     frozen: list[dict[str, object]], regenerated: list[dict[str, object]]
 ) -> bool:
-    """Compare every public frozen value, allowing only serialization-scale noise."""
+    """Compare frozen rows, tolerating only proven model serialization noise."""
     if len(frozen) != len(regenerated):
         return False
     for previous, current in zip(frozen, regenerated, strict=True):
@@ -707,12 +718,8 @@ def _history_rows_equivalent(
                 if left is not right:
                     return False
             elif isinstance(left, int | float) and isinstance(right, int | float):
-                if not math.isclose(
-                    float(left),
-                    float(right),
-                    rel_tol=1e-9,
-                    abs_tol=PUBLIC_NUMERIC_DRIFT_TOLERANCE,
-                ):
+                tolerance = FROZEN_DERIVED_SERIALIZATION_ABS_TOLERANCES.get(key, 0.0)
+                if not math.isclose(float(left), float(right), rel_tol=0.0, abs_tol=tolerance):
                     return False
             elif left != right:
                 return False
@@ -1031,10 +1038,23 @@ def mark_failed(reason: str, expected_as_of: date | None = None) -> None:
     current_data_as_of = _parse_public_date(summary.get("dataAsOf")) if summary else None
     if current_data_as_of is None:
         current_data_as_of = _parse_public_date(previous_automation.get("dataAsOf"))
+    summary_status = summary.get("status") if summary else None
+    if not isinstance(summary_status, dict):
+        summary_status = {}
+    known_stale_expected: date | None = None
+    for source in (summary_status, previous_automation):
+        candidate = _parse_public_date(source.get("expectedDataAsOf"))
+        if source.get("sourceFreshnessPassed") is False and candidate is not None:
+            known_stale_expected = max(known_stale_expected or candidate, candidate)
+    effective_expected_as_of = expected_as_of
+    if known_stale_expected is not None:
+        effective_expected_as_of = max(
+            effective_expected_as_of or known_stale_expected, known_stale_expected
+        )
     freshness_lag_detected = bool(
-        expected_as_of is not None
+        effective_expected_as_of is not None
         and current_data_as_of is not None
-        and expected_as_of > current_data_as_of
+        and effective_expected_as_of > current_data_as_of
     )
     failure_state = "stale" if freshness_lag_detected else "degraded"
     previous_reasons = previous_automation.get("degradedReasons", [])
@@ -1054,7 +1074,7 @@ def mark_failed(reason: str, expected_as_of: date | None = None) -> None:
         if field_name in previous_automation:
             automation[field_name] = previous_automation[field_name]
     if freshness_lag_detected:
-        expected_value = expected_as_of.isoformat()
+        expected_value = effective_expected_as_of.isoformat()
         automation.update(
             {
                 "freshnessBasis": "official_krx_latest_completed_session",
@@ -1079,7 +1099,7 @@ def mark_failed(reason: str, expected_as_of: date | None = None) -> None:
                 status.update(
                     {
                         "freshnessBasis": "official_krx_latest_completed_session",
-                        "expectedDataAsOf": expected_as_of.isoformat(),
+                        "expectedDataAsOf": effective_expected_as_of.isoformat(),
                         "sourceFreshnessPassed": False,
                     }
                 )

@@ -733,14 +733,7 @@ def test_v5_outputs_separate_operations_signal_and_publish_strategy_comparison()
         assert sensitivity["fullPeriod"]["exit80"]["longExitPercentile"] == 80
 
 
-def test_pdf_replica_is_isolated_from_primary_signal_and_uses_source_cutoff() -> None:
+def test_dashboard_omits_historical_source_replica_from_public_contract() -> None:
     outputs = build_outputs(_pipeline_inputs(periods=700))
-    replica = outputs.dashboard["pdfReplica"]
-
-    assert replica["sourceCutoff"] == "2026-07-14"
-    assert replica["signalUse"] == "excluded_from_threshold_selection_and_trading"
-    assert len(replica["annotatedEvents"]) == 11
-    assert replica["regression"]["allPoints"]["observationCount"] > 100
-    assert replica["regression"]["annotatedExcluded"]["observationCount"] == (
-        replica["regression"]["allPoints"]["observationCount"] - 11
-    )
+    assert "pdfReplica" not in outputs.dashboard
+    assert "sourceReplica" not in outputs.dashboard

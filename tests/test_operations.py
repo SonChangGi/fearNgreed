@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+import shutil
+from datetime import date, timedelta
 from pathlib import Path
 
 import fearngreed.refresh as refresh_module
+from fearngreed.verify import verify_local
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,9 +26,12 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert "args+=(--require-end-session)" in workflow
     assert "args+=(--skip-if-current)" in workflow
     assert "provider_probe_date" in workflow
+    assert "official_data_date" in workflow
     assert "PROVIDER_PROBE_DATE" in workflow
+    assert "OFFICIAL_DATA_DATE" in workflow
     assert '--probe --date "$PROVIDER_PROBE_DATE"' in workflow
     assert '[[ -z "$BACKFILL_START_DATE" ]]' in workflow
+    assert '[[ -z "$OFFICIAL_DATA_DATE" ]]' in workflow
     assert "outcome=probe_success" in workflow
     assert "Enforce provider probe no-write boundary" in workflow
     assert "git status --porcelain --untracked-files=all" in workflow
@@ -34,6 +39,8 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert 'current_kst_time="$(TZ=Asia/Seoul date +%H%M)"' in workflow
     assert "10#$current_kst_time < 1815" in workflow
     assert "Manual final-data refresh is available from 18:15 KST" in workflow
+    assert '[[ "$OFFICIAL_DATA_DATE" < "$current_kst_date" ]]' in workflow
+    assert 'target_date="${OFFICIAL_DATA_DATE:-$current_kst_date}"' in workflow
     assert 'args+=(--failure-policy "$failure_policy")' in workflow
     assert "outcome=retry_pending" in workflow
     assert "outcome=skipped" in workflow
@@ -102,6 +109,9 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     )
     assert "Report early retry pending" in workflow
     assert "Report already-current session" in workflow
+    assert "timeout-minutes: 120" in workflow
+    assert "timeout --signal=TERM --kill-after=30s 35m" in workflow
+    assert "mark_failed('refresh_timeout')" in workflow
 
 
 def test_pages_workflow_runs_local_and_live_contract_verification() -> None:
@@ -136,6 +146,9 @@ def test_fast_signal_workflow_is_separate_bounded_and_secret_scoped() -> None:
     assert "git push origin HEAD:main" in workflow
     assert "--base-url" in workflow
     assert "scan_public_files" in capture
+    assert "timeout-minutes: 25" in workflow
+    assert "timeout --signal=TERM --kill-after=10s 120s" in capture
+    assert "live_capture_timeout" in capture
 
 
 def test_failed_refresh_preserves_market_outputs_and_last_success(tmp_path, monkeypatch) -> None:
@@ -262,6 +275,73 @@ def test_failed_refresh_marks_status_stale_for_a_newer_official_session(
     assert updated_automation["lastSuccessAt"] == "2026-07-16T01:00:00Z"
     assert (data / "dashboard.json").read_bytes() == dashboard
     assert (data / "history.json").read_bytes() == history
+
+
+def test_failed_refresh_timeout_preserves_an_existing_known_stale_contract(
+    tmp_path, monkeypatch
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    summary = {
+        "dataAsOf": "2026-07-15",
+        "status": {
+            "state": "stale",
+            "label": "데이터 지연",
+            "freshnessBasis": "official_krx_latest_completed_session",
+            "expectedDataAsOf": "2026-07-16",
+            "sourceFreshnessPassed": False,
+            "degradedReasons": ["provider_unavailable"],
+        },
+        "automation": {"state": "stale", "lastSuccessAt": "2026-07-15T12:00:00Z"},
+        "primaryEntities": [{"id": "KOSPI", "sourceMode": "krx_open_api"}],
+    }
+    automation = {
+        "schemaVersion": 1,
+        "state": "stale",
+        "lastSuccessAt": "2026-07-15T12:00:00Z",
+        "dataAsOf": "2026-07-15",
+        "freshnessBasis": "official_krx_latest_completed_session",
+        "expectedDataAsOf": "2026-07-16",
+        "sourceFreshnessPassed": False,
+        "degradedReasons": ["provider_unavailable"],
+        "sourceMode": "krx_open_api",
+    }
+    (data / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (data / "automation-status.json").write_text(json.dumps(automation), encoding="utf-8")
+    monkeypatch.setattr(refresh_module, "repository_root", lambda: tmp_path)
+
+    refresh_module.mark_failed("refresh_timeout")
+
+    updated_summary = json.loads((data / "summary.json").read_text(encoding="utf-8"))
+    updated_automation = json.loads((data / "automation-status.json").read_text(encoding="utf-8"))
+    assert updated_summary["status"]["state"] == "stale"
+    assert updated_summary["status"]["expectedDataAsOf"] == "2026-07-16"
+    assert updated_summary["status"]["sourceFreshnessPassed"] is False
+    assert updated_automation["state"] == "stale"
+    assert updated_automation["expectedDataAsOf"] == "2026-07-16"
+    assert updated_automation["sourceFreshnessPassed"] is False
+
+
+def test_failed_refresh_status_remains_publishable_by_the_full_local_contract(
+    tmp_path, monkeypatch
+) -> None:
+    shutil.copytree(ROOT / "data", tmp_path / "data")
+    shutil.copytree(ROOT / "schemas", tmp_path / "schemas")
+    summary = json.loads((tmp_path / "data" / "summary.json").read_text(encoding="utf-8"))
+    current = date.fromisoformat(summary["dataAsOf"])
+    monkeypatch.setattr(refresh_module, "repository_root", lambda: tmp_path)
+
+    refresh_module.mark_failed(
+        "frozen_history_drift_requires_backfill",
+        expected_as_of=current + timedelta(days=1),
+    )
+
+    receipt = verify_local(tmp_path, minimum_headroom_ratio=0)
+    updated = json.loads((tmp_path / "data" / "summary.json").read_text(encoding="utf-8"))
+    assert receipt["operationalState"] == "stale"
+    assert updated["dataAsOf"] == current.isoformat()
+    assert updated["status"]["expectedDataAsOf"] == (current + timedelta(days=1)).isoformat()
+    assert updated["status"]["sourceFreshnessPassed"] is False
 
 
 def test_failed_refresh_redacts_unapproved_error_text(tmp_path, monkeypatch) -> None:

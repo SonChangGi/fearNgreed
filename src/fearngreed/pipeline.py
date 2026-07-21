@@ -58,19 +58,6 @@ ETF_PRICE_TICKERS = {
     "252670": "252670.KS",  # KODEX 200 Futures Inverse 2X (-2x)
 }
 STOCK_TICKERS = {"000660": "000660.KS", "005930": "005930.KS"}
-PDF_ANNOTATED_EVENTS = {
-    "2026-03-04": ("extreme_fear", "공포"),
-    "2026-04-02": ("fear", "공포"),
-    "2026-06-08": ("extreme_fear", "공포"),
-    "2026-07-08": ("extreme_fear", "공포"),
-    "2026-07-13": ("fear", "공포"),
-    "2026-07-14": ("fear", "공포"),
-    "2026-03-05": ("extreme_greed", "탐욕"),
-    "2026-05-07": ("extreme_greed", "탐욕"),
-    "2026-05-11": ("extreme_greed", "탐욕"),
-    "2026-06-02": ("extreme_greed", "탐욕"),
-    "2026-06-09": ("extreme_greed", "탐욕"),
-}
 
 
 @dataclass(frozen=True)
@@ -287,7 +274,6 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
         "eventsByModel": events_by_model,
         "backtests": _public_backtests(backtests, common_backtests),
         "diagnostics": diagnostics,
-        "pdfReplica": _pdf_replica(frame),
         "flowChannels": _flow_channel_section(frame),
         "quality": {"state": quality.state, "issues": quality.issues, **quality.metrics},
         "crosschecks": crosschecks,
@@ -458,8 +444,10 @@ def _summary(
             }
         ],
         "limitations": [
-            "2026년 관측 후 제안된 사후적·탐색적 연구이며 예측력이나 인과관계를 증명하지 않는다.",
-            "원문은 회귀창·수급 범위·임계값·전체 사건 수·거래비용을 공개하지 않았다.",
+            (
+                "과거검증은 선택한 규칙의 역사적 경로를 보여주며 미래 예측력이나 "
+                "인과관계를 보장하지 않는다."
+            ),
             (
                 "기본 롱/현금 백테스트는 조정가격, 익일 시가 체결, 백분위 80 청산, "
                 "현금수익률 0%를 가정한다."
@@ -1632,26 +1620,28 @@ def _semiconductor_diagnostics(
         aligned["mu_hynix_ratio"] / aligned["mu_hynix_ratio"].iloc[0] * 100
     )
     aligned["mu_hynix_relative_spread"] = aligned["mu_close_krw_indexed"] - aligned["hynix_indexed"]
-    replica = aligned.loc[aligned.index >= pd.Timestamp("2025-01-01")].copy()
-    if not replica.empty:
-        replica["mu_usd_indexed_2025"] = (
-            replica["mu_close_usd"] / replica["mu_close_usd"].iloc[0] * 100
+    indexed_2025 = aligned.loc[aligned.index >= pd.Timestamp("2025-01-01")].copy()
+    if not indexed_2025.empty:
+        indexed_2025["mu_usd_indexed_2025"] = (
+            indexed_2025["mu_close_usd"] / indexed_2025["mu_close_usd"].iloc[0] * 100
         )
-        replica["hynix_indexed_2025"] = replica["hynix"] / replica["hynix"].iloc[0] * 100
-        replica["mu_hynix_ratio_indexed_2025"] = (
-            replica["mu_hynix_ratio"] / replica["mu_hynix_ratio"].iloc[0] * 100
+        indexed_2025["hynix_indexed_2025"] = (
+            indexed_2025["hynix"] / indexed_2025["hynix"].iloc[0] * 100
         )
-        replica["mu_hynix_log_relative_2025"] = replica["mu_hynix_ratio"].map(
-            lambda value: math.log(value / replica["mu_hynix_ratio"].iloc[0])
+        indexed_2025["mu_hynix_ratio_indexed_2025"] = (
+            indexed_2025["mu_hynix_ratio"] / indexed_2025["mu_hynix_ratio"].iloc[0] * 100
+        )
+        indexed_2025["mu_hynix_log_relative_2025"] = indexed_2025["mu_hynix_ratio"].map(
+            lambda value: math.log(value / indexed_2025["mu_hynix_ratio"].iloc[0])
         )
     sampled = _sample_frame_with_last(aligned, step=5)
-    replica_sampled = _sample_frame_with_last(replica, step=5)
+    indexed_2025_sampled = _sample_frame_with_last(indexed_2025, step=5)
     return {
         "status": "ok",
         "alignment": "last_us_and_fx_session_strictly_before_krx_date",
         "definitions": {
             "robustWindow": "latest_756_krx_sessions_first_observation_100",
-            "replicaWindow": "first_available_session_on_or_after_2025_01_01_equals_100",
+            "indexed2025Window": "first_available_session_on_or_after_2025_01_01_equals_100",
             "primaryRelativeMetric": "fx_and_session_adjusted_mu_hynix_ratio_index",
             "nativeMddCurrency": "MU_USD_HYNIX_KRW_SAMSUNG_KRW",
             "legacyDifferenceWarning": (
@@ -1673,14 +1663,14 @@ def _semiconductor_diagnostics(
                 aligned["mu_hynix_relative_spread"].iloc[-1], digits=2
             ),
             "muHynixRatioIndexed2025": public_number(
-                replica["mu_hynix_ratio_indexed_2025"].iloc[-1], digits=2
+                indexed_2025["mu_hynix_ratio_indexed_2025"].iloc[-1], digits=2
             )
-            if not replica.empty
+            if not indexed_2025.empty
             else None,
             "muHynixLogRelative2025": public_number(
-                replica["mu_hynix_log_relative_2025"].iloc[-1], digits=6
+                indexed_2025["mu_hynix_log_relative_2025"].iloc[-1], digits=6
             )
-            if not replica.empty
+            if not indexed_2025.empty
             else None,
         },
         "series": [
@@ -1698,7 +1688,7 @@ def _semiconductor_diagnostics(
             }
             for timestamp, row in sampled.iterrows()
         ],
-        "replica2025Series": [
+        "indexed2025Series": [
             {
                 "date": timestamp.date().isoformat(),
                 "muUsdIndexed": public_number(row["mu_usd_indexed_2025"], digits=1),
@@ -1706,7 +1696,7 @@ def _semiconductor_diagnostics(
                 "ratioIndexed": public_number(row["mu_hynix_ratio_indexed_2025"], digits=2),
                 "logRelative": public_number(row["mu_hynix_log_relative_2025"], digits=6),
             }
-            for timestamp, row in replica_sampled.iterrows()
+            for timestamp, row in indexed_2025_sampled.iterrows()
         ],
     }
 
@@ -1898,95 +1888,6 @@ def _cost_break_even_bps(variants: dict[str, BacktestResult], model: str) -> flo
             weight = left_return / (left_return - right_return)
             return public_number(left_cost + weight * (right_cost - left_cost), digits=2)
     return None
-
-
-def _pdf_replica(frame: pd.DataFrame) -> dict[str, Any]:
-    """Reproduce the PDF's labelled 2026 observations without using them for trading."""
-    cutoff = pd.Timestamp("2026-07-14")
-    ytd = frame.loc[(frame.index >= pd.Timestamp("2026-01-01")) & (frame.index <= cutoff)].dropna(
-        subset=["return_1d", "raw_flow_trillion"]
-    )
-    annotated_dates = {pd.Timestamp(day) for day in PDF_ANNOTATED_EVENTS}
-    inliers = ytd.loc[~ytd.index.isin(annotated_dates)]
-    rows: list[dict[str, Any]] = []
-    missing: list[str] = []
-    for day, (pdf_state, label) in PDF_ANNOTATED_EVENTS.items():
-        timestamp = pd.Timestamp(day)
-        if timestamp not in frame.index:
-            missing.append(day)
-            continue
-        position = frame.index.get_loc(timestamp)
-        row = frame.loc[timestamp]
-        forward: dict[str, float | None] = {}
-        for horizon in (1, 5, 10, 20):
-            if isinstance(position, int) and position + horizon < len(frame):
-                future = frame.iloc[position + horizon]["close"]
-                forward[f"return{horizon}d"] = public_number(future / row["close"] - 1)
-            else:
-                forward[f"return{horizon}d"] = None
-        scaled_state = str(row.get("scaled_state", "unavailable"))
-        raw_state = str(row.get("raw_state", "unavailable"))
-        rows.append(
-            {
-                "date": day,
-                "pdfLabel": label,
-                "pdfState": pdf_state,
-                "return1d": public_number(row["return_1d"]),
-                "rawFlowTrillion": public_number(row["raw_flow_trillion"]),
-                "flowShare": public_number(row["flow_share"]),
-                "scaledState": scaled_state,
-                "scaledPercentile": public_number(row.get("scaled_percentile")),
-                "rawState": raw_state,
-                "rawPercentile": public_number(row.get("raw_percentile")),
-                "directionMatched": _state_direction(pdf_state) == _state_direction(raw_state),
-                "forwardReturns": forward,
-            }
-        )
-    return {
-        "status": "ok" if rows and not missing else "partial",
-        "sourceCutoff": cutoff.date().isoformat(),
-        "publishedAt": "2026-07-15T08:38:00+09:00",
-        "purpose": "source_case_replication_only",
-        "signalUse": "excluded_from_threshold_selection_and_trading",
-        "regression": {
-            "allPoints": _simple_regression(ytd),
-            "annotatedExcluded": _simple_regression(inliers),
-            "interpretation": (
-                "The annotated-excluded fit is a diagnostic inference because the PDF did not "
-                "publish its fitting or outlier-selection algorithm."
-            ),
-        },
-        "annotatedEvents": rows,
-        "missingAnnotatedDates": missing,
-        "catalystContext": {
-            "cpi": "PDF narrative context only; excluded from the signal model.",
-            "semiconductor": "Rendered from independently collected prices in diagnostics.",
-        },
-    }
-
-
-def _simple_regression(frame: pd.DataFrame) -> dict[str, Any]:
-    if len(frame) < 3:
-        return {"observationCount": len(frame), "alpha": None, "beta": None, "r2": None}
-    xs = [float(value) for value in frame["return_1d"]]
-    ys = [float(value) for value in frame["raw_flow_trillion"]]
-    x_bar = sum(xs) / len(xs)
-    y_bar = sum(ys) / len(ys)
-    ss_x = sum((value - x_bar) ** 2 for value in xs)
-    if ss_x == 0:
-        return {"observationCount": len(frame), "alpha": None, "beta": None, "r2": None}
-    beta = sum((x - x_bar) * (y - y_bar) for x, y in zip(xs, ys, strict=True)) / ss_x
-    alpha = y_bar - beta * x_bar
-    residuals = [y - (alpha + beta * x) for x, y in zip(xs, ys, strict=True)]
-    ss_total = sum((value - y_bar) ** 2 for value in ys)
-    r2 = 0.0 if ss_total == 0 else 1 - sum(value**2 for value in residuals) / ss_total
-    return {
-        "observationCount": len(frame),
-        "alphaTrillion": public_number(alpha),
-        "betaTrillionPerReturnUnit": public_number(beta),
-        "betaTrillionPerPercentagePoint": public_number(beta * 0.01),
-        "r2": public_number(r2),
-    }
 
 
 def _state_direction(state: str) -> str:

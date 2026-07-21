@@ -12,6 +12,10 @@ def test_official_refresh_wrapper_is_isolated_bounded_and_secret_safe() -> None:
     assert "mktemp -d" in script
     assert "git clone --quiet --depth 1 --branch main" in script
     assert "with-krx-keychain uv run --frozen python -m fearngreed.refresh" in script
+    assert 'TIMEOUT_RUNNER="${0:A:h}/run-with-timeout"' in script
+    assert '"$REFRESH_TIMEOUT_SECONDS"' in script
+    assert "refresh_status == 124" in script
+    assert "mark_failed('refresh_timeout')" in script
     assert "--failure-policy preserve --require-end-session" in script
     assert "--failure-policy publish" in script
     assert 'git -C "$CHECKOUT" rev-parse origin/main' in script

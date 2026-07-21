@@ -67,6 +67,9 @@ test('position policy comparison discloses actual inverse execution and side-awa
   assert.match(app,/entry_signal_date/);
   assert.match(app,/exit_signal_date/);
   assert.match(app,/normalizedActionLabel/);
+  for(const id of ['open-trade-card','open-trade-title','open-trade-subtitle','open-trades']) assert.match(html,new RegExp(`id="${id}"`));
+  for(const field of ['entrySignalDate','entryDate','entryPrice','holdingSessions','unrealizedReturn','pendingAction']) assert.match(app,new RegExp(field));
+  for(const label of ['진입 신호일 · 종가','진입 체결일 · 시가','진입 조정시가','보유 거래일','평가 손익 · 미실현','다음 예정 행동']) assert.match(app,new RegExp(label));
 });
 
 test('compare mode names both policy results in the key cards and conclusion',async()=>{
@@ -223,10 +226,10 @@ test('MU Hynix relative spread keeps its published index-point unit',async()=>{
   assert.doesNotMatch(app,/fmt\.pct\(latest\.muHynixRelativeSpread\)/);
 });
 
-test('source replica and practical signal are selectable tracks inside one dynamic scenario',async()=>{
+test('absolute-flow and scale-adjusted signals are selectable tracks inside one dynamic scenario',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   assert.match(html,/실전 신호 · 강건 회귀/);
-  assert.match(html,/PDF 원문 근사 · 절대 수급/);
+  assert.match(html,/절대수급 OLS · 규모 미보정/);
   for(const id of ['history-model-scope','scatter-model-scope','residual-model-scope','event-model-scope','strategy-model-scope']) assert.match(html,new RegExp(`id="${id}"`));
   assert.match(app,/function primaryModelKind/);
   assert.match(app,/runDynamicEventStudy/);
@@ -264,6 +267,8 @@ test('public operational reason codes are rendered as readable Korean guidance',
   assert.match(app,/adjusted_history_gap_reconciled_/);
   assert.match(app,/조정가격 누락일을 공식 KRX 세션으로 검증·보정/);
   assert.match(app,/reasons\.map\(degradedReasonLabel\)/);
+  assert.match(app,/refresh_timeout:\s*"데이터 갱신 제한시간 초과"/);
+  assert.match(app,/frozen_history_drift_requires_backfill:\s*"고정 이력 재검증 필요"/);
   assert.doesNotMatch(html,/core_latest_common_date_alignment/);
 });
 
@@ -276,14 +281,14 @@ test('ETF adjusted-history reconciliation is visible with provider provenance an
   assert.match(app,/report\.unresolvedCount/);
 });
 
-test('uncertainty chart, ETF common-period comparison and PDF snapshot fail closed on old payloads',async()=>{
+test('uncertainty chart and ETF common-period comparison fail closed without historical source authority UI',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   assert.match(html,/id="event-ci-chart"/);
   assert.match(html,/id="proxy-comparison"/);
-  assert.match(html,/id="pdf-snapshot"/);
   assert.match(app,/eventBenchmark/);
   assert.match(app,/renderProxyComparison/);
-  assert.match(app,/PDF 주석 사건 파생값이 아직 공개 계약에 없습니다/);
+  assert.doesNotMatch(html,/PDF|원문 비교|주석 사건|pdf-snapshot/i);
+  assert.doesNotMatch(app,/pdfReplica|renderPdfSnapshot|원문 근사/i);
 });
 
 test('event excess confidence intervals disclose how benchmark uncertainty is treated',async()=>{

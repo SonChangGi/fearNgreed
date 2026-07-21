@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { bootDashboard, click, fireInput, signature, submit, waitFor } from "./helpers/dashboard-harness.mjs";
 
 const SIGNAL_OUTPUTS = ["#state", "#signal-bridge", "#scatter-chart", "#residual-chart", "#event-table tbody"];
-const STRATEGY_OUTPUTS = ["#history-chart", "#backtest-cards", "#backtest-table tbody", "#trade-table tbody"];
+const STRATEGY_OUTPUTS = ["#history-chart", "#backtest-cards", "#open-trades", "#backtest-table tbody", "#trade-table tbody"];
 
 function kstDate(offsetDays = 0) {
   return new Date(Date.now() + 9 * 60 * 60 * 1000 + offsetDays * 86_400_000).toISOString().slice(0, 10);
@@ -339,6 +339,36 @@ test("segmented controls, sharing, and reset keep one applied scenario", { concu
   assertApplied('[data-backtest-cost="10"]', "cost", "10", "backtestCost");
   assertApplied('[data-backtest-period="common"]', "period", "common", "backtestPeriod");
   assert.match(document.querySelector("#view-action-status").textContent, /기본값으로 복원/);
+});
+
+test("current open trades expose execution details and follow policy, pair, and date controls", { concurrency: false, timeout: 120_000 }, async () => {
+  const window = await bootDashboard();
+  const { document } = window;
+  const initial = document.querySelector("#open-trades").textContent;
+  assert.match(initial, /진입 신호일 · 종가/);
+  assert.match(initial, /진입 체결일 · 시가/);
+  assert.match(initial, /진입 조정시가/);
+  assert.match(initial, /보유 거래일/);
+  assert.match(initial, /평가 손익 · 미실현/);
+  assert.match(initial, /다음 예정 행동/);
+  assert.equal(document.querySelectorAll("#open-trades .open-trade-panel").length, 2, "compare mode must disclose both policy states");
+  assert.match(document.querySelector("#open-trade-subtitle").textContent, /2026-07-16 종가 평가/);
+
+  click(window, '[data-backtest-policy="long_cash"]');
+  assert.equal(document.querySelectorAll("#open-trades .open-trade-panel").length, 1);
+  assert.match(document.querySelector("#open-trades").textContent, /롱 \/ 현금/);
+
+  const oneX = document.querySelector("#open-trades").textContent;
+  click(window, '[data-backtest-pair="2x"]');
+  const twoX = document.querySelector("#open-trades").textContent;
+  assert.notEqual(twoX, oneX);
+  assert.match(twoX, /122630|252670|현금/);
+
+  fireInput(window, "#history-start", "2026-04-16");
+  fireInput(window, "#history-end", "2026-06-15");
+  submit(window, "#history-range-form");
+  assert.match(document.querySelector("#open-trade-subtitle").textContent, /2026-06-15 종가 평가/);
+  assert.notEqual(document.querySelector("#open-trades").textContent, twoX);
 });
 
 test("a newer provisional signal is input-linked but never extends confirmed charts or backtests", { concurrency: false, timeout: 120_000 }, async () => {
