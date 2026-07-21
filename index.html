@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const q=new URLSearchParams(location.search).get("theme");const s=localStorage.getItem("quant-calm-theme");const p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=q==="dark"||q==="light"?q:(s||p)}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260720-live-signal-v15">
+  <link rel="stylesheet" href="assets/styles.css?v=20260721-recommended-defaults-v16">
 </head>
 <body id="top">
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -72,7 +72,7 @@
       <div class="analysis-config-grid">
         <fieldset class="config-field config-track">
           <legend class="control-label">연구 트랙</legend>
-          <div class="segmented" role="group" aria-label="연구 트랙"><button type="button" data-model="robust" aria-pressed="true">실전 신호 · 강건 회귀</button><button type="button" data-model="scaled" aria-pressed="false">OLS 기준선 · 규모 보정</button><button type="button" data-model="raw" aria-pressed="false">PDF 원문 근사 · 절대 수급</button></div>
+          <div class="segmented" role="group" aria-label="연구 트랙"><button type="button" data-model="robust" aria-pressed="false">실전 신호 · 강건 회귀</button><button type="button" data-model="scaled" aria-pressed="false">OLS 기준선 · 규모 보정</button><button type="button" data-model="raw" aria-pressed="true">PDF 원문 근사 · 절대 수급</button></div>
         </fieldset>
         <fieldset class="config-field">
           <legend class="control-label">포지션 정책</legend>
@@ -99,19 +99,19 @@
           <span class="signal-learning-scope">현재 신호 · 사건 연구 · 전략 재실행</span>
         </div>
         <div class="signal-learning-grid">
-          <label for="signal-lookback-input"><span>롤링 학습창</span><small>거래일 · 60~756</small><input id="signal-lookback-input" name="lookback" type="number" min="60" max="756" step="1" value="252" list="signal-lookback-presets" inputmode="numeric" required aria-describedby="signal-lookback-help signal-settings-status"><em id="signal-lookback-help">약 1년</em></label>
+          <label for="signal-lookback-input"><span>롤링 학습창</span><small>거래일 · 60~756</small><input id="signal-lookback-input" name="lookback" type="number" min="60" max="756" step="1" value="196" list="signal-lookback-presets" inputmode="numeric" required aria-describedby="signal-lookback-help signal-settings-status"><em id="signal-lookback-help">약 9개월 · 최소 157개 관측</em></label>
           <datalist id="signal-lookback-presets"><option value="63" label="3개월"></option><option value="126" label="6개월"></option><option value="252" label="1년"></option><option value="504" label="2년"></option><option value="756" label="3년"></option></datalist>
-          <label for="signal-min-r2-input"><span>최소 회귀 R²</span><small>0~0.80</small><input id="signal-min-r2-input" name="min-r2" type="number" min="0" max="0.8" step="0.05" value="0.20" inputmode="decimal" required aria-describedby="signal-min-r2-help signal-settings-status"><em id="signal-min-r2-help">미달 시 신규 진입 차단</em></label>
-          <label for="signal-tail-input"><span>극단 꼬리</span><small>백분위 · 1~20</small><input id="signal-tail-input" name="extreme-tail" type="number" min="1" max="20" step="1" value="5" inputmode="numeric" required aria-describedby="signal-tail-help signal-settings-status"><em id="signal-tail-help">공포 ≤5 · 탐욕 ≥95</em></label>
+          <label for="signal-min-r2-input"><span>최소 회귀 R²</span><small>0~0.80</small><input id="signal-min-r2-input" name="min-r2" type="number" min="0" max="0.8" step="0.05" value="0.40" inputmode="decimal" required aria-describedby="signal-min-r2-help signal-settings-status"><em id="signal-min-r2-help">미달 시 신규 진입 차단</em></label>
+          <label for="signal-tail-input"><span>극단 꼬리</span><small>백분위 · 1~20</small><input id="signal-tail-input" name="extreme-tail" type="number" min="1" max="20" step="1" value="2" inputmode="numeric" required aria-describedby="signal-tail-help signal-settings-status"><em id="signal-tail-help">공포 ≤2 · 탐욕 ≥98</em></label>
           <label for="signal-max-holding-input"><span>최대 보유</span><small>거래일 · 1~60</small><input id="signal-max-holding-input" name="max-holding" type="number" min="1" max="60" step="1" value="20" inputmode="numeric" required aria-describedby="signal-max-holding-help signal-settings-status"><em id="signal-max-holding-help">회복이 없을 때 시간 청산</em></label>
           <button id="apply-signal-settings" class="signal-settings-apply" type="submit"><span>학습 설정 적용</span><small>전체 분석 다시 계산</small></button>
         </div>
-        <p id="signal-settings-status" class="signal-settings-status" role="status" aria-live="polite">기본값 적용 중 · 학습창 252일 · 최소 R² 0.20 · 극단 꼬리 5% · 최대 보유 20일</p>
+        <p id="signal-settings-status" class="signal-settings-status" role="status" aria-live="polite">기본값 적용 중 · 학습창 196일 · 최소 R² 0.40 · 극단 꼬리 2% · 최대 보유 20일</p>
       </form>
       <div class="analysis-date-panel" aria-labelledby="analysis-date-label">
         <div class="analysis-date-copy"><strong id="analysis-date-label">성과 평가 기간</strong><span>빠른 기간 또는 시작·종료일을 선택하면 모든 차트와 성과표가 같은 구간으로 다시 계산됩니다.</span></div>
         <div class="history-range-toolbar" aria-label="성과 평가 기간 설정">
-          <div class="chart-actions segmented" role="group" aria-label="빠른 표시 기간"><button type="button" data-window="1m" aria-pressed="false">1개월</button><button type="button" data-window="3m" aria-pressed="false">3개월</button><button type="button" data-window="6m" aria-pressed="false">6개월</button><button type="button" data-window="ytd" aria-pressed="false">YTD</button><button type="button" data-window="1y" aria-pressed="false">1년</button><button type="button" data-window="3y" aria-pressed="true">3년</button><button type="button" data-window="all" aria-pressed="false">전체</button></div>
+          <div class="chart-actions segmented" role="group" aria-label="빠른 표시 기간"><button type="button" data-window="1m" aria-pressed="false">1개월</button><button type="button" data-window="3m" aria-pressed="false">3개월</button><button type="button" data-window="6m" aria-pressed="false">6개월</button><button type="button" data-window="ytd" aria-pressed="true">YTD</button><button type="button" data-window="1y" aria-pressed="false">1년</button><button type="button" data-window="3y" aria-pressed="false">3년</button><button type="button" data-window="all" aria-pressed="false">전체</button></div>
           <form id="history-range-form" class="history-custom-range" aria-label="사용자 지정 기간">
             <label for="history-start">시작일<input id="history-start" name="history-start" type="date"></label>
             <span aria-hidden="true">–</span>
@@ -193,7 +193,7 @@
       <div class="section-head"><div><p class="eyebrow">SELECTED RESEARCH TRACK · EVENT STUDY</p><div class="title-with-scope"><h2 id="event-title">극단 상태 이후 종가 기준 수익률</h2><span id="event-model-scope" class="scope-badge practical">연구 트랙 연동</span></div></div><p id="event-source-line" class="source-line">신호일 종가→h일 종가 · 실제 익일 시가 체결수익률과 구분</p></div>
       <div class="control-panel" aria-label="사건 연구 결과 선택">
         <div class="control-group"><span class="control-label">수익률 자산</span><div class="segmented" role="group" aria-label="사건 연구 자산"><button type="button" data-event-asset="KOSPI" aria-pressed="true">KOSPI</button><button type="button" data-event-asset="226490" aria-pressed="false">226490</button><button type="button" data-event-asset="069500" aria-pressed="false">069500</button></div></div>
-        <div class="control-group"><span class="control-label">사건 표본</span><div class="segmented" role="group" aria-label="사건 표본"><button type="button" data-event-sample="nonOverlapping20d" aria-pressed="true">20일 비중첩</button><button type="button" data-event-sample="all" aria-pressed="false">전체 사건</button></div></div>
+        <div class="control-group"><span class="control-label">사건 표본</span><div class="segmented" role="group" aria-label="사건 표본"><button type="button" data-event-sample="nonOverlapping20d" aria-pressed="false">20일 비중첩</button><button type="button" data-event-sample="all" aria-pressed="true">전체 사건</button></div></div>
         <p class="control-note">위 분석 설정으로 사건을 다시 만들며, 여기서는 수익률 자산과 표본 방식만 바꿉니다.</p>
       </div>
       <article class="card event-visual-card">
@@ -237,7 +237,7 @@
             <section><strong>규모 보정의 장점</strong><p><code>개인 순매수대금 ÷ KOSPI 거래대금</code>은 시장 규모와 명목 거래대금이 달라진 시기 사이에서 수급 강도를 같은 단위로 비교하기 쉽습니다. 장기 회귀의 규모 변화와 분산 불안정을 줄이려는 실전 선택입니다.</p></section>
             <section><strong>반드시 함께 볼 한계</strong><p>거래대금은 공포·급등락 구간에 함께 커지는 내생적 분모입니다. 극단 수급을 축소하거나 다른 방향으로 보이게 할 수 있으므로, 절대 순매수대금 모델을 PDF 원문 근사·강건성 대조군으로 계속 공개합니다.</p></section>
           </div>
-          <p class="flow-normalization-conclusion">따라서 이 프로젝트는 순매수율을 “더 옳은 값”이 아니라 <strong>장기 시장 규모 영향을 줄이려는 기본 연구 입력</strong>으로 사용하며, 두 모델이 엇갈리면 신뢰도를 낮춰 해석합니다.</p>
+          <p class="flow-normalization-conclusion">따라서 서버 정식 모형은 순매수율을 “더 옳은 값”이 아니라 <strong>장기 시장 규모 영향을 줄이려는 연구 입력</strong>으로 사용합니다. 페이지 권장 시작값은 PDF 비교에 맞춘 절대수급이며, 두 트랙은 언제든 같은 입력 패널에서 바꿔 볼 수 있습니다.</p>
         </aside>
         <div><div class="card-head"><div><h3>보조 진단</h3><p>50일 이격도, MDD, 환율·세션 정렬 스프레드를 선택 평가 기간에 맞춰 확인합니다.</p></div><button class="latest-button" type="button" data-chart-latest="diagnostic-chart">기간 끝으로</button></div><dl id="diagnostic-list"></dl><div id="diagnostic-chart" class="chart compact-chart" role="img" aria-roledescription="대화형 상대 스프레드 차트" aria-label="Micron 환율 환산 대비 SK하이닉스 상대 스프레드" aria-describedby="diagnostic-help" tabindex="0"></div><p id="diagnostic-help" class="chart-help">선택 평가 기간과 종료일을 따릅니다. 좌우 화살표·Home·End로 날짜를 확인할 수 있습니다.</p><details class="data-alternative"><summary>선택 기간 상대 진단 표로 보기</summary><div class="table-scroll" id="diagnostic-data-table"></div></details></div>
         <div><h3>분석 결과 연결 방식</h3><p>선택한 연구 트랙은 평가 종료일 신호·잔차·사건·전략에 함께 적용됩니다. 사건 연구는 신호일 종가 기준이고 전략은 다음 ETF 시가 체결 기준입니다.</p><p>절대 수급 모델은 PDF 아이디어의 방향을 비교하고, 규모보정·강건 회귀 모델은 시장 규모 변화와 이상값을 반영해 같은 아이디어를 확장합니다.</p><a class="text-link" href="docs/methodology.md">전체 계산 계약 읽기 →</a></div>
@@ -252,6 +252,6 @@
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260720-live-signal-v15"></script>
+  <script type="module" src="assets/app.js?v=20260721-recommended-defaults-v16"></script>
 </body>
 </html>

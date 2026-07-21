@@ -241,15 +241,15 @@ def _strategy_contract_fixtures() -> tuple[dict, dict, dict, dict]:
             "browserMayRefitRegression": True,
             "scenarioAuthority": "browser_user_scenario_not_canonical_server_output",
             "configurableInputs": {
-                "lookback": {"default": 252, "minimum": 60, "maximum": 756, "step": 1},
+                "lookback": {"default": 196, "minimum": 60, "maximum": 756, "step": 1},
                 "minimumR2": {
-                    "default": 0.2,
+                    "default": 0.4,
                     "minimum": 0,
                     "maximum": 0.8,
                     "step": 0.05,
                 },
                 "extremeTail": {
-                    "default": 5,
+                    "default": 2,
                     "minimum": 1,
                     "maximum": 20,
                     "step": 1,

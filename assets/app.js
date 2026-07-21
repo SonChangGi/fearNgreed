@@ -5,7 +5,6 @@ import {
   runActualEtfPairScenario
 } from "./strategy-engine.js?v=20260717-actual-etf-v7";
 import {
-  DEFAULT_SIGNAL_CONFIG,
   normalizeSignalConfig,
   computeDynamicSignals,
   computeDynamicSignalsAsync,
@@ -108,23 +107,32 @@ function heldInstrument(result) {
 }
 
 const DEFAULT_CONTROLS = Object.freeze({
-  window: "3y",
+  window: "ytd",
   historyStart: "",
   historyEnd: "",
-  model: "robust",
+  model: "raw",
   eventAsset: "KOSPI",
-  eventSample: "nonOverlapping20d",
+  eventSample: "all",
   backtestProxy: "1x",
   backtestPolicy: "compare",
-  backtestVariant: "scaled_huber",
+  backtestVariant: "raw_ols",
   backtestCost: 10,
   backtestPeriod: "common",
   longExitPercentile: DEFAULT_LONG_EXIT_PERCENTILE,
-  signalLookback: DEFAULT_SIGNAL_CONFIG.lookback,
-  signalMinimumR2: DEFAULT_SIGNAL_CONFIG.minimumR2,
-  signalExtremeTail: DEFAULT_SIGNAL_CONFIG.extremeTail,
+  signalLookback: 196,
+  signalMinimumR2: 0.4,
+  signalExtremeTail: 2,
   signalMaxHolding: 20
 });
+
+const CONTROL_STORAGE_KEY = "fearngreed-controls-v7";
+const LEGACY_CONTROL_STORAGE_KEYS = Object.freeze([
+  "fearngreed-controls-v6",
+  "fearngreed-controls-v5",
+  "fearngreed-controls-v4",
+  "fearngreed-controls-v3",
+  "fearngreed-controls-v2"
+]);
 
 const TRACK_VARIANTS = Object.freeze({
   robust: "scaled_huber",
@@ -202,6 +210,16 @@ function validateContracts(summary, dashboard, history, strategyComparison) {
   const dynamicControl = strategyComparison?.dynamicExitControl;
   const historyScenario = history?.strategyScenario;
   if (dynamicControl?.defaultLongExitPercentile !== DEFAULT_LONG_EXIT_PERCENTILE || dynamicControl?.minimum !== 50 || dynamicControl?.maximum !== 94 || dynamicControl?.shortExitFormula !== "100-longExitPercentile" || dynamicControl?.regressionRefit !== true || historyScenario?.defaultLongExitPercentile !== DEFAULT_LONG_EXIT_PERCENTILE || historyScenario?.browserMayRefitRegression !== true || historyScenario?.pastOnly !== true || historyScenario?.evaluationRangeSeparate !== true) throw new Error("사용자 동적 연구 시나리오 계약이 올바르지 않습니다.");
+  const expectedPageDefaults = {
+    lookback: DEFAULT_CONTROLS.signalLookback,
+    minimumR2: DEFAULT_CONTROLS.signalMinimumR2,
+    extremeTail: DEFAULT_CONTROLS.signalExtremeTail,
+    maxHolding: DEFAULT_CONTROLS.signalMaxHolding
+  };
+  const contractDefaults = (scenario) => Object.fromEntries(
+    Object.keys(expectedPageDefaults).map((key) => [key, scenario?.configurableInputs?.[key]?.default])
+  );
+  if (JSON.stringify(contractDefaults(dynamicControl)) !== JSON.stringify(expectedPageDefaults) || JSON.stringify(contractDefaults(historyScenario)) !== JSON.stringify(expectedPageDefaults)) throw new Error("페이지 기본 연구 설정 계약이 올바르지 않습니다.");
   const hasSeries = Array.isArray(history.series) || (Array.isArray(history.seriesColumns) && Array.isArray(history.seriesRows));
   const models = summary.primaryEntities?.[0]?.models || dashboard?.models || {};
   if (!["ok", "degraded", "stale", "unavailable"].includes(summary?.status?.state) || !Array.isArray(summary.primaryEntities) || summary.primaryEntities.length !== 1 || !models.scaled || !models.raw || !hasSeries || summary?.payload?.strategyComparisonUrl !== "./strategy-comparison.json") throw new Error("공개 데이터의 필수 계약이 없습니다.");
@@ -243,7 +261,7 @@ function decodeHistory(history) {
 function stateFromValue(model) {
   if (model?.state || model?.signalState) return model.state || model.signalState;
   const value = model?.percentile ?? model?.sentimentPercentile;
-  const tail = Number(store?.signalExtremeTail ?? 5);
+  const tail = Number(store?.signalExtremeTail ?? DEFAULT_CONTROLS.signalExtremeTail);
   if (value == null) return "unavailable";
   if (value <= tail) return "extreme_fear";
   if (value <= 20) return "fear";
@@ -2500,7 +2518,38 @@ function updateBacktestControls() {
 
 function initializeControlState() {
   let saved = {};
-  try { saved = JSON.parse(localStorage.getItem("fearngreed-controls-v6") || localStorage.getItem("fearngreed-controls-v5") || localStorage.getItem("fearngreed-controls-v4") || localStorage.getItem("fearngreed-controls-v3") || localStorage.getItem("fearngreed-controls-v2") || "{}"); } catch (_) { saved = {}; }
+  let savedKey = null;
+  try {
+    for (const key of [CONTROL_STORAGE_KEY, ...LEGACY_CONTROL_STORAGE_KEYS]) {
+      const value = localStorage.getItem(key);
+      if (!value) continue;
+      saved = JSON.parse(value);
+      savedKey = key;
+      break;
+    }
+  } catch (_) { saved = {}; }
+  const legacyDefaults = savedKey && savedKey !== CONTROL_STORAGE_KEY
+    && String(saved.window ?? "3y") === "3y"
+    && String(saved.model ?? "robust") === "robust"
+    && String(saved.eventSample ?? "nonOverlapping20d") === "nonOverlapping20d"
+    && String(saved.backtestVariant ?? "scaled_huber") === "scaled_huber"
+    && Number(saved.signalLookback ?? 252) === 252
+    && Number(saved.signalMinimumR2 ?? 0.2) === 0.2
+    && Number(saved.signalExtremeTail ?? 5) === 5
+    && Number(saved.signalMaxHolding ?? 20) === 20;
+  if (legacyDefaults) {
+    saved = {
+      ...saved,
+      window: DEFAULT_CONTROLS.window,
+      model: DEFAULT_CONTROLS.model,
+      eventSample: DEFAULT_CONTROLS.eventSample,
+      backtestVariant: DEFAULT_CONTROLS.backtestVariant,
+      signalLookback: DEFAULT_CONTROLS.signalLookback,
+      signalMinimumR2: DEFAULT_CONTROLS.signalMinimumR2,
+      signalExtremeTail: DEFAULT_CONTROLS.signalExtremeTail,
+      signalMaxHolding: DEFAULT_CONTROLS.signalMaxHolding
+    };
+  }
   const params = new URLSearchParams(location.search);
   Object.entries(CONTROL_QUERY).forEach(([key, param]) => {
     const legacyProxy = key === "backtestProxy" && params.has("proxy") ? params.get("proxy") : null;
@@ -2523,8 +2572,8 @@ function initializeControlState() {
     if (key === "window") normalized = ({ "252": "1y", "756": "3y" })[normalized] || normalized;
     if (CONTROL_ALLOWED[key]?.includes(normalized)) store[key] = key === "backtestCost" ? Number(normalized) : normalized;
   });
-  if (store.window === "custom" && (!isIsoDate(store.historyStart) || !isIsoDate(store.historyEnd) || store.historyStart > store.historyEnd)) store.window = "3y";
-  if (!params.has("window") && saved.window == null && matchMedia("(max-width: 520px)").matches) store.window = "1y";
+  if (store.window === "custom" && (!isIsoDate(store.historyStart) || !isIsoDate(store.historyEnd) || store.historyStart > store.historyEnd)) store.window = DEFAULT_CONTROLS.window;
+  if (!params.has("window") && saved.window == null && matchMedia("(max-width: 520px)").matches) store.window = DEFAULT_CONTROLS.window;
   try { currentSignalConfig(); } catch (_) {
     store.signalLookback = DEFAULT_CONTROLS.signalLookback;
     store.signalMinimumR2 = DEFAULT_CONTROLS.signalMinimumR2;
@@ -2541,7 +2590,7 @@ function ensureHistoryRangeAvailable() {
   const latestDate = rows.at(-1)?.date;
   const valid = firstDate && latestDate && isIsoDate(store.historyStart) && isIsoDate(store.historyEnd) && store.historyStart <= store.historyEnd && store.historyStart >= firstDate && store.historyEnd <= latestDate && rows.some((row) => row.date >= store.historyStart && row.date <= store.historyEnd);
   if (valid) return true;
-  store.window = "3y";
+  store.window = DEFAULT_CONTROLS.window;
   store.historyStart = "";
   store.historyEnd = "";
   return false;
@@ -2549,7 +2598,7 @@ function ensureHistoryRangeAvailable() {
 
 function persistControlState({ replaceUrl = true } = {}) {
   const values = Object.fromEntries(Object.keys(CONTROL_QUERY).map((key) => [key, store[key]]));
-  try { localStorage.setItem("fearngreed-controls-v6", JSON.stringify(values)); } catch (_) { /* URL remains shareable */ }
+  try { localStorage.setItem(CONTROL_STORAGE_KEY, JSON.stringify(values)); } catch (_) { /* URL remains shareable */ }
   if (!replaceUrl) return;
   const url = new URL(location.href);
   Object.entries(CONTROL_QUERY).forEach(([key, param]) => {
@@ -2634,7 +2683,7 @@ function resetControls() {
     const signalStatus = $("#signal-settings-status");
     if (signalStatus) {
       signalStatus.dataset.state = "ok";
-      signalStatus.textContent = "기본값 적용 · 학습창 252일 · 최소 R² 0.20 · 극단 꼬리 5% · 최대 보유 20일";
+      signalStatus.textContent = signalAppliedStatusText();
     }
     ["#signal-lookback-input", "#signal-min-r2-input", "#signal-tail-input", "#signal-max-holding-input"].forEach((selector) => $(selector)?.removeAttribute("aria-invalid"));
     ["#history-start", "#history-end"].forEach((selector) => $(selector)?.removeAttribute("aria-invalid"));
@@ -2968,7 +3017,7 @@ Promise.all([loadJson("data/summary.json"), loadJson("data/dashboard.json"), loa
     const signalStatus = $("#signal-settings-status");
     signalStatus.dataset.state = "ok";
     signalStatus.textContent = signalAppliedStatusText();
-    if (!rangeAvailable) announceViewAction("저장된 사용자 기간이 공개 이력 밖이어서 최근 3년으로 복원했습니다.");
+    if (!rangeAvailable) announceViewAction("저장된 사용자 기간이 공개 이력 밖이어서 YTD 기본 기간으로 복원했습니다.");
   })
   .catch((error) => {
     $("#status-badge").textContent = "unavailable";

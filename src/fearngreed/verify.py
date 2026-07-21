@@ -30,9 +30,9 @@ SIZE_LIMITS = {
     "data/live-signal.json": 50_000,
 }
 BROWSER_SCENARIO_INPUTS = {
-    "lookback": {"default": 252, "minimum": 60, "maximum": 756, "step": 1},
-    "minimumR2": {"default": 0.2, "minimum": 0, "maximum": 0.8, "step": 0.05},
-    "extremeTail": {"default": 5, "minimum": 1, "maximum": 20, "step": 1},
+    "lookback": {"default": 196, "minimum": 60, "maximum": 756, "step": 1},
+    "minimumR2": {"default": 0.4, "minimum": 0, "maximum": 0.8, "step": 0.05},
+    "extremeTail": {"default": 2, "minimum": 1, "maximum": 20, "step": 1},
     "maxHolding": {"default": 20, "minimum": 1, "maximum": 60, "step": 1},
 }
 MINIMUM_TRAINING_OBSERVATIONS_FORMULA = "min(lookback,max(40,min(200,ceil(lookback*0.8))))"

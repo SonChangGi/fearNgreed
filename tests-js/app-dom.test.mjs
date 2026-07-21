@@ -67,6 +67,81 @@ function failNextInnerHtmlWrite(target) {
   return () => { delete target.innerHTML; };
 }
 
+test("recommended page defaults load once while legacy custom scenarios remain editable", { concurrency: false, timeout: 120_000 }, async () => {
+  const fresh = await bootDashboard();
+  const freshDocument = fresh.document;
+  assert.equal(freshDocument.querySelector('[data-model="raw"]').getAttribute("aria-pressed"), "true");
+  assert.equal(freshDocument.querySelector('[data-window="ytd"]').getAttribute("aria-pressed"), "true");
+  assert.equal(freshDocument.querySelector('[data-event-sample="all"]').getAttribute("aria-pressed"), "true");
+  assert.deepEqual(
+    [
+      Number(freshDocument.querySelector("#signal-lookback-input").value),
+      Number(freshDocument.querySelector("#signal-min-r2-input").value),
+      Number(freshDocument.querySelector("#signal-tail-input").value),
+      Number(freshDocument.querySelector("#signal-max-holding-input").value)
+    ],
+    [196, 0.4, 2, 20]
+  );
+  assert.match(freshDocument.querySelector("#signal-settings-status").textContent, /과거 196일 · 최소 R² 0\.40 · 극단 ≤2\/≥98/);
+
+  const migrated = await bootDashboard({
+    storage: {
+      "fearngreed-controls-v6": JSON.stringify({
+        window: "3y",
+        model: "robust",
+        eventSample: "nonOverlapping20d",
+        signalLookback: 252,
+        signalMinimumR2: 0.2,
+        signalExtremeTail: 5,
+        signalMaxHolding: 20,
+        longExitPercentile: 75
+      })
+    }
+  });
+  const migratedSaved = JSON.parse(migrated.localStorage.getItem("fearngreed-controls-v7"));
+  assert.deepEqual(
+    [migratedSaved.window, migratedSaved.model, migratedSaved.eventSample, migratedSaved.signalLookback, migratedSaved.signalMinimumR2, migratedSaved.signalExtremeTail],
+    ["ytd", "raw", "all", 196, 0.4, 2]
+  );
+  assert.equal(migratedSaved.longExitPercentile, 75, "an unrelated user-set exit value must survive migration");
+
+  const custom = await bootDashboard({
+    storage: {
+      "fearngreed-controls-v6": JSON.stringify({
+        window: "1y",
+        model: "scaled",
+        eventSample: "nonOverlapping20d",
+        signalLookback: 126,
+        signalMinimumR2: 0.35,
+        signalExtremeTail: 7,
+        signalMaxHolding: 12
+      })
+    }
+  });
+  const customSaved = JSON.parse(custom.localStorage.getItem("fearngreed-controls-v7"));
+  assert.deepEqual(
+    [customSaved.window, customSaved.model, customSaved.eventSample, customSaved.signalLookback, customSaved.signalMinimumR2, customSaved.signalExtremeTail, customSaved.signalMaxHolding],
+    ["1y", "scaled", "nonOverlapping20d", 126, 0.35, 7, 12]
+  );
+
+  const customVariant = await bootDashboard({
+    storage: {
+      "fearngreed-controls-v6": JSON.stringify({
+        window: "3y",
+        model: "robust",
+        eventSample: "nonOverlapping20d",
+        backtestVariant: "scaled_ols",
+        signalLookback: 252,
+        signalMinimumR2: 0.2,
+        signalExtremeTail: 5,
+        signalMaxHolding: 20
+      })
+    }
+  });
+  const customVariantSaved = JSON.parse(customVariant.localStorage.getItem("fearngreed-controls-v7"));
+  assert.equal(customVariantSaved.signalLookback, 252);
+});
+
 test("real DOM inputs preserve drafts and atomically update the connected analysis", { concurrency: false, timeout: 120_000 }, async () => {
   const window = await bootDashboard();
   const { document } = window;
@@ -110,7 +185,7 @@ test("real DOM inputs preserve drafts and atomically update the connected analys
   assert.equal(appliedUrl.searchParams.get("minR2"), "0.4");
   assert.equal(appliedUrl.searchParams.get("tail"), "10");
   assert.equal(appliedUrl.searchParams.get("maxHold"), "5");
-  const saved = JSON.parse(window.localStorage.getItem("fearngreed-controls-v6"));
+  const saved = JSON.parse(window.localStorage.getItem("fearngreed-controls-v7"));
   assert.deepEqual(
     [saved.signalLookback, saved.signalMinimumR2, saved.signalExtremeTail, saved.signalMaxHolding],
     [126, 0.4, 10, 5]
@@ -189,7 +264,7 @@ test("real DOM inputs preserve drafts and atomically update the connected analys
 test("segmented controls, sharing, and reset keep one applied scenario", { concurrency: false, timeout: 120_000 }, async () => {
   const window = await bootDashboard();
   const { document } = window;
-  const savedControls = () => JSON.parse(window.localStorage.getItem("fearngreed-controls-v6"));
+  const savedControls = () => JSON.parse(window.localStorage.getItem("fearngreed-controls-v7"));
   const assertApplied = (selector, param, value, storageKey) => {
     assert.equal(document.querySelector(selector).getAttribute("aria-pressed"), "true");
     assert.equal(new URL(window.location.href).searchParams.get(param), String(value));
@@ -202,8 +277,8 @@ test("segmented controls, sharing, and reset keep one applied scenario", { concu
   assert.notEqual(signature(document, ["#event-ci-chart", "#event-table tbody"]), before);
 
   before = signature(document, ["#event-ci-chart", "#event-table tbody"]);
-  click(window, '[data-event-sample="all"]');
-  assertApplied('[data-event-sample="all"]', "eventSample", "all", "eventSample");
+  click(window, '[data-event-sample="nonOverlapping20d"]');
+  assertApplied('[data-event-sample="nonOverlapping20d"]', "eventSample", "nonOverlapping20d", "eventSample");
   assert.notEqual(signature(document, ["#event-ci-chart", "#event-table tbody"]), before);
 
   before = signature(document, STRATEGY_OUTPUTS);
@@ -256,8 +331,9 @@ test("segmented controls, sharing, and reset keep one applied scenario", { concu
   assert.match(document.querySelector("#view-action-status").textContent, /적용된 설정 링크/);
 
   click(window, "#reset-controls");
-  assertApplied('[data-model="robust"]', "model", "robust", "model");
-  assertApplied('[data-window="3y"]', "window", "3y", "window");
+  assertApplied('[data-model="raw"]', "model", "raw", "model");
+  assertApplied('[data-window="ytd"]', "window", "ytd", "window");
+  assertApplied('[data-event-sample="all"]', "eventSample", "all", "eventSample");
   assertApplied('[data-backtest-policy="compare"]', "policy", "compare", "backtestPolicy");
   assertApplied('[data-backtest-pair="1x"]', "pair", "1x", "backtestProxy");
   assertApplied('[data-backtest-cost="10"]', "cost", "10", "backtestCost");
@@ -278,13 +354,13 @@ test("a newer provisional signal is input-linked but never extends confirmed cha
   assert.match(document.querySelector("#live-confirmed-anchor").textContent, /2026년 7월 16일 확정 기준/);
   assert.doesNotMatch(document.querySelector("#history-data-table").textContent, /2026-07-20/);
 
-  const robustLive = signature(document, ["#live-signal-state", "#live-signal-score"]);
-  click(window, '[data-model="raw"]');
+  const rawLive = signature(document, ["#live-signal-state", "#live-signal-score"]);
+  click(window, '[data-model="robust"]');
   await waitFor(
     () => document.querySelector("#signal-settings-status").dataset.state === "ok" && document.querySelector(".analysis-config").getAttribute("aria-busy") === "false",
     "live signal track recompute"
   );
-  assert.notEqual(signature(document, ["#live-signal-state", "#live-signal-score"]), robustLive);
+  assert.notEqual(signature(document, ["#live-signal-state", "#live-signal-score"]), rawLive);
   assert.doesNotMatch(document.querySelector("#history-data-table").textContent, /2026-07-20/);
 });
 

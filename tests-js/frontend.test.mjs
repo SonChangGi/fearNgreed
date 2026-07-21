@@ -300,8 +300,9 @@ test('controls persist to URL and localStorage and charts expose an explicit lat
   assert.match(html,/id="reset-controls"/);
   assert.match(html,/id="share-view"/);
   assert.ok((html.match(/data-chart-latest=/g)||[]).length>=4);
-  assert.match(app,/localStorage\.setItem\("fearngreed-controls-v6"/);
-  assert.match(app,/getItem\("fearngreed-controls-v6"\) \|\| localStorage\.getItem\("fearngreed-controls-v5"\)/);
+  assert.match(app,/CONTROL_STORAGE_KEY = "fearngreed-controls-v7"/);
+  assert.match(app,/"fearngreed-controls-v6"/);
+  assert.match(app,/localStorage\.setItem\(CONTROL_STORAGE_KEY/);
   assert.match(app,/history\.replaceState/);
   assert.match(app,/navigator\.clipboard\.writeText/);
   assert.match(app,/longExitPercentile:\s*"exit"/);
