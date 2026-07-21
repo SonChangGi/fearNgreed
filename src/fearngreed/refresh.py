@@ -51,10 +51,14 @@ ADJUSTED_SCALE_TOLERANCE = 0.005
 # Frozen public rows are compared exactly by default.  These two model-only
 # fields can move by a few final decimals when a row already rounded to the
 # public eight-decimal contract is used to rebuild the rolling Huber fit.
-# The bounds cover the observed serialization round-trip (2.48e-6 and 7e-8)
-# without relaxing prices, flows, signals, states, or source hashes.
+# The bounds cover observed serialization round-trips through the public
+# eight-decimal history contract without relaxing prices, flows, percentiles,
+# states, positions, or source hashes.
 FROZEN_DERIVED_SERIALIZATION_ABS_TOLERANCES = {
+    "residual": 2e-8,
     "residualZ": 5e-6,
+    "rollingR2": 3e-8,
+    "expected": 2e-8,
     "fitScore": 1e-7,
 }
 ETF_LISTING_DATES = {

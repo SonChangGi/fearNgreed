@@ -885,7 +885,10 @@ def test_frozen_history_keeps_market_and_signal_numbers_exact(field, delta):
 @pytest.mark.parametrize(
     ("field", "accepted_delta", "rejected_delta"),
     (
+        ("residual", 1.99e-8, 2.01e-8),
         ("residualZ", 4.99e-6, 5.01e-6),
+        ("rollingR2", 2.99e-8, 3.01e-8),
+        ("expected", 1.99e-8, 2.01e-8),
         ("fitScore", 0.99e-7, 1.01e-7),
     ),
 )
@@ -894,7 +897,10 @@ def test_frozen_history_allows_only_bounded_model_serialization_noise(
 ):
     previous = {
         "date": "2026-07-01",
+        "residual": -0.02,
         "residualZ": -1.25,
+        "rollingR2": 0.35,
+        "expected": 0.01,
         "fitScore": 0.5,
         "state": "neutral",
         "sourceHash": "source-hash",

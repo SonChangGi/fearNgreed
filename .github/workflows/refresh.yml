@@ -95,7 +95,6 @@ jobs:
           if [[ -n "$OFFICIAL_DATA_DATE" ]]; then
             [[ "$EVENT_NAME" == "workflow_dispatch" ]]
             [[ "$OFFICIAL_DATA_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
-            [[ -z "$BACKFILL_START_DATE" ]]
             [[ "$OFFICIAL_DATA_DATE" < "$current_kst_date" ]]
           fi
 
