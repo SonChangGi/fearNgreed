@@ -48,7 +48,7 @@ python3 -m http.server 8000
 
 정상 이력이 있으면 최신 5거래일의 KRX 캐시를 다시 검증하고 그 이전 파생 이력은 고정한다. 수정 불가 구간과 겹치는 Yahoo 조정가격 앵커를 별도로 대조한다. 과거 가격·수급·백분위·상태·포지션·출처 해시는 정확히 같아야 하며, 8자리 공개값을 다시 계산할 때 확인된 `residual`·`residualZ`·`rollingR2`·`expected`·`fitScore` 직렬화 오차만 필드별 최소 허용범위로 비교한다. 이 범위를 벗어나면 새·옛 이력을 섞지 않고 `requires_backfill`로 실패한다. KRX Open API가 공식 최신 완료 세션을 확정하고 KOSPI·개인수급의 최신 공통일이 그 세션과 정확히 같을 때만 신호·사건·백테스트를 갱신한다. 공식일을 확인할 수 없거나 공개 기준일보다 과거로 후퇴하는 실행은 쓰기 전에 중단한다. Actions는 수집 receipt의 공식 기대일로 로컬·배포 JSON을 다시 검증한다. 각 pykrx 요청에는 20초 기본 timeout, 전체 확정 갱신에는 35분 watchdog을 적용한다. timeout이나 공급자 실패 시에도 마지막 정상 시장 결과와 `stale/degraded` 상태 계약을 검증해 배포한다. GitHub Actions에는 사용자가 직접 `KRX_API_KEY`, `KRX_ID`, `KRX_PW` repository 또는 `github-pages` environment secrets를 등록해야 한다. 로컬 Keychain 값은 GitHub로 자동 복사하지 않는다.
 
-Actions의 수동 실행에서 `official_data_date`에 오늘보다 이전인 완료 거래일을 지정하면 18:15 시각 제한 없이 그 날짜를 정확히 재수집할 수 있다. 이 입력은 provider probe와 함께 사용할 수 없지만, 실제 이력 재생성이 필요할 때는 `backfill_start_date`와 함께 사용할 수 있다. KRX가 지정 종료일을 실제 완료 세션으로 확인하지 않으면 발행하지 않는다.
+Actions의 수동 실행에서 `official_data_date`에 오늘보다 이전인 완료 거래일을 지정하면 18:15 시각 제한 없이 그 날짜를 정확히 재수집하고, 이미 최신인 날짜라도 증분 수집·분석·검증·배포 경로를 다시 실행한다. 이 입력은 provider probe와 함께 사용할 수 없지만, 출력 이력 자체를 지정 날짜부터 다시 만들 때는 충분한 학습 이력을 포함한 `backfill_start_date`와 함께 사용할 수 있다. KRX가 지정 종료일을 실제 완료 세션으로 확인하지 않으면 발행하지 않는다.
 
 GitHub Secrets가 아직 비어 있어도 이 Mac에서는 같은 확정 시각에 로컬 Keychain 경로가 동작한다. 로컬 확정 작업은 사용자 작업 폴더를 수정하지 않고 매 실행마다 격리된 임시 clone을 만든 뒤, 전체 테스트·계약·비밀정보 검사를 통과한 `data/` 변경만 원격 `main`에 푸시한다. 원격 HEAD가 계산 중 바뀌면 rebase나 force-push 없이 중단한다.
 

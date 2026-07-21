@@ -41,6 +41,7 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert "Manual final-data refresh is available from 18:15 KST" in workflow
     assert '[[ "$OFFICIAL_DATA_DATE" < "$current_kst_date" ]]' in workflow
     assert 'target_date="${OFFICIAL_DATA_DATE:-$current_kst_date}"' in workflow
+    assert 'elif [[ -z "$OFFICIAL_DATA_DATE" ]]; then' in workflow
     official_block = workflow.split('if [[ -n "$OFFICIAL_DATA_DATE" ]]; then', 1)[1].split("fi", 1)[
         0
     ]
