@@ -305,8 +305,8 @@ test('controls persist to URL and localStorage and charts expose an explicit lat
   assert.match(html,/id="reset-controls"/);
   assert.match(html,/id="share-view"/);
   assert.ok((html.match(/data-chart-latest=/g)||[]).length>=4);
-  assert.match(app,/CONTROL_STORAGE_KEY = "fearngreed-controls-v7"/);
-  assert.match(app,/"fearngreed-controls-v6"/);
+  assert.match(app,/CONTROL_STORAGE_KEY = "fearngreed-controls-v8"/);
+  assert.match(app,/"fearngreed-controls-v7"/);
   assert.match(app,/localStorage\.setItem\(CONTROL_STORAGE_KEY/);
   assert.match(app,/history\.replaceState/);
   assert.match(app,/navigator\.clipboard\.writeText/);
@@ -347,13 +347,17 @@ test('optional live signal is isolated from canonical contracts and uses the sel
 test('KOSPI history supports calendar presets and validated shareable custom dates',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
   for(const value of ['1m','3m','6m','ytd','1y','3y','all']) assert.match(html,new RegExp(`data-window="${value}"`));
-  for(const id of ['history-range-form','history-start','history-end','history-range-status','history-exposure-note']) assert.match(html,new RegExp(`id="${id}"`));
+  for(const id of ['history-range-form','history-start','history-end','history-follow-latest','history-range-status','history-exposure-note']) assert.match(html,new RegExp(`id="${id}"`));
   assert.match(app,/function applyCustomHistoryRange/);
   assert.match(app,/start > end/);
   assert.match(app,/start < firstDate \|\| end > latestDate/);
   assert.match(app,/store\.window = "custom"/);
   assert.match(app,/historyStart:\s*"start"/);
   assert.match(app,/historyEnd:\s*"end"/);
+  assert.match(app,/historyEndMode:\s*"endMode"/);
+  assert.match(app,/store\.historyEndMode === "latest"/);
+  assert.match(app,/최신일 자동 추종/);
+  assert.match(app,/종료일 고정/);
   assert.match(app,/url\.searchParams\.delete\(param\)/);
   assert.match(app,/\{ "252": "1y", "756": "3y" \}/);
   assert.match(app,/function renderResidual\(\)[\s\S]*?const rows = selectedHistory\(\)/);

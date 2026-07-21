@@ -196,6 +196,37 @@ def test_pipeline_publishes_official_latest_session_freshness() -> None:
     assert outputs.dashboard["quality"]["expectedAsOf"] == expected.isoformat()
 
 
+def test_new_completed_session_advances_analysis_and_visualization_artifacts() -> None:
+    previous = build_outputs(_pipeline_inputs(periods=320))
+    current = build_outputs(_pipeline_inputs(periods=321))
+    previous_date = previous.summary["dataAsOf"]
+    current_date = current.summary["dataAsOf"]
+
+    assert current_date > previous_date
+    assert {
+        current.summary["dataAsOf"],
+        current.dashboard["dataAsOf"],
+        current.history["dataAsOf"],
+        current.automation_status["dataAsOf"],
+        current.strategy_comparison["dataAsOf"],
+    } == {current_date}
+    date_index = current.history["seriesColumns"].index("date")
+    assert current.history["seriesRows"][-1][date_index] == current_date
+    for scatter in current.dashboard["scatterByModel"].values():
+        assert scatter[-1]["date"] == current_date
+        assert scatter[-1]["role"] == "current"
+    for ticker in ("226490", "069500"):
+        proxy = current.dashboard["backtests"]["proxies"][ticker]
+        for period in ("fullPeriod", "commonPeriod"):
+            result = proxy[period]["robust_10bp"]
+            assert result["metrics"]["end"] == current_date
+            assert result["equity"][-1]["date"] == current_date
+    for pair in current.strategy_comparison["actualEtfPairs"]["pairs"].values():
+        for policy in pair["policies"].values():
+            assert policy["metrics"]["end"] == current_date
+            assert policy["equity"][-1]["date"] == current_date
+
+
 def test_pipeline_rejects_core_sources_older_than_official_latest_session() -> None:
     inputs = _pipeline_inputs()
     expected = inputs.kospi.index[-1].date() + timedelta(days=1)

@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const q=new URLSearchParams(location.search).get("theme");const s=localStorage.getItem("quant-calm-theme");const p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=q==="dark"||q==="light"?q:(s||p)}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260721-open-trade-v17">
+  <link rel="stylesheet" href="assets/styles.css?v=20260721-latest-range-v18">
 </head>
 <body id="top">
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -109,7 +109,7 @@
         <p id="signal-settings-status" class="signal-settings-status" role="status" aria-live="polite">기본값 적용 중 · 학습창 196일 · 최소 R² 0.40 · 극단 꼬리 2% · 최대 보유 20일</p>
       </form>
       <div class="analysis-date-panel" aria-labelledby="analysis-date-label">
-        <div class="analysis-date-copy"><strong id="analysis-date-label">성과 평가 기간</strong><span>빠른 기간 또는 시작·종료일을 선택하면 모든 차트와 성과표가 같은 구간으로 다시 계산됩니다.</span></div>
+        <div class="analysis-date-copy"><strong id="analysis-date-label">성과 평가 기간</strong><span>빠른 기간과 최신일 자동 추종은 새 거래일을 반영하며, 과거 종료일을 직접 적용하면 해당 날짜에 고정됩니다.</span></div>
         <div class="history-range-toolbar" aria-label="성과 평가 기간 설정">
           <div class="chart-actions segmented" role="group" aria-label="빠른 표시 기간"><button type="button" data-window="1m" aria-pressed="false">1개월</button><button type="button" data-window="3m" aria-pressed="false">3개월</button><button type="button" data-window="6m" aria-pressed="false">6개월</button><button type="button" data-window="ytd" aria-pressed="true">YTD</button><button type="button" data-window="1y" aria-pressed="false">1년</button><button type="button" data-window="3y" aria-pressed="false">3년</button><button type="button" data-window="all" aria-pressed="false">전체</button></div>
           <form id="history-range-form" class="history-custom-range" aria-label="사용자 지정 기간">
@@ -117,6 +117,7 @@
             <span aria-hidden="true">–</span>
             <label for="history-end">종료일<input id="history-end" name="history-end" type="date"></label>
             <button type="submit">기간 적용</button>
+            <button id="history-follow-latest" class="history-follow-latest" type="button" hidden>최신일까지 자동</button>
           </form>
         </div>
         <p id="history-range-status" class="history-range-status" role="status" aria-live="polite"></p>
@@ -255,6 +256,6 @@
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260721-open-trade-v17"></script>
+  <script type="module" src="assets/app.js?v=20260721-latest-range-v18"></script>
 </body>
 </html>

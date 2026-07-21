@@ -495,6 +495,7 @@ main, .site-footer { width: min(1320px, calc(100% - 48px)); margin-inline: auto;
 .history-custom-range input { min-height: 40px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: var(--surface); font-size: .72rem; font-variant-numeric: tabular-nums; }
 .history-custom-range input[aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 18%, transparent); }
 .history-custom-range button { min-height: 40px; padding: 7px 11px; border-color: var(--primary); color: var(--primary-strong); background: var(--surface); font-size: .7rem; font-weight: 850; }
+.history-custom-range .history-follow-latest { border-style: dashed; color: #fff; background: var(--primary-strong); }
 .history-custom-range[data-dirty="true"] input { border-color: var(--primary); background: var(--primary-soft); }
 .history-custom-range[data-dirty="true"] button { color: #fff; background: var(--primary-strong); }
 .history-range-status { min-height: 1.1rem; margin: 7px 2px 0; color: var(--muted); font-size: .7rem; font-variant-numeric: tabular-nums; }

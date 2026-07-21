@@ -111,7 +111,7 @@ test("recommended page defaults load once while legacy custom scenarios remain e
       })
     }
   });
-  const migratedSaved = JSON.parse(migrated.localStorage.getItem("fearngreed-controls-v7"));
+  const migratedSaved = JSON.parse(migrated.localStorage.getItem("fearngreed-controls-v8"));
   assert.deepEqual(
     [migratedSaved.window, migratedSaved.model, migratedSaved.eventSample, migratedSaved.signalLookback, migratedSaved.signalMinimumR2, migratedSaved.signalExtremeTail],
     ["ytd", "raw", "all", 196, 0.4, 2]
@@ -131,7 +131,7 @@ test("recommended page defaults load once while legacy custom scenarios remain e
       })
     }
   });
-  const customSaved = JSON.parse(custom.localStorage.getItem("fearngreed-controls-v7"));
+  const customSaved = JSON.parse(custom.localStorage.getItem("fearngreed-controls-v8"));
   assert.deepEqual(
     [customSaved.window, customSaved.model, customSaved.eventSample, customSaved.signalLookback, customSaved.signalMinimumR2, customSaved.signalExtremeTail, customSaved.signalMaxHolding],
     ["1y", "scaled", "nonOverlapping20d", 126, 0.35, 7, 12]
@@ -151,8 +151,68 @@ test("recommended page defaults load once while legacy custom scenarios remain e
       })
     }
   });
-  const customVariantSaved = JSON.parse(customVariant.localStorage.getItem("fearngreed-controls-v7"));
+  const customVariantSaved = JSON.parse(customVariant.localStorage.getItem("fearngreed-controls-v8"));
   assert.equal(customVariantSaved.signalLookback, 252);
+});
+
+test("latest-following custom ranges advance every connected output while fixed links stay historical", { concurrency: false, timeout: 120_000 }, async () => {
+  const start = "2026-01-02";
+  const historicalEnd = "2026-07-14";
+  const legacyControls = {
+    window: "custom",
+    historyStart: start,
+    historyEnd: historicalEnd,
+    model: "raw",
+    backtestProxy: "1x",
+    backtestPolicy: "long_inverse_cash",
+    longExitPercentile: 50,
+    signalLookback: 196,
+    signalMinimumR2: 0.4,
+    signalExtremeTail: 2,
+    signalMaxHolding: 60
+  };
+  const migrated = await bootDashboard({
+    url: `http://fearngreed.test/?window=custom&start=${start}&end=${historicalEnd}`,
+    storage: { "fearngreed-controls-v7": JSON.stringify(legacyControls) }
+  });
+  const migratedDocument = migrated.document;
+  assert.equal(migratedDocument.querySelector("#history-start").value, start);
+  assert.equal(migratedDocument.querySelector("#history-end").value, CONFIRMED_DATA_AS_OF);
+  assert.match(migratedDocument.querySelector("#history-range-status").textContent, /사용자 지정 · 최신일 자동 추종/);
+  assert.match(migratedDocument.querySelector("#asof").textContent, new RegExp(`평가 종료일 ${koreanDate(CONFIRMED_DATA_AS_OF)}`));
+  assert.match(migratedDocument.querySelector("#backtest-card-subtitle").textContent, new RegExp(`평가 종료일 ${CONFIRMED_DATA_AS_OF}`));
+  assert.match(migratedDocument.querySelector("#open-trade-subtitle").textContent, new RegExp(`${CONFIRMED_DATA_AS_OF} 종가 평가`));
+  assert.match(migratedDocument.querySelector("#history-data-table").textContent, new RegExp(CONFIRMED_DATA_AS_OF));
+  assert.equal(migratedDocument.querySelector("#history-follow-latest").hidden, true);
+  const migratedUrl = new URL(migrated.location.href);
+  assert.equal(migratedUrl.searchParams.get("end"), CONFIRMED_DATA_AS_OF);
+  assert.equal(migratedUrl.searchParams.get("endMode"), "latest");
+  const migratedSaved = JSON.parse(migrated.localStorage.getItem("fearngreed-controls-v8"));
+  assert.deepEqual(
+    [migratedSaved.historyStart, migratedSaved.historyEnd, migratedSaved.historyEndMode, migratedSaved.longExitPercentile],
+    [start, CONFIRMED_DATA_AS_OF, "latest", 50]
+  );
+
+  const fixed = await bootDashboard({
+    url: `http://fearngreed.test/?window=custom&start=${start}&end=${historicalEnd}`
+  });
+  const fixedDocument = fixed.document;
+  assert.equal(fixedDocument.querySelector("#history-end").value, historicalEnd);
+  assert.match(fixedDocument.querySelector("#history-range-status").textContent, /사용자 지정 · 종료일 고정/);
+  assert.match(fixedDocument.querySelector("#asof").textContent, /평가 종료일 2026년 7월 14일/);
+  assert.match(fixedDocument.querySelector("#backtest-card-subtitle").textContent, /평가 종료일 2026-07-14/);
+  assert.match(fixedDocument.querySelector("#open-trade-subtitle").textContent, /2026-07-14 종가 평가/);
+  assert.equal(fixedDocument.querySelector("#history-follow-latest").hidden, false);
+  assert.notEqual(signature(fixedDocument, SIGNAL_OUTPUTS), signature(migratedDocument, SIGNAL_OUTPUTS));
+  assert.notEqual(signature(fixedDocument, STRATEGY_OUTPUTS), signature(migratedDocument, STRATEGY_OUTPUTS));
+  assert.equal(new URL(fixed.location.href).searchParams.get("endMode"), "fixed");
+
+  click(fixed, "#history-follow-latest");
+  assert.equal(fixedDocument.querySelector("#history-end").value, CONFIRMED_DATA_AS_OF);
+  assert.match(fixedDocument.querySelector("#history-range-status").textContent, /최신일 자동 추종/);
+  assert.match(fixedDocument.querySelector("#backtest-card-subtitle").textContent, new RegExp(`평가 종료일 ${CONFIRMED_DATA_AS_OF}`));
+  assert.match(fixedDocument.querySelector("#open-trade-subtitle").textContent, new RegExp(`${CONFIRMED_DATA_AS_OF} 종가 평가`));
+  assert.equal(new URL(fixed.location.href).searchParams.get("endMode"), "latest");
 });
 
 test("real DOM inputs preserve drafts and atomically update the connected analysis", { concurrency: false, timeout: 120_000 }, async () => {
@@ -198,7 +258,7 @@ test("real DOM inputs preserve drafts and atomically update the connected analys
   assert.equal(appliedUrl.searchParams.get("minR2"), "0.4");
   assert.equal(appliedUrl.searchParams.get("tail"), "10");
   assert.equal(appliedUrl.searchParams.get("maxHold"), "5");
-  const saved = JSON.parse(window.localStorage.getItem("fearngreed-controls-v7"));
+  const saved = JSON.parse(window.localStorage.getItem("fearngreed-controls-v8"));
   assert.deepEqual(
     [saved.signalLookback, saved.signalMinimumR2, saved.signalExtremeTail, saved.signalMaxHolding],
     [126, 0.4, 10, 5]
@@ -277,7 +337,7 @@ test("real DOM inputs preserve drafts and atomically update the connected analys
 test("segmented controls, sharing, and reset keep one applied scenario", { concurrency: false, timeout: 120_000 }, async () => {
   const window = await bootDashboard();
   const { document } = window;
-  const savedControls = () => JSON.parse(window.localStorage.getItem("fearngreed-controls-v7"));
+  const savedControls = () => JSON.parse(window.localStorage.getItem("fearngreed-controls-v8"));
   const assertApplied = (selector, param, value, storageKey) => {
     assert.equal(document.querySelector(selector).getAttribute("aria-pressed"), "true");
     assert.equal(new URL(window.location.href).searchParams.get(param), String(value));

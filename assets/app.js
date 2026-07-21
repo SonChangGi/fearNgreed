@@ -113,6 +113,7 @@ const DEFAULT_CONTROLS = Object.freeze({
   window: "ytd",
   historyStart: "",
   historyEnd: "",
+  historyEndMode: "latest",
   model: "raw",
   eventAsset: "KOSPI",
   eventSample: "all",
@@ -128,8 +129,9 @@ const DEFAULT_CONTROLS = Object.freeze({
   signalMaxHolding: 20
 });
 
-const CONTROL_STORAGE_KEY = "fearngreed-controls-v7";
+const CONTROL_STORAGE_KEY = "fearngreed-controls-v8";
 const LEGACY_CONTROL_STORAGE_KEYS = Object.freeze([
+  "fearngreed-controls-v7",
   "fearngreed-controls-v6",
   "fearngreed-controls-v5",
   "fearngreed-controls-v4",
@@ -153,6 +155,7 @@ const CONTROL_QUERY = Object.freeze({
   window: "window",
   historyStart: "start",
   historyEnd: "end",
+  historyEndMode: "endMode",
   model: "model",
   eventAsset: "eventAsset",
   eventSample: "eventSample",
@@ -170,6 +173,7 @@ const CONTROL_QUERY = Object.freeze({
 
 const CONTROL_ALLOWED = Object.freeze({
   window: ["1m", "3m", "6m", "ytd", "1y", "3y", "all", "custom"],
+  historyEndMode: ["latest", "fixed"],
   model: ["robust", "scaled", "raw"],
   eventAsset: ["KOSPI", "226490", "069500"],
   eventSample: ["nonOverlapping20d", "all"],
@@ -841,8 +845,11 @@ function hasUnappliedDrafts() {
 }
 
 function historyAppliedStatus(rows = selectedHistory()) {
+  const endBehavior = store.window === "custom"
+    ? (store.historyEndMode === "latest" ? "최신일 자동 추종" : "종료일 고정")
+    : "최신일 자동 추종";
   return rows.length
-    ? `${historyWindowLabel()} · ${rows[0].date}–${rows.at(-1).date} · ${rows.length.toLocaleString()}거래일`
+    ? `${historyWindowLabel()} · ${endBehavior} · ${rows[0].date}–${rows.at(-1).date} · ${rows.length.toLocaleString()}거래일`
     : "선택한 기간에 표시할 거래일이 없습니다.";
 }
 
@@ -867,6 +874,8 @@ function syncHistoryRangeControls(rows) {
   endInput.setAttribute("aria-invalid", "false");
   form.dataset.appliedStart = appliedStart;
   form.dataset.appliedEnd = appliedEnd;
+  const followLatest = $("#history-follow-latest");
+  if (followLatest) followLatest.hidden = store.window !== "custom" || store.historyEndMode === "latest";
   $("#history-range-status").dataset.state = "ok";
   $("#history-range-status").textContent = historyAppliedStatus(rows);
 }
@@ -926,6 +935,7 @@ function applyCustomHistoryRange(event) {
     store.window = "custom";
     store.historyStart = start;
     store.historyEnd = end;
+    store.historyEndMode = end === latestDate ? "latest" : "fixed";
     scenarioCache.clear();
     clearFormDirty(form);
     renderAll();
@@ -2591,6 +2601,12 @@ function initializeControlState() {
     };
   }
   const params = new URLSearchParams(location.search);
+  const explicitCustomRange = params.get("window") === "custom" && params.has("start") && params.has("end");
+  const legacySavedCustomRange = savedKey && savedKey !== CONTROL_STORAGE_KEY && String(saved.window) === "custom";
+  const legacySavedRangeMatchesUrl = legacySavedCustomRange
+    && explicitCustomRange
+    && String(saved.historyStart || "") === String(params.get("start") || "")
+    && String(saved.historyEnd || "") === String(params.get("end") || "");
   Object.entries(CONTROL_QUERY).forEach(([key, param]) => {
     const legacyProxy = key === "backtestProxy" && params.has("proxy") ? params.get("proxy") : null;
     const candidate = params.has(param) ? params.get(param) : legacyProxy ?? saved[key];
@@ -2612,6 +2628,19 @@ function initializeControlState() {
     if (key === "window") normalized = ({ "252": "1y", "756": "3y" })[normalized] || normalized;
     if (CONTROL_ALLOWED[key]?.includes(normalized)) store[key] = key === "backtestCost" ? Number(normalized) : normalized;
   });
+  // v7 could not distinguish "the latest date at the time" from a deliberately
+  // fixed historical end date. Migrate the matching saved scenario to the new
+  // latest-following mode. A standalone legacy URL remains an exact fixed view.
+  if (store.window === "custom" && !params.has("endMode")) {
+    if (explicitCustomRange) store.historyEndMode = legacySavedRangeMatchesUrl ? "latest" : "fixed";
+    else if (legacySavedCustomRange) store.historyEndMode = "latest";
+  }
+  if (params.get("window") === "custom" && (!params.has("start") || !params.has("end"))) {
+    store.window = DEFAULT_CONTROLS.window;
+    store.historyStart = "";
+    store.historyEnd = "";
+    store.historyEndMode = DEFAULT_CONTROLS.historyEndMode;
+  }
   if (store.window === "custom" && (!isIsoDate(store.historyStart) || !isIsoDate(store.historyEnd) || store.historyStart > store.historyEnd)) store.window = DEFAULT_CONTROLS.window;
   if (!params.has("window") && saved.window == null && matchMedia("(max-width: 520px)").matches) store.window = DEFAULT_CONTROLS.window;
   try { currentSignalConfig(); } catch (_) {
@@ -2628,11 +2657,13 @@ function ensureHistoryRangeAvailable() {
   const rows = activeHistoryRows();
   const firstDate = rows[0]?.date;
   const latestDate = rows.at(-1)?.date;
+  if (store.historyEndMode === "latest" && latestDate) store.historyEnd = latestDate;
   const valid = firstDate && latestDate && isIsoDate(store.historyStart) && isIsoDate(store.historyEnd) && store.historyStart <= store.historyEnd && store.historyStart >= firstDate && store.historyEnd <= latestDate && rows.some((row) => row.date >= store.historyStart && row.date <= store.historyEnd);
   if (valid) return true;
   store.window = DEFAULT_CONTROLS.window;
   store.historyStart = "";
   store.historyEnd = "";
+  store.historyEndMode = DEFAULT_CONTROLS.historyEndMode;
   return false;
 }
 
@@ -2642,7 +2673,7 @@ function persistControlState({ replaceUrl = true } = {}) {
   if (!replaceUrl) return;
   const url = new URL(location.href);
   Object.entries(CONTROL_QUERY).forEach(([key, param]) => {
-    if (["historyStart", "historyEnd"].includes(key) && store.window !== "custom") url.searchParams.delete(param);
+    if (["historyStart", "historyEnd", "historyEndMode"].includes(key) && store.window !== "custom") url.searchParams.delete(param);
     else if (store[key] === "" || store[key] == null) url.searchParams.delete(param);
     else url.searchParams.set(param, store[key]);
   });
@@ -2744,6 +2775,7 @@ function bindControls() {
     applySynchronousControlChange(() => {
       clearFormDirty($("#history-range-form"));
       store.window = button.dataset.window;
+      store.historyEndMode = "latest";
       scenarioCache.clear();
     });
   }));
@@ -2845,6 +2877,12 @@ function bindControls() {
   });
   $("#exit-threshold-input").addEventListener("input", updateExitDraftState);
   $("#history-range-form").addEventListener("submit", applyCustomHistoryRange);
+  $("#history-follow-latest").addEventListener("click", () => {
+    const endInput = $("#history-end");
+    endInput.value = endInput.max;
+    updateHistoryDraftState();
+    $("#history-range-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
   $("#signal-settings-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -3050,7 +3088,7 @@ Promise.all([loadJson("data/summary.json"), loadJson("data/dashboard.json"), loa
     if (!modelPayload(store.model)) store.model = modelPayload("robust") ? "robust" : "scaled";
     ensureBacktestSelection();
     const rangeAvailable = ensureHistoryRangeAvailable();
-    persistControlState({ replaceUrl: !rangeAvailable });
+    persistControlState({ replaceUrl: !rangeAvailable || store.window === "custom" });
     setResearchControlsEnabled(true);
     renderAll();
     const signalStatus = $("#signal-settings-status");
