@@ -1,10 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { bootDashboard, click, fireInput, signature, submit, waitFor } from "./helpers/dashboard-harness.mjs";
 
 const SIGNAL_OUTPUTS = ["#state", "#signal-bridge", "#scatter-chart", "#residual-chart", "#event-table tbody"];
 const STRATEGY_OUTPUTS = ["#history-chart", "#backtest-cards", "#open-trades", "#backtest-table tbody", "#trade-table tbody"];
+const CONFIRMED_DATA_AS_OF = JSON.parse(
+  await readFile(new URL("../data/summary.json", import.meta.url), "utf8")
+).dataAsOf;
+
+function nextIsoDate(date) {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+}
+
+function koreanDate(date) {
+  const [year, month, day] = date.split("-").map(Number);
+  return `${year}년 ${month}월 ${day}일`;
+}
 
 function kstDate(offsetDays = 0) {
   return new Date(Date.now() + 9 * 60 * 60 * 1000 + offsetDays * 86_400_000).toISOString().slice(0, 10);
@@ -21,7 +34,7 @@ function liveSignalFixture(overrides = {}) {
     phase: "provisional",
     generatedAt: `${signalDate}T06:48:00Z`,
     sourceCutoff: "regular-session-close-provisional",
-    historyDataAsOf: "2026-07-16",
+    historyDataAsOf: CONFIRMED_DATA_AS_OF,
     expectedConfirmationAt: `${signalDate}T09:15:00Z`,
     actionWindow: {
       mode: "after-hours-close",
@@ -352,7 +365,7 @@ test("current open trades expose execution details and follow policy, pair, and 
   assert.match(initial, /평가 손익 · 미실현/);
   assert.match(initial, /다음 예정 행동/);
   assert.equal(document.querySelectorAll("#open-trades .open-trade-panel").length, 2, "compare mode must disclose both policy states");
-  assert.match(document.querySelector("#open-trade-subtitle").textContent, /2026-07-16 종가 평가/);
+  assert.match(document.querySelector("#open-trade-subtitle").textContent, new RegExp(`${CONFIRMED_DATA_AS_OF} 종가 평가`));
 
   click(window, '[data-backtest-policy="long_cash"]');
   assert.equal(document.querySelectorAll("#open-trades .open-trade-panel").length, 1);
@@ -372,26 +385,35 @@ test("current open trades expose execution details and follow policy, pair, and 
 });
 
 test("a newer provisional signal is input-linked but never extends confirmed charts or backtests", { concurrency: false, timeout: 120_000 }, async () => {
-  const window = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture() } });
-  const { document } = window;
-  const strip = document.querySelector("#live-signal-strip");
-  assert.equal(strip.hidden, false);
-  assert.equal(strip.dataset.phase, "provisional");
-  assert.match(document.querySelector("#live-phase-badge").textContent, /잠정/);
-  assert.match(document.querySelector("#live-signal-score").textContent, /백분위/);
-  assert.match(document.querySelector("#live-signal-time").textContent, /계산/);
-  assert.match(document.querySelector("#live-action-note").textContent, /시간외 종가/);
-  assert.match(document.querySelector("#live-confirmed-anchor").textContent, /2026년 7월 16일 확정 기준/);
-  assert.doesNotMatch(document.querySelector("#history-data-table").textContent, /2026-07-20/);
+  const signalDate = nextIsoDate(CONFIRMED_DATA_AS_OF);
+  const originalNow = Date.now;
+  const realStartedAt = originalNow();
+  const scenarioStartedAt = Date.parse(`${signalDate}T07:30:00Z`);
+  Date.now = () => scenarioStartedAt + (originalNow() - realStartedAt);
+  try {
+    const window = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture({ signalDate }) } });
+    const { document } = window;
+    const strip = document.querySelector("#live-signal-strip");
+    assert.equal(strip.hidden, false);
+    assert.equal(strip.dataset.phase, "provisional");
+    assert.match(document.querySelector("#live-phase-badge").textContent, /잠정/);
+    assert.match(document.querySelector("#live-signal-score").textContent, /백분위/);
+    assert.match(document.querySelector("#live-signal-time").textContent, /계산/);
+    assert.match(document.querySelector("#live-action-note").textContent, /시간외 종가/);
+    assert.match(document.querySelector("#live-confirmed-anchor").textContent, new RegExp(`${koreanDate(CONFIRMED_DATA_AS_OF)} 확정 기준`));
+    assert.doesNotMatch(document.querySelector("#history-data-table").textContent, new RegExp(signalDate));
 
-  const rawLive = signature(document, ["#live-signal-state", "#live-signal-score"]);
-  click(window, '[data-model="robust"]');
-  await waitFor(
-    () => document.querySelector("#signal-settings-status").dataset.state === "ok" && document.querySelector(".analysis-config").getAttribute("aria-busy") === "false",
-    "live signal track recompute"
-  );
-  assert.notEqual(signature(document, ["#live-signal-state", "#live-signal-score"]), rawLive);
-  assert.doesNotMatch(document.querySelector("#history-data-table").textContent, /2026-07-20/);
+    const rawLive = signature(document, ["#live-signal-state", "#live-signal-score"]);
+    click(window, '[data-model="robust"]');
+    await waitFor(
+      () => document.querySelector("#signal-settings-status").dataset.state === "ok" && document.querySelector(".analysis-config").getAttribute("aria-busy") === "false",
+      "live signal track recompute"
+    );
+    assert.notEqual(signature(document, ["#live-signal-state", "#live-signal-score"]), rawLive);
+    assert.doesNotMatch(document.querySelector("#history-data-table").textContent, new RegExp(signalDate));
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("same-date or malformed live payloads never replace the confirmed dashboard", { concurrency: false, timeout: 120_000 }, async () => {
