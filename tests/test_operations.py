@@ -329,18 +329,26 @@ def test_failed_refresh_status_remains_publishable_by_the_full_local_contract(
     shutil.copytree(ROOT / "schemas", tmp_path / "schemas")
     summary = json.loads((tmp_path / "data" / "summary.json").read_text(encoding="utf-8"))
     current = date.fromisoformat(summary["dataAsOf"])
+    prior_expected_value = summary.get("status", {}).get("expectedDataAsOf")
+    prior_expected = (
+        date.fromisoformat(prior_expected_value) if isinstance(prior_expected_value, str) else None
+    )
+    requested_expected = current + timedelta(days=1)
+    effective_expected = max(
+        value for value in (prior_expected, requested_expected) if value is not None
+    )
     monkeypatch.setattr(refresh_module, "repository_root", lambda: tmp_path)
 
     refresh_module.mark_failed(
         "frozen_history_drift_requires_backfill",
-        expected_as_of=current + timedelta(days=1),
+        expected_as_of=requested_expected,
     )
 
     receipt = verify_local(tmp_path, minimum_headroom_ratio=0)
     updated = json.loads((tmp_path / "data" / "summary.json").read_text(encoding="utf-8"))
     assert receipt["operationalState"] == "stale"
     assert updated["dataAsOf"] == current.isoformat()
-    assert updated["status"]["expectedDataAsOf"] == (current + timedelta(days=1)).isoformat()
+    assert updated["status"]["expectedDataAsOf"] == effective_expected.isoformat()
     assert updated["status"]["sourceFreshnessPassed"] is False
 
 
