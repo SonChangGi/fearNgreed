@@ -17,12 +17,23 @@ from fearngreed.live_signal import (
 
 ROOT = Path(__file__).resolve().parents[1]
 KST = ZoneInfo("Asia/Seoul")
+HISTORY_ANCHOR = date(2026, 7, 16)
 
 
 def _root_with_history(tmp_path: Path) -> Path:
     data = tmp_path / "data"
     data.mkdir()
-    (data / "history.json").write_bytes((ROOT / "data" / "history.json").read_bytes())
+    history = json.loads((ROOT / "data" / "history.json").read_text(encoding="utf-8"))
+    cutoff = HISTORY_ANCHOR.isoformat()
+    if isinstance(history.get("seriesRows"), list):
+        date_index = history["seriesColumns"].index("date")
+        history["seriesRows"] = [
+            row for row in history["seriesRows"] if str(row[date_index]) <= cutoff
+        ]
+    else:
+        history["series"] = [row for row in history.get("series", []) if row["date"] <= cutoff]
+    history["dataAsOf"] = cutoff
+    (data / "history.json").write_text(json.dumps(history), encoding="utf-8")
     return tmp_path
 
 

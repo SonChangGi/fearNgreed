@@ -25,20 +25,22 @@ def test_live_signal_verifier_matches_browser_anchor_and_capture_window() -> Non
     root = Path(__file__).resolve().parents[1]
     live = json.loads((root / "data" / "live-signal.json").read_text(encoding="utf-8"))
     summary = json.loads((root / "data" / "summary.json").read_text(encoding="utf-8"))
+    provisional_summary = deepcopy(summary)
+    provisional_summary["dataAsOf"] = live["historyDataAsOf"]
 
-    _verify_live_signal(live, summary)
+    _verify_live_signal(live, provisional_summary)
 
     mismatched_anchor = deepcopy(live)
-    mismatched_anchor["historyDataAsOf"] = "2026-07-15"
+    mismatched_anchor["historyDataAsOf"] = "2000-01-01"
     with pytest.raises(ValueError, match="history anchor"):
-        _verify_live_signal(mismatched_anchor, summary)
+        _verify_live_signal(mismatched_anchor, provisional_summary)
 
     late_capture = deepcopy(live)
     late_capture["generatedAt"] = late_capture["actionWindow"]["closesAt"]
     with pytest.raises(ValueError, match="outside its provisional window"):
-        _verify_live_signal(late_capture, summary)
+        _verify_live_signal(late_capture, provisional_summary)
 
-    confirmed_summary = deepcopy(summary)
+    confirmed_summary = deepcopy(provisional_summary)
     confirmed_summary["dataAsOf"] = live["signalDate"]
     _verify_live_signal(live, confirmed_summary)
 
