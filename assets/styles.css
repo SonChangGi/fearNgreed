@@ -868,6 +868,106 @@ summary { cursor: pointer; font-weight: 800; }
   .page-jump-nav a { width: 44px; height: 44px; }
 }
 
+/* Common design v1: primary controls keep a touch-safe target at every width. */
+.quant-nav-brand,
+.quant-nav-link,
+.quant-theme-toggle,
+.local-nav a,
+.view-toolbar button,
+.latest-button,
+.analysis-config-toggle,
+.segmented button,
+.signal-learning-grid input,
+.history-chart-callout input,
+.history-custom-range input,
+.history-custom-range button,
+.table-toolbar input,
+.table-toolbar button,
+.table-sort {
+  min-height: 44px;
+}
+
+/* Interactive copy and decision-critical chart/status metadata stay at 12px+. */
+.quant-nav-link,
+.quant-theme-toggle,
+.theme-label,
+.local-nav a,
+.status-details > summary,
+.badge,
+.state-badge,
+.live-signal-phase,
+.phase-badge,
+.live-signal-reading span,
+.live-signal-timing,
+.live-signal-strip small,
+.view-toolbar p,
+.view-action-status,
+.view-toolbar button,
+.latest-button,
+.analysis-config-toggle::after,
+.signal-learning-grid > label > span,
+.signal-learning-grid > label > small,
+.signal-learning-grid input,
+.signal-learning-grid em,
+.signal-settings-apply span,
+.signal-settings-apply small,
+.signal-settings-status,
+.analysis-date-copy span,
+.analysis-track-note,
+.analysis-selection-note,
+.control-label,
+.segmented button,
+.pair-selector button span,
+.quality-details > summary,
+.quality-strip,
+.flow-channel-card > summary small,
+.history-toolbar-label,
+.history-series-controls button,
+.history-event-key,
+.chart-meta-strip strong,
+.chart-meta-strip b,
+.history-selected-head span,
+.history-selected-head em,
+.history-selected-values small,
+.history-selected-values strong,
+.history-chart-callout > label,
+.history-chart-callout input,
+.history-chart-callout > div span,
+.history-chart-callout > div small,
+.history-chart-callout dt,
+.history-chart-callout dd,
+.history-custom-range label,
+.history-custom-range input,
+.history-custom-range button,
+.history-range-status,
+.history-exposure-note,
+.chart-guide,
+.data-alternative summary,
+.table-toolbar p,
+.table-toolbar label,
+.table-toolbar button,
+.table-filter-status,
+caption,
+thead th,
+.exit-threshold-form > label,
+.exit-threshold-form > label small,
+.exit-threshold-entry button,
+.exit-threshold-form > p {
+  font-size: .75rem;
+}
+
+.axis-unit,
+.holding-lane-label,
+.execution-action text,
+.line-end-label,
+.scatter-zone-label,
+.scatter-current-label,
+.residual-zone-label,
+.event-row-label,
+.event-excess-label {
+  font-size: 12px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

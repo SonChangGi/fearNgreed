@@ -80,6 +80,31 @@ function failNextInnerHtmlWrite(target) {
   return () => { delete target.innerHTML; };
 }
 
+test("legacy theme aliases migrate to the canonical shared key", { concurrency: false, timeout: 120_000 }, async () => {
+  const legacyKeys = ["quant-calm-theme", "quant-dashboard-theme", "dram-price-theme"];
+  for (const legacyKey of legacyKeys) {
+    const window = await bootDashboard({ storage: { [legacyKey]: "dark" } });
+    assert.equal(window.document.documentElement.dataset.theme, "dark");
+    assert.equal(window.localStorage.getItem("quant-research-theme"), "dark");
+    legacyKeys.forEach((key) => assert.equal(window.localStorage.getItem(key), null));
+    click(window, "#theme");
+    assert.equal(window.document.documentElement.dataset.theme, "light");
+    assert.equal(window.localStorage.getItem("quant-research-theme"), "light");
+  }
+
+  const canonical = await bootDashboard({
+    storage: {
+      "quant-research-theme": "light",
+      "quant-calm-theme": "dark",
+      "quant-dashboard-theme": "dark",
+      "dram-price-theme": "dark"
+    }
+  });
+  assert.equal(canonical.document.documentElement.dataset.theme, "light");
+  assert.equal(canonical.localStorage.getItem("quant-research-theme"), "light");
+  legacyKeys.forEach((key) => assert.equal(canonical.localStorage.getItem(key), null));
+});
+
 test("recommended page defaults load once while legacy custom scenarios remain editable", { concurrency: false, timeout: 120_000 }, async () => {
   const fresh = await bootDashboard();
   const freshDocument = fresh.document;
