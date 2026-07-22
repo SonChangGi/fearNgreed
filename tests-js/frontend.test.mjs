@@ -16,7 +16,9 @@ test('dashboard exposes one unified scenario control surface with pressed state'
     'data-backtest-period="full"','data-backtest-period="common"'
   ]) assert.match(html,new RegExp(token));
   assert.ok((html.match(/aria-pressed=/g)||[]).length>=17);
-  assert.match(html,/선택값과 관련된 신호·사건·전략 결과를 같은 적용 시나리오로 다시 계산/);
+  assert.match(html,/<details id="analysis-settings" class="analysis-config"/);
+  assert.match(html,/id="analysis-config-summary"/);
+  assert.ok(html.indexOf('id="conclusion"') < html.indexOf('id="analysis-settings"'),"results must precede detailed settings");
   for(const id of ['signal-settings-form','signal-lookback-input','signal-min-r2-input','signal-tail-input','signal-max-holding-input','signal-settings-status']) assert.match(html,new RegExp(`id="${id}"`));
   assert.match(html,/id="linked-strategy-rule"/);
   assert.match(app,/robust: "scaled_huber"/);
@@ -383,7 +385,8 @@ test('integrated history separates close signals from next-open actual ETF actio
 test('integrated history uses readable axes, explicit policy lanes, and only visible series for its performance domain',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
   assert.match(html,/id="history-chart-meta"/);
-  for(const group of ['시장','성과','종가 신호','다음 시가 체결']) assert.match(html,new RegExp(`<strong>${group}<\\/strong>`));
+  for(const series of ['kospi','long_cash','long_inverse_cash','buyhold']) assert.match(html,new RegExp(`data-history-series="${series}"`));
+  assert.match(html,/aria-label="신호와 체결 기호"/);
   assert.match(app,/function niceTicks/);
   assert.match(app,/function chartDateAxis/);
   assert.match(app,/const visibleReturnFields = \[[\s\S]*showLongCash[\s\S]*showLongShort[\s\S]*"buyHoldReturn"/);
@@ -401,20 +404,22 @@ test('integrated history uses readable axes, explicit policy lanes, and only vis
 
 test('chart selection snapshot is dynamic while period-end cards and tables stay fixed',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
-  for(const id of ['history-selected-snapshot','history-selected-title','history-selected-content']) assert.match(html,new RegExp(`id="${id}"`));
-  assert.match(html,/차트를 가리키거나 좌우 화살표·Home·End로 이동하면 위의 선택일 스냅샷이 함께 바뀝니다/);
-  assert.match(html,/성과 카드와 표는 평가 종료일 기준입니다/);
+  for(const id of ['history-selected-snapshot','history-selected-title','history-selected-content','history-chart-callout','history-chart-date','history-callout-series','history-callout-value','history-data-date','history-evaluation-date']) assert.match(html,new RegExp(`id="${id}"`));
+  assert.match(html,/가리키면 날짜를 미리 보고, 클릭·탭·화살표 키로 고정합니다/);
+  assert.match(html,/차트 선택은 평가 종료일 성과를 바꾸지 않습니다/);
   assert.match(html,/평가 종료일 성과/);
   assert.match(app,/function renderHistorySelectedSnapshot/);
-  assert.match(app,/선택일 누적성과/);
-  assert.match(app,/평가 종료일 보유/);
-  assert.match(app,/평가기간 총수익률/);
+  assert.match(app,/function historySeriesValueText/);
+  assert.match(app,/persistSelection: true/);
+  assert.match(app,/showTooltip: false/);
   assert.match(app,/typeof geometry\.onSelect === "function"/);
-  assert.match(app,/chart\._selectLatest = \(\) => selectIndex\(latestIndex\)/);
+  assert.match(app,/chart\._selectLatest = \(\) => selectIndex\(latestIndex, null, \{ commit: persistSelection, phase: "latest" \}\)/);
   assert.match(app,/chart\._selectLatest\?\.\(\)/);
   assert.match(app,/const scenarioBundle = selectedScenarioBundle\(\);[\s\S]*renderHistory\(scenarioBundle\)[\s\S]*renderBacktests\(scenarioBundle\)/);
   assert.match(css,/\.history-selected-snapshot/);
-  assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.history-selected-grid \{ grid-template-columns: 1fr; \}/);
+  assert.match(css,/\.unified-strategy-chart\.has-active-series \.history-series:not\(\.is-active\)/);
+  assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.history-series-controls \{ display: grid/);
+  assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.history-chart-callout \{ grid-template-columns:/);
 });
 
 test('scatter refits the selected historical session and renders exact empirical state boundaries',async()=>{
