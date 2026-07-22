@@ -887,6 +887,19 @@ summary { cursor: pointer; font-weight: 800; }
   min-height: 44px;
 }
 
+.quant-nav-link,
+.quant-theme-toggle,
+.local-nav a,
+.view-toolbar button,
+.latest-button,
+.analysis-config-toggle,
+.segmented button,
+.history-custom-range button,
+.table-toolbar button,
+.table-sort {
+  min-width: 44px;
+}
+
 /* Interactive copy and decision-critical chart/status metadata stay at 12px+. */
 .quant-nav-link,
 .quant-theme-toggle,
