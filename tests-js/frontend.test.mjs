@@ -200,6 +200,7 @@ test('common design controls and decision-critical chart metadata keep practical
     assert.match(touchBlock,new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
   }
   assert.match(touchBlock,/min-height:\s*44px/);
+  assert.match(touchBlock,/min-width:\s*44px/);
   const typeBlock=css.slice(typeStart,css.indexOf('@media (prefers-reduced-motion',typeStart));
   for(const selector of ['.phase-badge','.signal-settings-status','.history-series-controls button','.chart-meta-strip b','.history-chart-callout dd','thead th']) {
     assert.match(typeBlock,new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
