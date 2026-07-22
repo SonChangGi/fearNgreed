@@ -12,9 +12,11 @@ import {
   runDynamicEventStudy
 } from "./signal-engine.js?v=20260717-actual-etf-v7";
 import { itemRatioAt, nearestItemIndexByRatio } from "./chart-navigation.js?v=20260720-analysis-usability-v12";
+import { createHistoryChartState } from "./history-chart-state.js?v=20260722-fear-chart-v19";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const historyChartState = createHistoryChartState();
 
 const labels = {
   extreme_fear: "극단적 공포", fear: "공포", neutral: "중립", greed: "탐욕", extreme_greed: "극단적 탐욕",
@@ -624,6 +626,7 @@ function renderHeader(scenarioBundle = selectedScenarioBundle()) {
   const freshnessMismatch = Boolean(expectedDataAsOf && expectedDataAsOf !== summary.dataAsOf);
   $("#asof").textContent = `평가 종료일 ${fmt.date(base.date || summary.dataAsOf)} · 데이터 최신일 ${fmt.date(summary.dataAsOf)}${freshnessMismatch ? ` · 공식 기대일 ${fmt.date(expectedDataAsOf)}` : ""}`;
   const reasons = summary.status.degradedReasons || [];
+  const reasonLabels = [...new Set(reasons.map(degradedReasonLabel))];
   const freshnessNote = freshnessMismatch
     ? `공식 최신 완료 세션 ${fmt.date(expectedDataAsOf)} · 현재 데이터 ${fmt.date(summary.dataAsOf)}`
     : summary.status.sourceFreshnessPassed === false
@@ -631,8 +634,10 @@ function renderHeader(scenarioBundle = selectedScenarioBundle()) {
       : status === "stale"
         ? `자동 갱신 마지막 성공 ${summary.automation?.lastSuccessAt ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(summary.automation.lastSuccessAt)) : fmt.date(summary.dataAsOf)}`
         : "";
-  const reasonNote = reasons.length ? `운영 주의: ${reasons.map(degradedReasonLabel).join(" · ")}` : "";
+  const reasonNote = reasonLabels.length ? `운영 주의: ${reasonLabels.join(" · ")}` : "";
   $("#status-note").textContent = [freshnessNote, reasonNote].filter(Boolean).join(". ") || "핵심 공급자와 계산 품질 게이트 통과";
+  $("#status-detail-summary").textContent = status === "ok" ? "데이터·운영 확인됨" : `데이터·운영 상세 · ${Math.max(1, reasonLabels.length)}개 항목`;
+  $("#analysis-config-summary").textContent = `${modelRole()} · ${policyLabel()} · ${pairLabel(store.backtestProxy, true)} · ${historyWindowLabel()}`;
 
   const percentile = model?.percentile ?? model?.sentimentPercentile;
   const inputValue = store.model === "raw" ? `${fmt.score(base.rawFlowTrillion, 3)}조원` : fmt.pct(base.flowShare, 3);
@@ -981,9 +986,12 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
   const fallbackIndex = Math.max(0, valid.length - 1);
   const latestIndex = Number.isInteger(geometry.latestIndex) ? Math.max(0, Math.min(fallbackIndex, geometry.latestIndex)) : fallbackIndex;
   const initialIndex = Number.isInteger(geometry.initialIndex) ? Math.max(0, Math.min(fallbackIndex, geometry.initialIndex)) : latestIndex;
+  const persistSelection = geometry.persistSelection === true;
   chart._resizeObserver?.disconnect();
   chart._chartItems = valid;
   chart._chartIndex = initialIndex;
+  chart._chartPinnedIndex = initialIndex;
+  chart.classList.toggle("has-pinned-selection", persistSelection && Boolean(valid.length));
   chart.querySelectorAll(".chart-crosshair, .chart-crosshair-point").forEach((node) => node.remove());
   const crosshair = document.createElement("span");
   crosshair.className = "chart-crosshair";
@@ -1019,42 +1027,53 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
     if (left < chart.scrollLeft + padding) chart.scrollLeft = Math.max(0, left - padding);
     else if (left > chart.scrollLeft + chart.clientWidth - padding) chart.scrollLeft = Math.min(chart.scrollWidth - chart.clientWidth, left - chart.clientWidth + padding);
   };
-  const selectIndex = (index, point = null) => {
+  const selectIndex = (index, point = null, { commit = false, phase = "preview" } = {}) => {
     if (!valid.length) return;
     chart._chartIndex = Math.max(0, Math.min(valid.length - 1, index));
+    if (persistSelection && commit) chart._chartPinnedIndex = chart._chartIndex;
     const left = positionCrosshair();
     if (!point) revealCrosshair(left);
     chart.classList.add("is-exploring");
     const text = formatter(valid[chart._chartIndex], chart._chartIndex);
-    showTooltip(chart, text, point);
+    if (geometry.showTooltip === false) $("#tooltip").hidden = true;
+    else showTooltip(chart, text, point);
     chart.setAttribute("aria-valuetext", text);
-    if (typeof geometry.onSelect === "function") geometry.onSelect(valid[chart._chartIndex], chart._chartIndex);
+    if (typeof geometry.onSelect === "function") geometry.onSelect(valid[chart._chartIndex], chart._chartIndex, { committed: !persistSelection || commit, phase });
+  };
+  const restorePinned = () => {
+    if (!persistSelection || !valid.length) return;
+    selectIndex(chart._chartPinnedIndex, null, { phase: "restore" });
+    chart.classList.remove("is-exploring");
   };
   chart.onfocus = () => {
-    if (valid.length) selectIndex(chart._chartIndex);
+    if (valid.length) selectIndex(persistSelection ? chart._chartPinnedIndex : chart._chartIndex, null, { phase: "focus" });
     else showTooltip(chart, chart.getAttribute("aria-label") || "차트");
   };
-  const selectPointer = (event) => {
+  const selectPointer = (event, commit = false) => {
     if (!valid.length) return;
     const current = chartGeometry();
     if (!current) return;
     const viewX = (event.clientX - current.svgRect.left) / Math.max(1, current.svgRect.width) * current.width;
     const ratio = Math.max(0, Math.min(1, (viewX - current.left) / Math.max(1, current.right - current.left)));
-    selectIndex(nearestItemIndexByRatio(valid, ratio, geometry.itemRatio), { x: event.clientX, y: event.clientY });
+    selectIndex(nearestItemIndexByRatio(valid, ratio, geometry.itemRatio), { x: event.clientX, y: event.clientY }, { commit, phase: commit ? "commit" : "preview" });
   };
   chart.onpointermove = selectPointer;
   chart.onpointerdown = (event) => {
     if (event.pointerType !== "mouse") {
       chart.focus({ preventScroll: true });
-      selectPointer(event);
+      selectPointer(event, persistSelection);
     }
   };
-  chart.onblur = () => { $("#tooltip").hidden = true; chart.classList.remove("is-exploring"); };
+  chart.onclick = persistSelection ? (event) => selectPointer(event, true) : null;
+  chart.onblur = () => {
+    $("#tooltip").hidden = true;
+    if (persistSelection) restorePinned();
+    else chart.classList.remove("is-exploring");
+  };
   chart.onmouseleave = () => {
-    if (document.activeElement !== chart) {
-      $("#tooltip").hidden = true;
-      chart.classList.remove("is-exploring");
-    }
+    $("#tooltip").hidden = true;
+    if (persistSelection) restorePinned();
+    else if (document.activeElement !== chart) chart.classList.remove("is-exploring");
   };
   chart.onkeydown = (event) => {
     if (!valid.length || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -1064,10 +1083,11 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
     else if (event.key === "End") next = valid.length - 1;
     else if (event.key === "ArrowLeft") next -= 1;
     else next += 1;
-    selectIndex(next);
+    selectIndex(next, null, { commit: persistSelection, phase: "keyboard" });
   };
-  chart._selectLatest = () => selectIndex(latestIndex);
-  if (valid.length && typeof geometry.onSelect === "function") geometry.onSelect(valid[initialIndex], initialIndex);
+  chart._selectIndex = (index) => selectIndex(index, null, { commit: persistSelection, phase: "control" });
+  chart._selectLatest = () => selectIndex(latestIndex, null, { commit: persistSelection, phase: "latest" });
+  if (valid.length && typeof geometry.onSelect === "function") geometry.onSelect(valid[initialIndex], initialIndex, { committed: true, phase: "initial" });
   const alignLatest = () => {
     if (chart.clientWidth <= 0 || chart.scrollWidth <= chart.clientWidth) return;
     chart.scrollLeft = chart.scrollWidth - chart.clientWidth;
@@ -1308,7 +1328,39 @@ function historyPolicyAction(row, policy) {
   return (row?.actions || []).filter((item) => item.policy === policy).map(normalizedActionLabel).join(" / ") || "체결 없음";
 }
 
-function renderHistorySelectedSnapshot(row, { periodEnd, showLongCash, showLongShort, pair }) {
+function historySeriesLabel(seriesId, pair) {
+  return {
+    kospi: "KOSPI 종가",
+    long_cash: "롱 / 현금",
+    long_inverse_cash: "롱 / 인버스 / 현금",
+    buyhold: `${pair.longTicker} 매수·보유`
+  }[seriesId] || "선택 그래프";
+}
+
+function historySeriesValue(row, seriesId) {
+  if (seriesId === "kospi") return Number(row?.kospiClose ?? row?.kospi);
+  if (seriesId === "long_cash") return Number(row?.longCashReturn);
+  if (seriesId === "long_inverse_cash") return Number(row?.longShortReturn);
+  if (seriesId === "buyhold") return Number(row?.buyHoldReturn);
+  return Number.NaN;
+}
+
+function historySeriesValueText(row, seriesId) {
+  const value = historySeriesValue(row, seriesId);
+  if (!Number.isFinite(value)) return "—";
+  return seriesId === "kospi" ? `${Math.round(value).toLocaleString()}pt` : fmt.signedPct(value, 2);
+}
+
+function historySeriesContext(row, seriesId) {
+  const state = labels[row?.trackState] || row?.trackState || "미확인";
+  const percentile = Number.isFinite(Number(row?.trackPercentile)) ? `백분위 ${fmt.score(row.trackPercentile, 1)}` : "백분위 —";
+  if (seriesId === "kospi") return `${state} · ${percentile}`;
+  if (seriesId === "long_cash") return `${positionWithTicker(row.longCashPosition)} · ${historyPolicyAction(row, "long_cash")} · 선택일까지 MDD ${fmt.pct(row.longCashMddToDate)}`;
+  if (seriesId === "long_inverse_cash") return `${positionWithTicker(row.longShortPosition)} · ${historyPolicyAction(row, "long_inverse_cash")} · 선택일까지 MDD ${fmt.pct(row.longShortMddToDate)}`;
+  return `선택일까지 MDD ${fmt.pct(row?.buyHoldMddToDate)} · 평가 시작일 0%`;
+}
+
+function renderHistorySelectedSnapshot(row, { periodEnd, showLongCash, showLongShort, pair, activeSeries }) {
   const root = $("#history-selected-snapshot");
   const container = $("#history-selected-content");
   if (!root || !container) return;
@@ -1318,17 +1370,10 @@ function renderHistorySelectedSnapshot(row, { periodEnd, showLongCash, showLongS
     return;
   }
   const isPeriodEnd = row.date === periodEnd;
-  const state = labels[row.trackState] || row.trackState || "미확인";
-  const percentile = Number.isFinite(Number(row.trackPercentile)) ? `${fmt.score(row.trackPercentile, 1)} 백분위` : "백분위 —";
-  const kospi = Number(row.kospiClose ?? row.kospi);
-  const cards = [
-    `<section><span>KOSPI 종가 · 상태</span><strong>${esc(Number.isFinite(kospi) ? Math.round(kospi).toLocaleString() : "—")}</strong><small>${esc(`${state} · ${percentile}`)}</small></section>`,
-    ...(showLongCash ? [`<section><span>롱 / 현금 · 선택일까지</span><strong>${esc(fmt.signedPct(row.longCashReturn))}</strong><small>${esc(`${positionWithTicker(row.longCashPosition)} · ${historyPolicyAction(row, "long_cash")}`)}</small><small>선택일까지 MDD ${esc(fmt.pct(row.longCashMddToDate))}</small></section>`] : []),
-    ...(showLongShort ? [`<section><span>롱 / 인버스 / 현금 · 선택일까지</span><strong>${esc(fmt.signedPct(row.longShortReturn))}</strong><small>${esc(`${positionWithTicker(row.longShortPosition)} · ${historyPolicyAction(row, "long_inverse_cash")}`)}</small><small>선택일까지 MDD ${esc(fmt.pct(row.longShortMddToDate))}</small></section>`] : []),
-    `<section><span>${esc(pair.longTicker)} 매수·보유 · 선택일까지</span><strong>${esc(fmt.signedPct(row.buyHoldReturn))}</strong><small>선택일까지 MDD ${esc(fmt.pct(row.buyHoldMddToDate))}</small><small>평가 시작일을 0%로 재기준화</small></section>`
-  ];
+  const visibleSeries = ["kospi", ...(showLongCash ? ["long_cash"] : []), ...(showLongShort ? ["long_inverse_cash"] : []), "buyhold"];
+  const values = visibleSeries.map((seriesId) => `<span data-series-id="${seriesId}"${seriesId === activeSeries ? ' class="is-active"' : ""}><small>${esc(historySeriesLabel(seriesId, pair))}</small><strong>${esc(historySeriesValueText(row, seriesId))}</strong></span>`).join("");
   root.dataset.context = isPeriodEnd ? "period-end" : "selected-date";
-  container.innerHTML = `<div class="history-selected-head"><div><span>차트 선택일</span><strong>${esc(row.date)}</strong><em>${isPeriodEnd ? "평가 종료일" : "기간 내 탐색"}</em></div><p>${isPeriodEnd ? "성과 카드·표와 같은 종료일입니다." : `이 날짜까지의 누적성과입니다. 성과 카드·표 기준은 ${esc(periodEnd)}입니다.`}</p></div><div class="history-selected-grid">${cards.join("")}</div>`;
+  container.innerHTML = `<div class="history-selected-head"><div><span>선택일 값</span><strong>${esc(row.date)}</strong><em>${isPeriodEnd ? "평가 종료일" : "기간 내 탐색"}</em></div><div class="history-selected-values">${values}</div></div>`;
 }
 
 function renderHistory(scenarioBundle = selectedScenarioBundle()) {
@@ -1338,6 +1383,8 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   $("#history-model-scope").className = `scope-badge ${modelKind === "raw" ? "raw" : modelKind === "robust" ? "practical" : "baseline"}`;
   const showLongCash = store.backtestPolicy !== "long_inverse_cash";
   const showLongShort = store.backtestPolicy !== "long_cash";
+  const visibleSeriesIds = ["kospi", ...(showLongCash ? ["long_cash"] : []), ...(showLongShort ? ["long_inverse_cash"] : []), "buyhold"];
+  const activeHistorySeries = historyChartState.normalize(visibleSeriesIds);
   $("#history-legend-long-cash").hidden = !showLongCash;
   $("#history-legend-long-inverse").hidden = !showLongShort;
   $("#history-legend-inverse-entry").hidden = !showLongShort;
@@ -1350,7 +1397,14 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   if (rows.length < 8 || !primary?.metrics) {
     $("#history-chart-meta").innerHTML = `<span><strong>표시 상태</strong><b>유효 거래일 부족</b></span><span><strong>필요 조건</strong><b>8거래일 이상</b></span>`;
     $("#history-exposure-note").innerHTML = "<strong>기간을 넓혀 주세요.</strong><span>통합 차트와 과거검증은 최소 8개 유효 거래일이 필요합니다.</span>";
-    renderHistorySelectedSnapshot(null, { periodEnd: "", showLongCash, showLongShort, pair });
+    renderHistorySelectedSnapshot(null, { periodEnd: "", showLongCash, showLongShort, pair, activeSeries: activeHistorySeries });
+    $("#history-chart-date").value = "";
+    $("#history-chart-date").disabled = true;
+    $("#history-callout-series").textContent = "강조 그래프";
+    $("#history-callout-value").textContent = "—";
+    $("#history-callout-context").textContent = "유효 거래일을 8일 이상 선택해 주세요.";
+    $("#history-data-date").textContent = store.summary?.dataAsOf || "—";
+    $("#history-evaluation-date").textContent = "—";
     const tableRows = rows.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[rowTrackValue(row, "state")] || rowTrackValue(row, "state"), "—", "—"]);
     $("#history-data-table").innerHTML = dataTable(["날짜", "KOSPI", "선택 트랙 상태", "포지션", "체결"], tableRows, `선택 기간 ${tableRows.length}개 관측값`);
     return showEmpty(container, "통합 분석을 표시하려면 유효 기간을 넓혀 주세요.");
@@ -1498,27 +1552,72 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   const priceTicks = niceTicks(min - pad, max + pad, 6).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${plotRight}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 12}" y="${y(value) + 4}" text-anchor="end">${Math.round(value).toLocaleString()}</text>`).join("");
   const equityTicks = niceTicks(equityMin0 - equityPad, equityMax0 + equityPad, 5).map((value) => `<line class="grid-line" x1="${p.l}" y1="${equityY(value)}" x2="${plotRight}" y2="${equityY(value)}"/><text class="axis-label" x="${p.l - 12}" y="${equityY(value) + 4}" text-anchor="end">${esc(fmt.pct(value, Math.abs(equityMax0 - equityMin0) < .2 ? 1 : 0))}</text>`).join("");
   const dateAxis = chartDateAxis(plotRows, x, { top: p.priceTop, bottom: p.equityBottom, labelY: p.dateLabel, maxTicks: 7 });
-  const longCashLine = showLongCash ? `<g class="line-strategy">${pathSegments(plotRows, "longCashReturn", x, equityY)}</g>` : "";
-  const longShortLine = showLongShort ? `<g class="line-longshort">${pathSegments(plotRows, "longShortReturn", x, equityY)}</g>` : "";
+  const longCashLine = showLongCash ? `<g class="history-series line-strategy" data-history-series="long_cash">${pathSegments(plotRows, "longCashReturn", x, equityY)}</g>` : "";
+  const longShortLine = showLongShort ? `<g class="history-series line-longshort" data-history-series="long_inverse_cash">${pathSegments(plotRows, "longShortReturn", x, equityY)}</g>` : "";
   const laneBackgrounds = laneDefs.map((lane) => `<rect class="holding-lane-background" x="${p.l}" y="${lane.top}" width="${plotRight - p.l}" height="${lane.bottom - lane.top}"/><text class="holding-lane-label" x="${p.l - 12}" y="${(lane.top + lane.bottom) / 2 + 4}" text-anchor="end">${esc(lane.label)}</text>`).join("");
   const lastRow = plotRows.at(-1);
   const endSeries = [
-    ...(showLongCash ? [{ label: "롱/현금", field: "longCashReturn", cls: "strategy" }] : []),
-    ...(showLongShort ? [{ label: "롱/인버스", field: "longShortReturn", cls: "longshort" }] : []),
-    { label: `${pair.longTicker} BH`, field: "buyHoldReturn", cls: "buyhold" }
+    ...(showLongCash ? [{ id: "long_cash", label: "롱/현금", field: "longCashReturn", cls: "strategy" }] : []),
+    ...(showLongShort ? [{ id: "long_inverse_cash", label: "롱/인버스", field: "longShortReturn", cls: "longshort" }] : []),
+    { id: "buyhold", label: `${pair.longTicker} BH`, field: "buyHoldReturn", cls: "buyhold" }
   ].map((series) => ({ ...series, value: Number(lastRow[series.field]) })).filter((series) => Number.isFinite(series.value)).sort((a, b) => equityY(a.value) - equityY(b.value));
   const labelGap = 18, minLabelY = p.equityTop + 8, maxLabelY = p.equityBottom - 4;
   endSeries.forEach((series, index) => { series.labelY = Math.max(equityY(series.value), index ? endSeries[index - 1].labelY + labelGap : minLabelY); });
   const overflow = endSeries.length ? Math.max(0, endSeries.at(-1).labelY - maxLabelY) : 0;
   if (overflow) endSeries.forEach((series) => { series.labelY -= overflow; });
-  const endLabels = endSeries.map((series) => `<circle class="line-end-dot ${series.cls}" cx="${plotRight}" cy="${equityY(series.value)}" r="3"/><path class="line-end-connector ${series.cls}" d="M ${plotRight + 3} ${equityY(series.value)} L ${plotRight + 12} ${series.labelY}"/><text class="line-end-label ${series.cls}" x="${plotRight + 16}" y="${series.labelY + 4}">${esc(series.label)} ${esc(fmt.signedPct(series.value, 1))}</text>`).join("");
+  const endLabels = endSeries.map((series) => `<g class="history-series history-series-end" data-history-series="${series.id}"><circle class="line-end-dot ${series.cls}" cx="${plotRight}" cy="${equityY(series.value)}" r="3"/><path class="line-end-connector ${series.cls}" d="M ${plotRight + 3} ${equityY(series.value)} L ${plotRight + 12} ${series.labelY}"/><text class="line-end-label ${series.cls}" x="${plotRight + 16}" y="${series.labelY + 4}">${esc(series.label)} ${esc(fmt.signedPct(series.value, 1))}</text></g>`).join("");
   const latestPrice = Number(lastRow.kospiClose ?? lastRow.kospi);
   const latestPriceY = y(latestPrice);
   const matchedPeriodEndIndex = plotRows.findIndex((row) => row.date === m.end);
   const periodEndIndex = matchedPeriodEndIndex >= 0 ? matchedPeriodEndIndex : plotRows.length - 1;
   const zeroReference = equityMin0 - equityPad <= 0 && equityMax0 + equityPad >= 0 ? `<line class="reference-line performance-zero" x1="${p.l}" y1="${equityY(0)}" x2="${plotRight}" y2="${equityY(0)}"/>` : "";
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="line-price">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="line-buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">첫 ETF 평가일 = 0%</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="history-series line-price" data-history-series="kospi">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><g class="history-series history-series-end" data-history-series="kospi"><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text></g>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="history-series line-buyhold" data-history-series="buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<circle id="history-active-point" class="history-active-point" cx="0" cy="0" r="5"/><text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">첫 ETF 평가일 = 0%</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
   container.setAttribute("aria-label", `${plotRows[0].date}부터 ${plotRows.at(-1).date}까지 ${compactModelName()} KOSPI 종가 신호, ${pairLabel(store.backtestProxy, true)} 다음 시가 체결, ${policyLabel()} 비용 후 누적수익률 통합 차트.`);
+  let selectedHistoryRow = plotRows[periodEndIndex];
+  let selectedHistoryIndex = periodEndIndex;
+  const dateInput = $("#history-chart-date");
+  dateInput.disabled = false;
+  dateInput.min = plotRows[0].date;
+  dateInput.max = plotRows.at(-1).date;
+  $("#history-data-date").textContent = store.summary?.dataAsOf || "—";
+  $("#history-evaluation-date").textContent = m.end || plotRows.at(-1).date;
+
+  const updateHistorySeriesView = (seriesId, { preview = false } = {}) => {
+    const shownSeries = preview ? historyChartState.preview(seriesId, visibleSeriesIds) : historyChartState.activate(seriesId, visibleSeriesIds);
+    const persistedSeries = historyChartState.activeSeries;
+    container.dataset.activeSeries = shownSeries;
+    container.classList.add("has-active-series");
+    container.querySelectorAll(".history-series").forEach((node) => node.classList.toggle("is-active", node.dataset.historySeries === shownSeries));
+    $$("#history-series-controls [data-history-series]").forEach((button) => {
+      const visible = visibleSeriesIds.includes(button.dataset.historySeries);
+      button.hidden = !visible;
+      button.setAttribute("aria-pressed", String(button.dataset.historySeries === persistedSeries));
+      button.classList.toggle("is-preview", preview && button.dataset.historySeries === shownSeries);
+    });
+    const value = historySeriesValue(selectedHistoryRow, shownSeries);
+    const marker = container.querySelector("#history-active-point");
+    if (marker && Number.isFinite(value)) {
+      marker.removeAttribute("hidden");
+      marker.dataset.historySeries = shownSeries;
+      marker.setAttribute("cx", String(x(selectedHistoryIndex)));
+      marker.setAttribute("cy", String(shownSeries === "kospi" ? y(value) : equityY(value)));
+    } else marker?.setAttribute("hidden", "");
+    dateInput.value = selectedHistoryRow.date;
+    $("#history-callout-series").textContent = historySeriesLabel(shownSeries, pair);
+    $("#history-callout-value").textContent = historySeriesValueText(selectedHistoryRow, shownSeries);
+    $("#history-callout-context").textContent = `${selectedHistoryRow.date === m.end ? "평가 종료일" : "기간 내 탐색"} · ${historySeriesContext(selectedHistoryRow, shownSeries)}`;
+    renderHistorySelectedSnapshot(selectedHistoryRow, { periodEnd: m.end || plotRows.at(-1).date, showLongCash, showLongShort, pair, activeSeries: shownSeries });
+  };
+
+  $$("#history-series-controls [data-history-series]").forEach((button) => {
+    const seriesId = button.dataset.historySeries;
+    button.hidden = !visibleSeriesIds.includes(seriesId);
+    button.onclick = () => updateHistorySeriesView(seriesId);
+    button.onmouseenter = () => updateHistorySeriesView(seriesId, { preview: true });
+    button.onmouseleave = () => updateHistorySeriesView(historyChartState.activeSeries);
+    button.onfocus = () => updateHistorySeriesView(seriesId, { preview: true });
+    button.onblur = () => updateHistorySeriesView(historyChartState.activeSeries);
+  });
   attachChartNavigation(container, plotRows, (row) => {
     const signal = row.signal ? `${labels[row.signal.state]} 상태 첫 관측 · 백분위 ${fmt.score(row.signal.percentile)}` : "신규 극단 신호 없음";
     const lines = [`차트 선택일 ${row.date} · KOSPI ${Number(row.kospiClose ?? row.kospi).toLocaleString()}pt`, `종가 연구 상태  ${labels[row.trackState] || row.trackState} · ${signal}`, "선택일 누적성과"];
@@ -1526,7 +1625,30 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     if (showLongShort) lines.push(`롱/인버스  ${positionWithTicker(row.longShortPosition)} · ${historyPolicyAction(row, "long_inverse_cash")} · ${fmt.signedPct(row.longShortReturn, 1)}`);
     lines.push(`${pair.longTicker} 매수·보유  ${fmt.signedPct(row.buyHoldReturn, 1)}`);
     return lines.join("\n");
-  }, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r, initialIndex: periodEndIndex, latestIndex: periodEndIndex, onSelect: (row) => renderHistorySelectedSnapshot(row, { periodEnd: m.end || plotRows.at(-1).date, showLongCash, showLongShort, pair }) });
+  }, {
+    viewBoxWidth: w,
+    plotLeft: p.l,
+    plotRight: w - p.r,
+    initialIndex: periodEndIndex,
+    latestIndex: periodEndIndex,
+    persistSelection: true,
+    showTooltip: false,
+    onSelect: (row, index) => {
+      selectedHistoryRow = row;
+      selectedHistoryIndex = index;
+      updateHistorySeriesView(historyChartState.activeSeries);
+    }
+  });
+  dateInput.onchange = () => {
+    const selectedTime = Date.parse(`${dateInput.value}T00:00:00`);
+    if (!Number.isFinite(selectedTime)) {
+      dateInput.value = selectedHistoryRow.date;
+      return;
+    }
+    const nearestIndex = plotRows.reduce((best, row, index) => Math.abs(Date.parse(`${row.date}T00:00:00`) - selectedTime) < Math.abs(Date.parse(`${plotRows[best].date}T00:00:00`) - selectedTime) ? index : best, 0);
+    container._selectIndex?.(nearestIndex);
+    container.focus({ preventScroll: true });
+  };
 
   const signalCount = [...signals.values()].length;
   const windowMeta = primary.window || primary.range || {};
@@ -1539,10 +1661,8 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     : `${policyLabel(store.backtestPolicy)} ${fmt.signedPct(m.totalReturn, 1)} · MDD ${fmt.pct(m.maxDrawdown, 1)}`;
   $("#history-chart-meta").innerHTML = [
     ["표시 기간", `${plotRows[0].date}–${plotRows.at(-1).date} · ${plotRows.length.toLocaleString()}일`],
-    ["실제 ETF", `${pair.leverage}X · ${pair.longTicker}/${pair.inverseTicker}`],
-    ["실행 조건", `편도 ${store.backtestCost}bp · 청산 ${store.longExitPercentile}/${100 - store.longExitPercentile}`],
-    ["평가 종료일 보유", store.backtestPolicy === "compare" ? `롱/현금 ${heldInstrument(longCash)} · 롱/인버스 ${heldInstrument(longShort)}` : heldInstrument(primary)],
-    ["평가기간 총수익률", resultSummary]
+    ["ETF · 비용", `${pair.leverage}X · ${pair.longTicker}/${pair.inverseTicker} · 편도 ${store.backtestCost}bp · 청산 ${store.longExitPercentile}/${100 - store.longExitPercentile}`],
+    ["평가 종료일 성과", `${m.end} · ${resultSummary}`]
   ].map(([label, value]) => `<span><strong>${esc(label)}</strong><b>${esc(value)}</b></span>`).join("");
   const exposure = store.backtestPolicy === "compare" && longCash?.metrics && longShort?.metrics
     ? `<strong>정책별 총노출</strong><span>롱 / 현금 ${esc(fmt.pct(longCash.metrics.grossExposure, 1))} · 롱 / 인버스 / 현금 ${esc(fmt.pct(longShort.metrics.grossExposure, 1))} · ${esc(pairLabel(store.backtestProxy, true))} · 극단 최초 신호 ${signalCount}회 · 시가 체결일 ${actionsByDate.size}일</span>`

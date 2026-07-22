@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const q=new URLSearchParams(location.search).get("theme");const s=localStorage.getItem("quant-calm-theme");const p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=q==="dark"||q==="light"?q:(s||p)}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260721-latest-range-v18">
+  <link rel="stylesheet" href="assets/styles.css?v=20260722-fear-chart-v19">
 </head>
 <body id="top">
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -38,8 +38,8 @@
         <p class="eyebrow">KOSPI · 개인 수급 · PIT rolling regression</p>
         <h1>Fear &amp; Greed <span>Flow Lab</span></h1>
         <p class="lede">가격 변화로 설명되는 통상적 개인 수급에서 얼마나 벗어났는지 측정하고, 같은 신호를 실제 ETF로 실행한 성과까지 한 화면에서 비교합니다.</p>
-        <div class="hero-links" aria-label="연구 데이터와 운영 링크">
-          <a class="primary-action" href="#conclusion">현재 분석 보기</a><a href="#strategy">전략 성과 보기</a><a href="data/dashboard.json">파생 대시보드 JSON</a><a href="https://github.com/SonChangGi/fearNgreed/actions">갱신 기록</a>
+        <div class="hero-links" aria-label="핵심 화면 바로가기">
+          <a class="primary-action" href="#conclusion">현재 분석 보기</a><a href="#analysis-settings">분석 설정</a>
         </div>
       </div>
       <aside class="status-panel" aria-labelledby="current-state-label">
@@ -47,7 +47,7 @@
         <span id="current-state-label" class="muted-label">현재 선택 연구 신호</span>
         <div class="signal-state-line"><strong id="state">—</strong><span id="signal-badge" class="state-badge unavailable">상태 미확인</span></div>
         <span id="asof">기준일 —</span>
-        <p id="status-note">공급자 상태를 읽는 중입니다.</p>
+        <details class="status-details"><summary id="status-detail-summary">데이터·운영 상세</summary><p id="status-note">공급자 상태를 읽는 중입니다.</p></details>
       </aside>
     </header>
 
@@ -58,17 +58,24 @@
       <small id="live-confirmed-anchor">차트·백테스트는 확정 데이터 기준</small>
     </section>
 
-    <div class="view-toolbar" aria-label="화면 설정">
-      <p><strong>내 화면 설정</strong><span>적용한 설정만 이 브라우저와 공유 링크에 저장됩니다.</span></p>
-      <div><button id="reset-controls" type="button">기본값 복원</button><button id="share-view" type="button">현재 화면 링크 복사</button></div>
-      <span id="view-action-status" class="view-action-status" role="status" aria-live="polite"></span>
-    </div>
+    <section id="conclusion" class="conclusion-section" aria-labelledby="conclusion-title">
+      <article id="research-conclusion" class="conclusion-card" aria-live="polite">
+        <div><p class="eyebrow">EVIDENCE FIRST</p><h2 id="conclusion-title">선택 기간 결과 요약</h2></div>
+        <p>사건 연구와 사전 정의 전략 결과를 읽는 중입니다.</p>
+      </article>
+    </section>
 
-    <section class="analysis-config" aria-labelledby="analysis-config-title">
-      <div class="analysis-config-head">
-        <div><p class="eyebrow">ONE APPLIED SCENARIO</p><h2 id="analysis-config-title">분석 설정</h2><p>선택값과 관련된 신호·사건·전략 결과를 같은 적용 시나리오로 다시 계산합니다.</p></div>
-        <span class="scope-badge practical">학습·신호·전략 연동</span>
-      </div>
+    <details id="analysis-settings" class="analysis-config" aria-labelledby="analysis-config-title">
+      <summary class="analysis-config-head">
+        <div><p class="eyebrow">ONE APPLIED SCENARIO</p><h2 id="analysis-config-title">분석 설정</h2><p id="analysis-config-summary">현재 적용 시나리오를 확인하거나 바꿉니다.</p></div>
+        <span class="analysis-config-action"><span class="scope-badge practical">학습·신호·전략 연동</span><span class="analysis-config-toggle" aria-hidden="true">설정 열기</span></span>
+      </summary>
+      <div class="analysis-config-body">
+        <div class="view-toolbar" aria-label="화면 설정">
+          <p><strong>내 화면 설정</strong><span>적용한 설정만 이 브라우저와 공유 링크에 저장됩니다.</span></p>
+          <div><button id="reset-controls" type="button">기본값 복원</button><button id="share-view" type="button">현재 화면 링크 복사</button></div>
+          <span id="view-action-status" class="view-action-status" role="status" aria-live="polite"></span>
+        </div>
       <div class="analysis-config-grid">
         <fieldset class="config-field config-track">
           <legend class="control-label">연구 트랙</legend>
@@ -124,14 +131,8 @@
       </div>
       <p id="model-selection-note" class="analysis-track-note">모든 결과는 위의 한 가지 적용 시나리오를 공유합니다.</p>
       <p id="backtest-selection-note" class="analysis-selection-note" role="status" aria-live="polite">설정을 적용해 분석을 계산하는 중입니다.</p>
-    </section>
-
-    <section id="conclusion" class="conclusion-section" aria-labelledby="conclusion-title">
-      <article id="research-conclusion" class="conclusion-card" aria-live="polite">
-        <div><p class="eyebrow">EVIDENCE FIRST</p><h2 id="conclusion-title">선택 기간 결과 요약</h2></div>
-        <p>사건 연구와 사전 정의 전략 결과를 읽는 중입니다.</p>
-      </article>
-    </section>
+      </div>
+    </details>
 
     <section id="signal" aria-labelledby="signal-title">
       <div class="section-head">
@@ -139,11 +140,11 @@
         <p class="source-line">평가 종료일 측정값 · 데이터 최신일은 상단 상태에 표시</p>
       </div>
       <div id="metrics" class="metric-grid" aria-live="polite"></div>
-      <article class="signal-bridge-card" aria-labelledby="signal-bridge-title">
-        <div class="bridge-head"><div><h3 id="signal-bridge-title">평가 종료일 신호가 만들어지는 과정</h3><p>실제 수급을 같은 날 수익률에서 기대되는 수급과 비교해 상태로 변환합니다.</p></div><span id="bridge-model-scope" class="scope-badge">적용 모형</span></div>
+      <details class="signal-bridge-card" aria-labelledby="signal-bridge-title">
+        <summary class="bridge-head"><div><h3 id="signal-bridge-title">평가 종료일 신호 계산 과정</h3><p>실제 수급 → 회귀 예상 → 잔차 → 백분위 → 상태</p></div><span id="bridge-model-scope" class="scope-badge">적용 모형</span></summary>
         <div id="signal-bridge" class="signal-bridge" aria-live="polite"></div>
         <p id="bridge-explanation" class="bridge-explanation"></p>
-      </article>
+      </details>
       <details class="quality-details"><summary>데이터·계산 정보</summary><div id="quality-strip" class="quality-strip" aria-live="polite"></div></details>
       <details class="flow-channel-card">
         <summary><span><strong id="flow-channel-title">보조 수급 진단</strong><small>개인·외국인·기관 채널을 함께 확인합니다.</small></span><span class="tag">Flow inputs</span></summary>
@@ -156,20 +157,32 @@
       <article class="card wide span-2">
         <div class="card-head">
           <div><div class="title-with-scope"><h2>KOSPI · 신호 · 선택 전략 결과</h2><span id="history-model-scope" class="scope-badge practical">분석 설정 연동</span></div><p>같은 날짜축에서 종가 신호, 다음 시가 실행, 전략 누적가치와 보유 상태를 함께 확인합니다.</p></div>
-          <button class="latest-button" type="button" data-chart-latest="history-chart">기간 끝으로</button>
+          <button class="latest-button" type="button" data-chart-latest="history-chart">평가 종료일로</button>
         </div>
-        <div class="unified-chart-legend" aria-label="통합 차트 범례">
-          <div class="legend-group"><strong>시장</strong><span><i class="legend-line price"></i>KOSPI 종가</span></div>
-          <div class="legend-group"><strong>성과</strong><span id="history-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="history-legend-long-inverse"><i class="legend-line longshort"></i>롱 / 인버스 / 현금</span><span id="history-legend-buyhold"><i class="legend-line buyhold"></i>롱 ETF 매수·보유</span></div>
-          <div class="legend-group"><strong>종가 신호</strong><span><i class="legend-dot fear"></i>극단 공포 상태 첫 관측</span><span><i class="legend-dot greed"></i>극단 탐욕 상태 첫 관측</span></div>
-          <div class="legend-group"><strong>다음 시가 체결</strong><span id="history-legend-long-entry"><i class="legend-entry"></i>롱 ETF 매수</span><span id="history-legend-inverse-entry"><i class="legend-entry inverse"></i>인버스 ETF 매수</span><span id="history-legend-exit"><i class="legend-action exit"></i>청산</span><span id="history-legend-reversal"><i class="legend-action reversal"></i>ETF 교체</span></div>
+        <div class="history-chart-toolbar">
+          <div id="history-series-controls" class="history-series-controls" role="group" aria-label="강조할 차트 계열">
+            <span class="history-toolbar-label">그래프 강조</span>
+            <button type="button" data-history-series="kospi" aria-pressed="false"><i class="legend-line price"></i>KOSPI</button>
+            <button id="history-legend-long-cash" type="button" data-history-series="long_cash" aria-pressed="false"><i class="legend-line strategy"></i>롱 / 현금</button>
+            <button id="history-legend-long-inverse" type="button" data-history-series="long_inverse_cash" aria-pressed="true"><i class="legend-line longshort"></i>롱 / 인버스</button>
+            <button id="history-legend-buyhold" type="button" data-history-series="buyhold" aria-pressed="false"><i class="legend-line buyhold"></i>롱 ETF 보유</button>
+          </div>
+          <div class="history-event-key" aria-label="신호와 체결 기호">
+            <span><i class="legend-dot fear"></i>공포</span><span><i class="legend-dot greed"></i>탐욕</span><span id="history-legend-long-entry"><i class="legend-entry"></i>롱</span><span id="history-legend-inverse-entry"><i class="legend-entry inverse"></i>인버스</span><span id="history-legend-exit"><i class="legend-action exit"></i>청산</span><span id="history-legend-reversal"><i class="legend-action reversal"></i>교체</span>
+          </div>
         </div>
         <div id="history-chart-meta" class="chart-meta-strip" aria-live="polite"></div>
         <section id="history-selected-snapshot" class="history-selected-snapshot" role="region" aria-labelledby="history-selected-title"><h3 id="history-selected-title" class="sr-only">차트 선택일 스냅샷</h3><div id="history-selected-content"><div class="history-selected-placeholder">차트를 준비하는 중입니다.</div></div></section>
-        <div id="history-chart" class="chart chart-large unified-strategy-chart" role="img" aria-roledescription="대화형 통합 시계열 차트" aria-label="KOSPI 가격, 종가 신호, 다음 시가 실행과 선택 전략 결과" aria-describedby="history-help" tabindex="0"></div>
-        <div id="history-exposure-note" class="history-exposure-note" aria-live="polite"></div>
-        <p id="history-help" class="chart-help">차트를 가리키거나 좌우 화살표·Home·End로 이동하면 위의 선택일 스냅샷이 함께 바뀝니다. 성과 카드와 표는 평가 종료일 기준입니다.</p>
-        <details class="chart-guide"><summary>신호·체결 표시 읽는 법</summary><p>공포 원과 탐욕 마름모는 종가 상태의 첫 관측입니다. 주문은 정책별 레인의 다음 유효 거래일 시가에 표시하고, 같은 시가의 청산과 반대 ETF 매수는 하나의 교체로 표시합니다. 시작 경계 이전 체결은 흐리게 표시합니다.</p></details>
+        <div class="history-chart-frame">
+          <aside id="history-chart-callout" class="history-chart-callout" aria-live="polite">
+            <label for="history-chart-date">차트 선택일<input id="history-chart-date" type="date" aria-describedby="history-help"></label>
+            <div><span id="history-callout-series">강조 그래프</span><strong id="history-callout-value">—</strong><small id="history-callout-context">값을 준비하는 중입니다.</small></div>
+            <dl><div><dt>데이터 최신일</dt><dd id="history-data-date">—</dd></div><div><dt>평가 종료일</dt><dd id="history-evaluation-date">—</dd></div></dl>
+          </aside>
+          <div id="history-chart" class="chart chart-large unified-strategy-chart" role="img" aria-roledescription="대화형 통합 시계열 차트" aria-label="KOSPI 가격, 종가 신호, 다음 시가 실행과 선택 전략 결과" aria-describedby="history-help" tabindex="0"></div>
+        </div>
+        <p id="history-help" class="chart-help">가리키면 날짜를 미리 보고, 클릭·탭·화살표 키로 고정합니다. 차트 선택은 평가 종료일 성과를 바꾸지 않습니다.</p>
+        <details class="chart-guide"><summary>신호·체결·전략 상세</summary><div id="history-exposure-note" class="history-exposure-note" aria-live="polite"></div><p>공포 원과 탐욕 마름모는 종가 상태의 첫 관측입니다. 주문은 정책별 레인의 다음 유효 거래일 시가에 표시하고, 같은 시가의 청산과 반대 ETF 매수는 하나의 교체로 표시합니다. 시작 경계 이전 체결은 흐리게 표시합니다.</p></details>
         <details class="data-alternative"><summary>차트 값 표로 보기</summary><div class="table-scroll" id="history-data-table"></div></details>
       </article>
 
@@ -251,11 +264,11 @@
 
   <footer class="site-footer">
     <div class="footer-copy"><strong>Fear &amp; Greed Flow Lab</strong><p>비상업적 개인 연구 · 투자 권유 아님 · 출처: 한국거래소 통계정보, pykrx, yfinance</p></div>
-    <div class="footer-links"><a class="footer-primary" href="https://sonchanggi.github.io/quant-dashboard/">통합 대시보드</a><a href="data/summary.json">허브 요약 JSON</a><a href="data/live-signal.json">당일 잠정 신호 JSON</a><a href="data/dashboard.json">파생 대시보드 JSON</a><a href="data/history.json">파생 시계열 JSON</a><a href="data/strategy-comparison.json">전략 비교 JSON</a><a href="data/automation-status.json">자동화 상태</a><a href="docs/methodology.md">방법론</a><a href="https://github.com/SonChangGi/fearNgreed">GitHub</a></div>
+    <div class="footer-links"><a class="footer-primary" href="https://sonchanggi.github.io/quant-dashboard/">통합 대시보드</a><a href="data/summary.json">허브 요약 JSON</a><a href="data/live-signal.json">당일 잠정 신호 JSON</a><a href="data/dashboard.json">파생 대시보드 JSON</a><a href="data/history.json">파생 시계열 JSON</a><a href="data/strategy-comparison.json">전략 비교 JSON</a><a href="data/automation-status.json">자동화 상태</a><a href="docs/methodology.md">방법론</a><a href="https://github.com/SonChangGi/fearNgreed/actions">갱신 기록</a><a href="https://github.com/SonChangGi/fearNgreed">GitHub</a></div>
   </footer>
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260721-latest-range-v18"></script>
+  <script type="module" src="assets/app.js?v=20260722-fear-chart-v19"></script>
 </body>
 </html>

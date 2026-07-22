@@ -414,6 +414,61 @@ test("segmented controls, sharing, and reset keep one applied scenario", { concu
   assert.match(document.querySelector("#view-action-status").textContent, /기본값으로 복원/);
 });
 
+test("integrated chart exploration changes only local chart context", { concurrency: false, timeout: 120_000 }, async () => {
+  const window = await bootDashboard();
+  const { document } = window;
+  const chart = document.querySelector("#history-chart");
+  const dateInput = document.querySelector("#history-chart-date");
+  const fixedOutputs = ["#backtest-cards", "#backtest-table tbody", "#trade-table tbody"];
+  const initialOutputs = signature(document, fixedOutputs);
+  const initialUrl = window.location.href;
+  const initialStorage = window.localStorage.getItem("fearngreed-controls-v8");
+  const evaluationDate = document.querySelector("#history-evaluation-date").textContent;
+  const dataDate = document.querySelector("#history-data-date").textContent;
+  const initialDate = dateInput.value;
+
+  assert.equal(document.querySelector("#analysis-settings").open, false);
+  assert.equal(document.querySelector(".signal-bridge-card").open, false);
+  assert.equal(evaluationDate, CONFIRMED_DATA_AS_OF);
+  assert.equal(dataDate, CONFIRMED_DATA_AS_OF);
+  assert.equal(initialDate, evaluationDate);
+  assert.deepEqual(
+    [...document.querySelectorAll("[data-history-series]")].filter((button) => button.getAttribute("aria-pressed") === "true").map((button) => button.dataset.historySeries),
+    ["long_inverse_cash"]
+  );
+
+  chart.focus();
+  chart.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
+  assert.notEqual(dateInput.value, initialDate);
+  assert.match(document.querySelector("#history-selected-content").textContent, new RegExp(dateInput.value));
+  assert.equal(document.querySelector("#history-evaluation-date").textContent, evaluationDate);
+  assert.equal(document.querySelector("#history-data-date").textContent, dataDate);
+  assert.equal(signature(document, fixedOutputs), initialOutputs);
+  assert.equal(window.location.href, initialUrl);
+  assert.equal(window.localStorage.getItem("fearngreed-controls-v8"), initialStorage);
+
+  click(window, '[data-history-series="long_cash"]');
+  assert.equal(document.querySelector('[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true");
+  assert.match(document.querySelector("#history-callout-series").textContent, /롱 \/ 현금/);
+  assert.equal(signature(document, fixedOutputs), initialOutputs);
+  assert.equal(window.location.href, initialUrl);
+  assert.equal(window.localStorage.getItem("fearngreed-controls-v8"), initialStorage);
+
+  dateInput.value = dateInput.min;
+  dateInput.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(dateInput.value, dateInput.min);
+  assert.equal(document.querySelector("#history-evaluation-date").textContent, evaluationDate);
+  click(window, '[data-chart-latest="history-chart"]');
+  assert.equal(dateInput.value, evaluationDate);
+
+  click(window, '[data-history-series="long_inverse_cash"]');
+  click(window, '[data-backtest-policy="long_cash"]');
+  assert.equal(document.querySelector('[data-history-series="long_inverse_cash"]').hidden, true);
+  assert.equal(document.querySelector('[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true");
+  click(window, '[data-backtest-policy="compare"]');
+  assert.equal(document.querySelector('[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true", "a hidden series must not revive when compare mode returns");
+});
+
 test("current open trades expose execution details and follow policy, pair, and date controls", { concurrency: false, timeout: 120_000 }, async () => {
   const window = await bootDashboard();
   const { document } = window;
