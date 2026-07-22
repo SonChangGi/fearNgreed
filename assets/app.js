@@ -14,6 +14,8 @@ import {
 import { itemRatioAt, nearestItemIndexByRatio } from "./chart-navigation.js?v=20260720-analysis-usability-v12";
 import { createHistoryChartState } from "./history-chart-state.js?v=20260722-fear-chart-v19";
 
+const THEME_STORAGE_KEY = "quant-research-theme";
+const LEGACY_THEME_STORAGE_KEYS = ["quant-calm-theme", "quant-dashboard-theme", "dram-price-theme"];
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const historyChartState = createHistoryChartState();
@@ -3140,16 +3142,66 @@ function setTheme(theme) {
   if (label) label.textContent = value === "dark" ? "라이트 모드" : "다크 모드";
 }
 
+function isTheme(value) {
+  return value === "light" || value === "dark";
+}
+
+function readTheme(key) {
+  try {
+    const value = localStorage.getItem(key);
+    return isTheme(value) ? value : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function storedTheme() {
+  const current = readTheme(THEME_STORAGE_KEY);
+  const legacy = LEGACY_THEME_STORAGE_KEYS.map(readTheme).find(Boolean) || null;
+  const theme = current || legacy;
+  try {
+    if (theme && current !== theme) localStorage.setItem(THEME_STORAGE_KEY, theme);
+    LEGACY_THEME_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+  } catch (_) {
+    /* Theme persistence and migration are optional. */
+  }
+  return theme;
+}
+
+function requestedTheme() {
+  try {
+    const requested = new URLSearchParams(location.search).get("theme");
+    return isTheme(requested) ? requested : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function systemTheme() {
+  try {
+    return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveTheme(theme) {
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+    LEGACY_THEME_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+  } catch (_) {
+    /* Theme persistence is optional. */
+  }
+}
+
 function initializeTheme() {
-  const requested = new URLSearchParams(location.search).get("theme");
-  let saved = null;
-  try { saved = localStorage.getItem("quant-calm-theme"); } catch (_) { /* storage can be unavailable */ }
-  const preferred = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  setTheme(["light", "dark"].includes(requested) ? requested : (document.documentElement.dataset.theme || saved || preferred));
+  const requested = requestedTheme();
+  const saved = storedTheme();
+  setTheme(requested || saved || systemTheme() || "light");
   $("#theme").addEventListener("click", () => {
     const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     setTheme(next);
-    try { localStorage.setItem("quant-calm-theme", next); } catch (_) { /* theme remains active for this page */ }
+    saveTheme(next);
   });
 }
 

@@ -172,6 +172,42 @@ test('shared shell, jump navigation, pointer charts and table tools match the qu
   assert.match(app,/function exportTable/);
 });
 
+test('shared shell uses the canonical project order and common theme storage contract',async()=>{
+  const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
+  const nav=html.match(/<div class="quant-nav-scroll"[\s\S]*?<\/div>/)?.[0]||'';
+  const labels=[...nav.matchAll(/class="quant-nav-link(?: is-active)?"[^>]*>([^<]+)<\/a>/g)].map((match)=>match[1]);
+  assert.deepEqual(labels,['Hub','Fear &amp; Greed','Momentum','DRAM','Best Factor','ETF','SOX','Risk Score','Port','Valuation','Kelly']);
+  assert.match(html,/https:\/\/sonchanggi\.github\.io\/kelly\//);
+  for(const key of ['quant-research-theme','quant-calm-theme','quant-dashboard-theme','dram-price-theme']) {
+    assert.match(html,new RegExp(key));
+    assert.match(app,new RegExp(key));
+  }
+  assert.match(app,/localStorage\.setItem\(THEME_STORAGE_KEY, theme\)/);
+  assert.match(app,/LEGACY_THEME_STORAGE_KEYS\.forEach\(\(key\) => localStorage\.removeItem\(key\)\)/);
+  assert.match(app,/function saveTheme\(theme\)/);
+  assert.match(app,/setTheme\(requested \|\| saved \|\| systemTheme\(\) \|\| "light"\)/);
+  assert.doesNotMatch(app,/localStorage\.setItem\("(?:quant-(?:calm|dashboard)-theme|dram-price-theme)"/);
+  assert.doesNotMatch(app,/document\.documentElement\.dataset\.theme \|\| preferred/);
+});
+
+test('common design controls and decision-critical chart metadata keep practical size floors',async()=>{
+  const css=await read('assets/styles.css');
+  const touchStart=css.indexOf('/* Common design v1: primary controls');
+  const typeStart=css.indexOf('/* Interactive copy and decision-critical');
+  assert.ok(touchStart>=0 && typeStart>touchStart);
+  const touchBlock=css.slice(touchStart,typeStart);
+  for(const selector of ['.quant-nav-link','.local-nav a','.segmented button','.signal-learning-grid input','.history-chart-callout input','.history-custom-range button','.table-toolbar button','.table-sort']) {
+    assert.match(touchBlock,new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+  }
+  assert.match(touchBlock,/min-height:\s*44px/);
+  const typeBlock=css.slice(typeStart,css.indexOf('@media (prefers-reduced-motion',typeStart));
+  for(const selector of ['.phase-badge','.signal-settings-status','.history-series-controls button','.chart-meta-strip b','.history-chart-callout dd','thead th']) {
+    assert.match(typeBlock,new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+  }
+  assert.match(typeBlock,/font-size:\s*\.75rem/);
+  assert.match(typeBlock,/\.line-end-label,[\s\S]*?font-size:\s*12px/);
+});
+
 test('initial theme and every segmented control are synchronized through aria-pressed',async()=>{
   const app=await read('assets/app.js');
   assert.match(app,/function setTheme/);
