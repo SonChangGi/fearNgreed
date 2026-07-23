@@ -19,6 +19,7 @@ test('dashboard exposes one unified scenario control surface with pressed state'
   assert.match(html,/<details id="analysis-settings" class="analysis-config"/);
   assert.match(html,/id="analysis-config-summary"/);
   assert.ok(html.indexOf('id="conclusion"') < html.indexOf('id="analysis-settings"'),"results must precede detailed settings");
+  assert.ok(html.indexOf('aria-label="핵심 차트"') < html.indexOf('id="analysis-settings"'),"core charts must precede detailed settings");
   for(const id of ['signal-settings-form','signal-lookback-input','signal-min-r2-input','signal-tail-input','signal-max-holding-input','signal-settings-status']) assert.match(html,new RegExp(`id="${id}"`));
   assert.match(html,/id="linked-strategy-rule"/);
   assert.match(app,/robust: "scaled_huber"/);
@@ -209,6 +210,21 @@ test('common design controls and decision-critical chart metadata keep practical
   assert.match(typeBlock,/\.line-end-label,[\s\S]*?font-size:\s*12px/);
 });
 
+test('common design v1.2 keeps compact typography and one closed operations surface',async()=>{
+  const [html,css,app]=await Promise.all([read('index.html'),read('assets/styles.css'),read('assets/app.js')]);
+  assert.match(css,/body\s*\{[\s\S]*?font-size:\s*15px;[\s\S]*?line-height:\s*1\.55;/);
+  assert.match(css,/\.hero h1\s*\{[^}]*font-size:\s*clamp\(2rem,\s*4vw,\s*3\.25rem\)/);
+  assert.match(css,/\.section-head h2\s*\{[^}]*font-size:\s*clamp\(1\.35rem,\s*2\.3vw,\s*1\.8rem\)/);
+  assert.doesNotMatch(css,/font-weight:\s*(?:8\d\d|9\d\d)/);
+  assert.match(css,/\.quant-nav-link\.is-active[^}]*color:\s*var\(--primary-strong\)[^}]*background:\s*var\(--primary-soft\)/);
+  assert.equal((html.match(/id="status-detail-summary"/g)||[]).length,1);
+  assert.match(html,/<details class="card research-details" id="method">[\s\S]*?id="status-detail-summary">데이터 · 출처 · 운영 상세/);
+  assert.ok(html.indexOf('id="quality-strip"') > html.indexOf('id="method"'));
+  assert.ok(html.indexOf('id="flow-channels"') > html.indexOf('id="method"'));
+  for(const phrase of ['전체 분석 다시 계산','차트 선택은 평가 종료일 성과를 바꾸지 않습니다','현재 전략 신호에는 개인 수급 채널이 반영됩니다','정책 외의 모든 입력은 동일하게 유지됩니다']) assert.doesNotMatch(html,new RegExp(phrase));
+  for(const phrase of ['브라우저 과거전용 사용자 시나리오','다시 계산하는 중입니다','경량 공개 계약']) assert.doesNotMatch(app,new RegExp(phrase));
+});
+
 test('initial theme and every segmented control are synchronized through aria-pressed',async()=>{
   const app=await read('assets/app.js');
   assert.match(app,/function setTheme/);
@@ -245,9 +261,9 @@ test('frontend freshness precedence executes server flags and the automation wat
   assert.equal(effectiveStatus({...base,status:{...base.status,state:'unavailable',expectedDataAsOf:'2020-01-03',sourceFreshnessPassed:false}}),'unavailable');
 });
 
-test('frontend displays the official expected session when it differs',async()=>{
+test('frontend keeps a compact expected-session warning with operational detail',async()=>{
   const app=await read('assets/app.js');
-  assert.match(app,/공식 기대일/);
+  assert.match(app,/· 기대 \$\{expectedDataAsOf\}/);
   assert.match(app,/공식 최신 완료 세션/);
   assert.match(app,/자동 갱신 마지막 성공/);
 });
@@ -275,7 +291,7 @@ test('absolute-flow and scale-adjusted signals are selectable tracks inside one 
   assert.match(app,/function eventModelKind\(\)[\s\S]*?return store\.model/);
   assert.match(html,/SELECTED RESEARCH TRACK · EVENT STUDY/);
   assert.match(html,/신호일 종가→h일 종가/);
-  assert.match(app,/사건: \$\{esc\(store\.eventAsset\)\} \$\{esc\(compactModelName\(eventModelKind\(\)\)\)\}/);
+  assert.match(app,/\$\{esc\(store\.eventAsset\)\} · \$\{esc\(sampleLabel\)\} · \$\{esc\(pairLabel\(store\.backtestProxy, true\)\)\}/);
 });
 
 test('mobile jump buttons leave the fixed overlay layer and light muted text keeps contrast',async()=>{
@@ -442,8 +458,8 @@ test('integrated history uses readable axes, explicit policy lanes, and only vis
 test('chart selection snapshot is dynamic while period-end cards and tables stay fixed',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
   for(const id of ['history-selected-snapshot','history-selected-title','history-selected-content','history-chart-callout','history-chart-date','history-callout-series','history-callout-value','history-data-date','history-evaluation-date']) assert.match(html,new RegExp(`id="${id}"`));
-  assert.match(html,/가리키면 날짜를 미리 보고, 클릭·탭·화살표 키로 고정합니다/);
-  assert.match(html,/차트 선택은 평가 종료일 성과를 바꾸지 않습니다/);
+  assert.match(html,/가리켜 미리 보고 클릭·탭·화살표 키로 선택일을 고정합니다/);
+  assert.doesNotMatch(html,/차트 선택은 평가 종료일 성과를 바꾸지 않습니다/);
   assert.match(html,/평가 종료일 성과/);
   assert.match(app,/function renderHistorySelectedSnapshot/);
   assert.match(app,/function historySeriesValueText/);
@@ -498,7 +514,7 @@ test('signal settings atomically refit signals, events and strategy with bounded
   assert.match(app,/recomputeDynamicResearch\(\);[\s\S]*?resultsForPolicySelection/);
   assert.match(app,/maxHoldDays: store\.signalMaxHolding/);
   assert.match(app,/runDynamicEventStudy/);
-  assert.match(app,/information cutoff|정보만으로 전체 신호/);
+  assert.match(app,/historyScenario\?\.pastOnly !== true/);
 });
 
 test('integrated controls fail closed before load and keep selected-date diagnostics consistent',async()=>{
@@ -521,7 +537,6 @@ test('integrated controls fail closed before load and keep selected-date diagnos
 test('normalized benchmark equity and future flow channels remain explicit and fail closed',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   assert.match(html,/id="flow-channels"/);
-  assert.match(html,/개인·외국인·기관 채널/);
   assert.match(app,/commonBenchmarkEquity/);
   assert.match(app,/function hydratedEquityRows/);
   assert.match(app,/flowChannels\?\.channels/);
@@ -530,6 +545,5 @@ test('normalized benchmark equity and future flow channels remain explicit and f
   assert.match(app,/낮음 · 거래 미사용/);
   assert.match(app,/collecting \? "수집 중"/);
   assert.match(app,/collecting \? "표본 부족"/);
-  assert.match(html,/현재 전략 신호에는 개인 수급 채널이 반영됩니다/);
-  assert.match(app,/거래 상세 행은 경량 공개 계약에서 생략되었습니다/);
+  assert.match(app,/선택 조합의 거래 상세가 없습니다/);
 });

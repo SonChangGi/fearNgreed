@@ -204,7 +204,7 @@ test("latest-following custom ranges advance every connected output while fixed 
   assert.equal(migratedDocument.querySelector("#history-start").value, start);
   assert.equal(migratedDocument.querySelector("#history-end").value, CONFIRMED_DATA_AS_OF);
   assert.match(migratedDocument.querySelector("#history-range-status").textContent, /사용자 지정 · 최신일 자동 추종/);
-  assert.match(migratedDocument.querySelector("#asof").textContent, new RegExp(`평가 종료일 ${koreanDate(CONFIRMED_DATA_AS_OF)}`));
+  assert.match(migratedDocument.querySelector("#asof").textContent, new RegExp(`평가 ${CONFIRMED_DATA_AS_OF} · 데이터 ${CONFIRMED_DATA_AS_OF}`));
   assert.match(migratedDocument.querySelector("#backtest-card-subtitle").textContent, new RegExp(`평가 종료일 ${CONFIRMED_DATA_AS_OF}`));
   assert.match(migratedDocument.querySelector("#open-trade-subtitle").textContent, new RegExp(`${CONFIRMED_DATA_AS_OF} 종가 평가`));
   assert.match(migratedDocument.querySelector("#history-data-table").textContent, new RegExp(CONFIRMED_DATA_AS_OF));
@@ -224,7 +224,7 @@ test("latest-following custom ranges advance every connected output while fixed 
   const fixedDocument = fixed.document;
   assert.equal(fixedDocument.querySelector("#history-end").value, historicalEnd);
   assert.match(fixedDocument.querySelector("#history-range-status").textContent, /사용자 지정 · 종료일 고정/);
-  assert.match(fixedDocument.querySelector("#asof").textContent, /평가 종료일 2026년 7월 14일/);
+  assert.match(fixedDocument.querySelector("#asof").textContent, /평가 2026-07-14 · 데이터 2026-07-22/);
   assert.match(fixedDocument.querySelector("#backtest-card-subtitle").textContent, /평가 종료일 2026-07-14/);
   assert.match(fixedDocument.querySelector("#open-trade-subtitle").textContent, /2026-07-14 종가 평가/);
   assert.equal(fixedDocument.querySelector("#history-follow-latest").hidden, false);
