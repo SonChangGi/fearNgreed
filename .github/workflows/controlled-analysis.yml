@@ -1,0 +1,350 @@
+name: Controlled Fear & Greed Analysis
+run-name: Controlled Fear & Greed · ${{ inputs.control_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      analysis_inputs_json:
+        description: Complete canonical JSON object containing all 17 Fear & Greed control fields
+        required: true
+        type: string
+      allow_fallback:
+        description: Must remain false for a controlled run
+        required: true
+        default: false
+        type: boolean
+      control_run_id:
+        description: Common control API run id
+        required: true
+        type: string
+      control_input_schema_version:
+        description: Server-authoritative input schema version
+        required: true
+        type: string
+      control_input_schema_hash:
+        description: Server-authoritative input schema hash
+        required: true
+        type: string
+      control_config_hash_algorithm:
+        description: Server-authoritative config hash algorithm
+        required: true
+        type: string
+      control_config_hash:
+        description: Server-authoritative normalized config hash
+        required: true
+        type: string
+
+# A controlled result is a production Pages publication. Sharing the existing
+# Pages group prevents a scheduled/public deploy from racing this exact-byte
+# publication.
+concurrency:
+  group: fearngreed-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  analyze:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    steps:
+      - name: Require the production worker branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
+            echo "Controlled Fear & Greed publication is restricted to main." >&2
+            exit 1
+          fi
+
+      - name: Check out the requested worker revision
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Record the analysis code revision
+        id: code
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install the locked project
+        run: |
+          npm ci
+          uv sync --locked
+
+      - name: Validate the protected analysis and presentation contracts
+        run: |
+          uv run --frozen pytest
+          uv run --frozen ruff check .
+          uv run --frozen python -m fearngreed.verify
+          npm test
+
+      - name: Validate the full request and run the existing Python engine
+        id: result
+        env:
+          ANALYSIS_INPUTS_JSON: ${{ inputs.analysis_inputs_json }}
+          CONTROL_RUN_ID: ${{ inputs.control_run_id }}
+          CONTROL_INPUT_SCHEMA_VERSION: ${{ inputs.control_input_schema_version }}
+          CONTROL_INPUT_SCHEMA_HASH: ${{ inputs.control_input_schema_hash }}
+          CONTROL_CONFIG_HASH_ALGORITHM: ${{ inputs.control_config_hash_algorithm }}
+          CONTROL_CONFIG_HASH: ${{ inputs.control_config_hash }}
+          ALLOW_FALLBACK: ${{ inputs.allow_fallback }}
+          ANALYSIS_SHA: ${{ steps.code.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${ALLOW_FALLBACK}" != "false" ]]; then
+            echo "Controlled analysis does not permit fallback inputs or data." >&2
+            exit 1
+          fi
+          if [[ "${CONTROL_INPUT_SCHEMA_VERSION}" != "fear-greed/control-inputs-v1" ]] \
+            || [[ "${CONTROL_INPUT_SCHEMA_HASH}" != "70df5e68d4ecae4ad93fa410ccd74f2a12ee3d2ca0bfcba2ae2074de284c2e61" ]] \
+            || [[ "${CONTROL_CONFIG_HASH_ALGORITHM}" != "fear-greed-json-sort-keys-sha256-v1" ]]; then
+            echo "The server control-input contract does not match this worker revision." >&2
+            exit 1
+          fi
+          uv run --frozen python -m fearngreed.control_run \
+            --analysis-inputs-json "${ANALYSIS_INPUTS_JSON}" \
+            --control-run-id "${CONTROL_RUN_ID}" \
+            --control-input-schema-version "${CONTROL_INPUT_SCHEMA_VERSION}" \
+            --control-input-schema-hash "${CONTROL_INPUT_SCHEMA_HASH}" \
+            --control-config-hash-algorithm "${CONTROL_CONFIG_HASH_ALGORITHM}" \
+            --control-config-hash "${CONTROL_CONFIG_HASH}" \
+            --allow-fallback "${ALLOW_FALLBACK}" \
+            --code-version "github:SonChangGi/fearNgreed@${ANALYSIS_SHA}" \
+            --root . \
+            --output-dir outputs/controlled-run \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Commit only the immutable controlled result
+        env:
+          ARTIFACT_PATH: ${{ steps.result.outputs.artifact_path }}
+          CONTROL_RUN_ID: ${{ inputs.control_run_id }}
+        run: |
+          set -euo pipefail
+          python3 - "${ARTIFACT_PATH}" "${CONTROL_RUN_ID}" <<'PY'
+          import re
+          import sys
+
+          artifact_path, run_id = sys.argv[1:]
+          safe_run_id = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}", run_id)
+          expected = (
+              rf"data/control-runs/v1/{re.escape(run_id)}/[0-9a-f]{{64}}[.]json"
+          )
+          if safe_run_id is None or re.fullmatch(expected, artifact_path) is None:
+              raise SystemExit("Refusing to stage a non-immutable artifact path")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "${ARTIFACT_PATH}"
+          if git diff --cached --quiet; then
+            git ls-files --error-unmatch -- "${ARTIFACT_PATH}" >/dev/null
+            echo "The exact immutable result is already committed."
+            exit 0
+          fi
+          staged_paths="$(git diff --cached --name-only)"
+          if [[ "${staged_paths}" != "${ARTIFACT_PATH}" ]]; then
+            echo "Controlled publication attempted to stage an unexpected path." >&2
+            exit 1
+          fi
+          git commit -m "Publish bound Fear & Greed result ${CONTROL_RUN_ID}"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            git pull --rebase --autostash origin main
+            sleep $((attempt * 10))
+          done
+          echo "Failed to publish the controlled result after three attempts." >&2
+          exit 1
+
+      - name: Build the exact public site
+        run: |
+          uv run --frozen python -m fearngreed.site --output dist
+          uv run --frozen python -c "from pathlib import Path; from fearngreed.security import scan_public_files; assert not scan_public_files(Path('.'))"
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the exact public site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy the exact public site
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Verify the exact public artifact bytes
+        env:
+          ARTIFACT_URL: ${{ steps.result.outputs.artifact_url }}
+          EXPECTED_SHA256: ${{ steps.result.outputs.artifact_sha256 }}
+          EXPECTED_BYTES: ${{ steps.result.outputs.artifact_byte_size }}
+        run: |
+          set -euo pipefail
+          public_artifact="${RUNNER_TEMP}/fear-greed-controlled-result.json"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error \
+              --proto '=https' \
+              --header "Cache-Control: no-cache" \
+              "${ARTIFACT_URL}?control_run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              --output "${public_artifact}"; then
+              observed_sha="$(sha256sum "${public_artifact}" | cut -d ' ' -f 1)"
+              observed_bytes="$(wc -c < "${public_artifact}" | tr -d ' ')"
+              if [[ "${observed_sha}" = "${EXPECTED_SHA256}" ]] \
+                && [[ "${observed_bytes}" = "${EXPECTED_BYTES}" ]]; then
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+          echo "Public Pages artifact did not become byte-identical within ten minutes." >&2
+          exit 1
+
+      - name: Publish the verified result manifest to the control API
+        env:
+          CONTROL_RUN_ID: ${{ inputs.control_run_id }}
+          MANIFEST_PATH: ${{ steps.result.outputs.manifest_path }}
+          QUANT_CONTROL_API_BASE_URL: ${{ secrets.QUANT_CONTROL_API_BASE_URL }}
+          QUANT_CONTROL_WORKER_CALLBACK_TOKEN: ${{ secrets.QUANT_CONTROL_WORKER_CALLBACK_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${QUANT_CONTROL_API_BASE_URL}" ]] \
+            || [[ -z "${QUANT_CONTROL_WORKER_CALLBACK_TOKEN}" ]]; then
+            echo "Controlled runs require API base and worker callback secrets." >&2
+            exit 1
+          fi
+          callback_base="$(
+            python3 - <<'PY'
+          import os
+          from urllib.parse import urlsplit, urlunsplit
+
+          raw = os.environ["QUANT_CONTROL_API_BASE_URL"]
+          parsed = urlsplit(raw)
+          if (
+              raw != raw.strip()
+              or parsed.scheme != "https"
+              or not parsed.hostname
+              or parsed.username
+              or parsed.password
+              or parsed.query
+              or parsed.fragment
+          ):
+              raise SystemExit(
+                  "Control callback URL must be an HTTPS base without "
+                  "credentials, query, or fragment"
+              )
+          print(urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", "")))
+          PY
+          )"
+          callback_url="${callback_base}/v1/internal/runs/${CONTROL_RUN_ID}/result-manifest"
+          curl --fail-with-body --silent --show-error \
+            --proto '=https' \
+            --connect-timeout 10 \
+            --max-time 30 \
+            --request POST \
+            --header "Authorization: Bearer ${QUANT_CONTROL_WORKER_CALLBACK_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data-binary "@${MANIFEST_PATH}" \
+            "${callback_url}"
+
+      - name: Report a controlled-run failure
+        if: ${{ always() && failure() }}
+        continue-on-error: true
+        env:
+          CONTROL_RUN_ID: ${{ inputs.control_run_id }}
+          CONTROL_INPUT_SCHEMA_VERSION: ${{ inputs.control_input_schema_version }}
+          CONTROL_INPUT_SCHEMA_HASH: ${{ inputs.control_input_schema_hash }}
+          CONTROL_CONFIG_HASH_ALGORITHM: ${{ inputs.control_config_hash_algorithm }}
+          CONTROL_CONFIG_HASH: ${{ inputs.control_config_hash }}
+          QUANT_CONTROL_API_BASE_URL: ${{ secrets.QUANT_CONTROL_API_BASE_URL }}
+          QUANT_CONTROL_WORKER_CALLBACK_TOKEN: ${{ secrets.QUANT_CONTROL_WORKER_CALLBACK_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${QUANT_CONTROL_API_BASE_URL}" ]] \
+            || [[ -z "${QUANT_CONTROL_WORKER_CALLBACK_TOKEN}" ]]; then
+            echo "Cannot report the worker failure without API callback secrets." >&2
+            exit 0
+          fi
+          failure_manifest="${RUNNER_TEMP}/fear-greed-controlled-failure.json"
+          callback_base="$(
+            python3 - "${failure_manifest}" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+          from urllib.parse import urlsplit, urlunsplit
+
+          output_path = sys.argv[1]
+          run_id = os.environ["CONTROL_RUN_ID"]
+          raw_callback_base = os.environ["QUANT_CONTROL_API_BASE_URL"]
+          parsed_callback_base = urlsplit(raw_callback_base)
+          if (
+              raw_callback_base != raw_callback_base.strip()
+              or parsed_callback_base.scheme != "https"
+              or not parsed_callback_base.hostname
+              or parsed_callback_base.username
+              or parsed_callback_base.password
+              or parsed_callback_base.query
+              or parsed_callback_base.fragment
+          ):
+              raise SystemExit(
+                  "Control callback URL must be an HTTPS base without "
+                  "credentials, query, or fragment"
+              )
+          payload = {
+              "binding": {
+                  "projectId": "fear-greed",
+                  "runId": run_id,
+                  "inputSchemaVersion": os.environ["CONTROL_INPUT_SCHEMA_VERSION"],
+                  "inputSchemaHash": os.environ["CONTROL_INPUT_SCHEMA_HASH"],
+                  "configHashAlgorithm": os.environ["CONTROL_CONFIG_HASH_ALGORITHM"],
+                  "configHash": os.environ["CONTROL_CONFIG_HASH"],
+              },
+              "errorCode": "worker_workflow_failed",
+              "errorMessage": (
+                  "Controlled Fear & Greed workflow failed before publishing "
+                  "a byte-verified result."
+              ),
+              "providerRunId": f"github-actions:{run_id}",
+              "occurredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          with open(output_path, "w", encoding="utf-8") as output:
+              json.dump(payload, output, ensure_ascii=False, separators=(",", ":"))
+          print(
+              urlunsplit(
+                  (
+                      "https",
+                      parsed_callback_base.netloc,
+                      parsed_callback_base.path.rstrip("/"),
+                      "",
+                      "",
+                  )
+              )
+          )
+          PY
+          )"
+          callback_url="${callback_base}/v1/internal/runs/${CONTROL_RUN_ID}/failure"
+          curl --fail-with-body --silent --show-error \
+            --proto '=https' \
+            --connect-timeout 10 \
+            --max-time 30 \
+            --request POST \
+            --header "Authorization: Bearer ${QUANT_CONTROL_WORKER_CALLBACK_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data-binary "@${failure_manifest}" \
+            "${callback_url}"

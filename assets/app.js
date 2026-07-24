@@ -18,12 +18,20 @@ import {
   svgPointToClient
 } from "./chart-navigation.js?v=20260724-chart-coordinate-v13";
 import { createHistoryChartState } from "./history-chart-state.js?v=20260722-fear-chart-v19";
+import {
+  FearControlApiClient,
+  sameControlInputs
+} from "./control-api.js?v=20260724-fear-control-v1";
 
 const THEME_STORAGE_KEY = "quant-research-theme";
 const LEGACY_THEME_STORAGE_KEYS = ["quant-calm-theme", "quant-dashboard-theme", "dram-price-theme"];
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const historyChartState = createHistoryChartState();
+const controlApiClient = new FearControlApiClient();
+const CONTROL_API_BASE_STORAGE_KEY = "fearngreed-control-api-base-v1";
+let verifiedControlArtifact = null;
+let controlRunPending = false;
 
 const labels = {
   extreme_fear: "극단적 공포", fear: "공포", neutral: "중립", greed: "탐욕", extreme_greed: "극단적 탐욕",
@@ -204,6 +212,36 @@ let store = {
   ...DEFAULT_CONTROLS
 };
 
+function currentControlInputs() {
+  return Object.fromEntries(Object.keys(DEFAULT_CONTROLS).map((key) => [key, store[key]]));
+}
+
+function boundControlArtifact() {
+  return verifiedControlArtifact
+    && sameControlInputs(currentControlInputs(), verifiedControlArtifact.effectiveInputs)
+    ? verifiedControlArtifact
+    : null;
+}
+
+function controlAuthority() {
+  if (controlRunPending) return "pending";
+  return boundControlArtifact() ? "verified-bound" : "draft";
+}
+
+function renderControlAuthority() {
+  const badge = $("#control-result-authority");
+  if (!badge) return;
+  const authority = controlAuthority();
+  badge.dataset.state = authority;
+  badge.textContent = ({
+    draft: "브라우저 미리보기",
+    pending: "Python 분석 중",
+    "verified-bound": "Python 검증 결과"
+  })[authority];
+  const runButton = $("#control-api-run");
+  if (runButton) runButton.disabled = controlRunPending || !controlApiClient.connected || !store.history;
+}
+
 async function loadJson(path) {
   const response = await fetch(path, { cache: "no-store" });
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
@@ -306,7 +344,22 @@ function entity() {
 }
 
 function activeHistoryRows() {
-  return store.activeSeries || store.history?.series || [];
+  const rows = store.activeSeries || store.history?.series || [];
+  const artifact = boundControlArtifact();
+  if (!artifact?.signals?.length) return rows;
+  const verifiedByDate = new Map(artifact.signals.map((signal) => [signal.date, signal]));
+  return rows.map((row) => {
+    const verified = verifiedByDate.get(row.date);
+    return verified
+      ? {
+        ...row,
+        dynamicSignal: {
+          ...verified,
+          calculationSource: "python_control_api_verified"
+        }
+      }
+      : row;
+  });
 }
 
 function selectedAnalysisRow() {
@@ -399,7 +452,17 @@ function primaryModelKind() {
 function modelPayload(kind = store.model) {
   const base = kind === store.model ? analysisEntity() : entity();
   const dynamic = kind === store.model ? selectedAnalysisRow()?.dynamicSignal : null;
-  if (dynamic) return { ...base, ...dynamic, model: kind, calculationSource: "browser_past_only_refit" };
+  if (dynamic) {
+    const browserRefit = {
+      ...base,
+      ...dynamic,
+      model: kind,
+      calculationSource: "browser_past_only_refit"
+    };
+    return dynamic.calculationSource
+      ? { ...browserRefit, calculationSource: dynamic.calculationSource }
+      : browserRefit;
+  }
   const published = store.dashboard?.models?.[kind] || base.models?.[kind] || store.history?.models?.[kind];
   if (published) return { ...base, ...published, model: kind };
   if (kind === "scaled") return {
@@ -1884,6 +1947,11 @@ function renderResidual() {
 }
 
 function selectedEventSection() {
+  const verified = boundControlArtifact();
+  if (verified?.event) {
+    latestEventError = null;
+    return verified.event;
+  }
   if (!store.history || !activeHistoryRows().length) return null;
   const { startDate, endDate } = selectedWindowBounds();
   const key = [store.summary?.dataAsOf, store.model, store.signalLookback, store.signalMinimumR2, store.signalExtremeTail, store.eventAsset, store.eventSample, startDate, endDate].join("|");
@@ -1982,7 +2050,7 @@ function renderEvents() {
   $("#event-table caption").textContent = `${store.eventAsset} ${sampleLabel} 신호일 종가 기준 선행수익률`;
   const modelKind = eventModelKind();
   const bootstrap = section?.bootstrap || {};
-  const bootstrapLabel = `${bootstrap.samples || 10_000}회 결정론적 iid bootstrap`;
+  const bootstrapLabel = `${bootstrap.samples || 10_000}회 결정론적 ${bootstrap.method === "moving_block" ? "moving-block" : "iid"} bootstrap`;
   $("#event-model-scope").textContent = `${modelRole(modelKind)} · ${compactModelName(modelKind)}`;
   $("#event-model-scope").className = `scope-badge ${modelKind === "raw" ? "raw" : modelKind === "robust" ? "practical" : "baseline"}`;
   $("#event-source-line").textContent = `${store.eventAsset} · 신호일 종가→h일 종가 · ${sampleLabel} · ${compactModelName(modelKind)} · ${bootstrapLabel}`;
@@ -2152,6 +2220,20 @@ function applySynchronousControlChange(mutate, render = renderAll) {
 }
 
 function scenarioResultFor(policyId, { proxy, period, variant, cost }) {
+  const verified = boundControlArtifact();
+  const verifiedInputs = verified?.effectiveInputs;
+  if (
+    verified?.strategy
+    && proxy === verifiedInputs.backtestProxy
+    && period === verifiedInputs.backtestPeriod
+    && variant === verifiedInputs.backtestVariant
+    && Number(cost) === Number(verifiedInputs.backtestCost)
+  ) {
+    const result = policyId === "long_inverse_cash"
+      ? verified.strategy.longInverse
+      : verified.strategy.longCash;
+    return result ? { ...result, calculationSource: "python_control_api_verified" } : null;
+  }
   if (policyId === "long_inverse_cash" && variant === "disparity") return null;
   const { startDate, endDate } = selectedWindowBounds();
   const key = [store.summary?.dataAsOf, policyId, proxy, period, variant, cost, store.longExitPercentile, store.signalLookback, store.signalMinimumR2, store.signalExtremeTail, store.signalMaxHolding, startDate, endDate].join("|");
@@ -2219,6 +2301,11 @@ function ensureBacktestSelection() {
 
 function renderProxyComparison() {
   const card = $("#proxy-comparison-card");
+  if (boundControlArtifact()) {
+    card.hidden = true;
+    $("#proxy-comparison").innerHTML = "";
+    return;
+  }
   const comparisonPolicy = store.backtestPolicy === "long_cash" ? "long_cash" : "long_inverse_cash";
   const results = ["1x", "2x"].map((pairId) => ({ pairId, result: scenarioResultFor(comparisonPolicy, { proxy: pairId, period: "common", variant: store.backtestVariant, cost: store.backtestCost }) })).filter(({ result }) => result?.metrics);
   if (results.length !== 2) {
@@ -2249,7 +2336,9 @@ function renderProxyComparison() {
 }
 
 function resultSourceLabel(result) {
-  return result?.calculationSource === "server_verified_default" ? "검증 기본값" : "사용자 설정";
+  if (result?.calculationSource === "python_control_api_verified") return "Python 검증";
+  if (result?.calculationSource === "server_verified_default") return "검증 기본값";
+  return "브라우저 미리보기";
 }
 
 function renderPolicyComparison(longCash, longInverse) {
@@ -2929,6 +3018,94 @@ function resetControls() {
   }
 }
 
+function controlApiStatus(message, state = "") {
+  const status = $("#control-api-status");
+  if (!status) return;
+  status.textContent = message;
+  status.dataset.state = state;
+}
+
+function initializeControlApiPanel() {
+  const baseInput = $("#control-api-base");
+  try {
+    baseInput.value = localStorage.getItem(CONTROL_API_BASE_STORAGE_KEY) || "";
+  } catch (_) {
+    baseInput.value = "";
+  }
+  $("#control-api-connect").addEventListener("click", async () => {
+    const tokenInput = $("#control-api-token");
+    const connectButton = $("#control-api-connect");
+    connectButton.disabled = true;
+    controlApiStatus("입력 계약을 확인하는 중…", "pending");
+    try {
+      await controlApiClient.connect(baseInput.value, tokenInput.value);
+      try { localStorage.setItem(CONTROL_API_BASE_STORAGE_KEY, baseInput.value.trim()); } catch (_) { /* base persistence is optional */ }
+      tokenInput.value = "";
+      $("#control-api-disconnect").hidden = false;
+      controlApiStatus("연결됨 · Owner token은 이 탭의 메모리에만 유지됩니다.", "ok");
+    } catch (error) {
+      controlApiClient.disconnect();
+      controlApiStatus(error instanceof Error ? error.message : "Control API에 연결하지 못했습니다.", "error");
+    } finally {
+      connectButton.disabled = false;
+      renderControlAuthority();
+    }
+  });
+  $("#control-api-disconnect").addEventListener("click", () => {
+    controlApiClient.disconnect();
+    $("#control-api-token").value = "";
+    $("#control-api-disconnect").hidden = true;
+    controlApiStatus("연결이 해제되었습니다.", "");
+    renderControlAuthority();
+  });
+  $("#control-api-run").addEventListener("click", async () => {
+    if (!controlApiClient.connected || controlRunPending) return;
+    const requestedInputs = currentControlInputs();
+    controlRunPending = true;
+    setResearchControlsEnabled(false);
+    renderControlAuthority();
+    controlApiStatus("Python 분석 실행을 요청하는 중…", "pending");
+    try {
+      const { artifact } = await controlApiClient.run(requestedInputs, {
+        onStatus: (status) => {
+          const stage = ({
+            queued: "실행 대기",
+            dispatched: "분석 worker 요청 완료",
+            running: "Python 분석 중",
+            validating: "공개 결과 identity 검증 중",
+            published: "결과 결합 중"
+          })[status.status] || status.status;
+          controlApiStatus(stage, "pending");
+        }
+      });
+      if (!sameControlInputs(requestedInputs, currentControlInputs())) {
+        throw new Error("실행 중 화면 입력이 달라져 결과를 적용하지 않았습니다.");
+      }
+      verifiedControlArtifact = artifact;
+      scenarioCache.clear();
+      dynamicEventCache.clear();
+      dynamicEventErrors.clear();
+      latestScenarioError = null;
+      latestEventError = null;
+      renderAll();
+      controlApiStatus(
+        `검증 완료 · ${artifact.summary.signalDate} · ${artifact.resultKey.slice(0, 10)}`,
+        "ok"
+      );
+    } catch (error) {
+      controlApiStatus(
+        `${error instanceof Error ? error.message : "Python 분석 실행에 실패했습니다."} 기존 결과는 유지됩니다.`,
+        "error"
+      );
+    } finally {
+      controlRunPending = false;
+      setResearchControlsEnabled(true);
+      renderControlAuthority();
+    }
+  });
+  renderControlAuthority();
+}
+
 function bindControls() {
   $$('[data-window]').forEach((button) => button.addEventListener("click", () => {
     applySynchronousControlChange(() => {
@@ -3269,11 +3446,13 @@ function renderAll() {
   renderConclusion(scenarioBundle);
   enhanceTables();
   applyTableFilter($("#trade-filter"));
+  renderControlAuthority();
 }
 
 initializeTheme();
 initializeControlState();
 bindControls();
+initializeControlApiPanel();
 bindTableTools();
 initializeSectionNav();
 setResearchControlsEnabled(false);

@@ -11,6 +11,7 @@ session.json
 raw/
 var/
 dist/
+outputs/
 node_modules/
 playwright-report/
 test-results/

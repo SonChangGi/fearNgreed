@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const k="quant-research-theme",a=["quant-calm-theme","quant-dashboard-theme","dram-price-theme"],v=x=>x==="dark"||x==="light",q=new URLSearchParams(location.search).get("theme");let s=null,p=null;try{const c=localStorage.getItem(k);s=v(c)?c:a.map(x=>localStorage.getItem(x)).find(v);if(v(s)&&c!==s)localStorage.setItem(k,s);a.forEach(x=>localStorage.removeItem(x))}catch(_){}try{p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}catch(_){}document.documentElement.dataset.theme=v(q)?q:(s||p||"light")}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260723-fear-common-v1-2">
+  <link rel="stylesheet" href="assets/styles.css?v=20260724-fear-control-v1">
 </head>
 <body id="top">
   <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -231,6 +231,20 @@
       <summary id="status-detail-summary">데이터 · 출처 · 운영 상세</summary>
       <div class="details-grid">
         <section class="span-details operations-status"><h3>운영 상태</h3><p id="status-note">데이터 상태를 읽는 중입니다.</p></section>
+        <section class="span-details control-api-panel" aria-labelledby="control-api-title">
+          <div class="control-api-head">
+            <div><h3 id="control-api-title">Python 검증 실행</h3><p>현재 적용된 분석 입력을 서버 Python 엔진으로 실행합니다.</p></div>
+            <span id="control-result-authority" class="control-authority" data-state="draft">브라우저 미리보기</span>
+          </div>
+          <div class="control-api-fields">
+            <label for="control-api-base">Control API<input id="control-api-base" type="url" inputmode="url" autocomplete="url" placeholder="https://api.example.com"></label>
+            <label for="control-api-token">Owner token<input id="control-api-token" type="password" autocomplete="off" spellcheck="false"></label>
+            <button id="control-api-connect" type="button">연결</button>
+            <button id="control-api-disconnect" type="button" hidden>해제</button>
+            <button id="control-api-run" class="control-api-run" type="button" disabled>Python으로 실행</button>
+          </div>
+          <p id="control-api-status" class="control-api-status" role="status" aria-live="polite">API 주소와 Owner token을 연결하면 실행할 수 있습니다.</p>
+        </section>
         <section class="span-details operations-quality"><h3>데이터 · 계산 정보</h3><div id="quality-strip" class="quality-strip" aria-live="polite"></div></section>
         <section class="span-details operations-quality"><h3>보조 지표</h3><div id="secondary-metrics" class="metric-grid secondary-metric-grid" aria-live="polite"></div></section>
         <details class="span-details signal-bridge-card" aria-labelledby="signal-bridge-title">
@@ -266,6 +280,6 @@
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260723-fear-common-v1-2"></script>
+  <script type="module" src="assets/app.js?v=20260724-fear-control-v1"></script>
 </body>
 </html>

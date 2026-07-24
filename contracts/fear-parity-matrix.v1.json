@@ -6,7 +6,7 @@
   "auditedRevision": "e1e1e72",
   "authorities": {
     "canonicalPublishedResult": "python_pipeline_generated_json",
-    "interactiveScenario": "python_control_contract_after_backend_connection",
+    "interactiveScenario": "python_control_artifact_when_exactly_bound",
     "browserPreviewBeforeConnection": "browser_user_scenario_not_result_authority",
     "migrationRule": "fail_closed_until_all_required_paths_are_verified"
   },
@@ -84,7 +84,9 @@
     {"id": "event-asset", "kind": "analysis", "default": "KOSPI", "engine": "signal-engine.js", "affects": ["event"]},
     {"id": "event-sample", "kind": "analysis", "default": "all", "engine": "signal-engine.js", "affects": ["event"]},
     {"id": "reset-controls", "kind": "operation", "default": null, "engine": "app.js", "affects": ["draft_and_applied_browser_state"]},
-    {"id": "share-view", "kind": "operation", "default": null, "engine": "app.js", "affects": ["url_only"]}
+    {"id": "share-view", "kind": "operation", "default": null, "engine": "app.js", "affects": ["url_only"]},
+    {"id": "control-api-connect", "kind": "operation", "default": null, "engine": "control-api.js", "affects": ["capability_validation", "memory_only_owner_token"]},
+    {"id": "control-api-run", "kind": "operation", "default": null, "engine": "control-api.js+control_run.py", "affects": ["atomic_python_verified_signal_event_strategy"]}
   ],
   "paths": [
     {
@@ -171,10 +173,11 @@
     "blockingPathIds": [],
     "requiredBeforeReady": [],
     "connectionRequirements": [
-      "Keep the current browser calculation explicitly preview-only until the Control API result is connected.",
+      "Keep browser calculation explicitly preview-only whenever the exact Control API artifact is not bound.",
       "Accept only complete requests validated by fear-greed/control-inputs-v1.",
-      "Return server-issued configHash, effectiveConfigHash, inputSchemaHash, codeIdentity, dataIdentity, and artifact SHA-256.",
-      "Replace visible signal, event, and strategy results atomically from one Python-bound response."
+      "Bind configHash, effectiveConfigHash, inputSchemaHash, codeIdentity, dataIdentity, artifact SHA-256, and byte size.",
+      "Replace visible signal, event, and strategy results atomically from one Python-bound response.",
+      "Retain the current displayed result after API, worker, publication, or identity verification failure."
     ]
   }
 }
