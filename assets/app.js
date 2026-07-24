@@ -11,7 +11,12 @@ import {
   fitDynamicSignalAt,
   runDynamicEventStudy
 } from "./signal-engine.js?v=20260717-actual-etf-v7";
-import { itemRatioAt, nearestItemIndexByRatio } from "./chart-navigation.js?v=20260720-analysis-usability-v12";
+import {
+  clientPointToSvg,
+  itemRatioAt,
+  nearestItemIndexByRatio,
+  svgPointToClient
+} from "./chart-navigation.js?v=20260724-chart-coordinate-v13";
 import { createHistoryChartState } from "./history-chart-state.js?v=20260722-fear-chart-v19";
 
 const THEME_STORAGE_KEY = "quant-research-theme";
@@ -1006,19 +1011,25 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
   const chartGeometry = () => {
     const svg = chart.querySelector("svg");
     if (!svg) return null;
-    const svgRect = svg.getBoundingClientRect();
     const chartRect = chart.getBoundingClientRect();
     const viewBox = svg.viewBox?.baseVal;
     const width = Number(geometry.viewBoxWidth || viewBox?.width || 1);
+    const height = Number(viewBox?.height || 1);
     const left = Number(geometry.plotLeft ?? 0);
     const right = Number(geometry.plotRight ?? width);
-    return { svgRect, chartRect, width, left, right };
+    return { svg, chartRect, viewBox, width, height, left, right };
   };
   const crosshairLeft = (ratio) => {
     const current = chartGeometry();
     if (!current) return ratio * chart.scrollWidth;
     const viewX = current.left + ratio * (current.right - current.left);
-    return chart.scrollLeft + current.svgRect.left - current.chartRect.left + viewX / current.width * current.svgRect.width;
+    const client = svgPointToClient(current.svg, viewX, current.viewBox?.y || 0, {
+      x: current.viewBox?.x || 0,
+      y: current.viewBox?.y || 0,
+      width: current.width,
+      height: current.height
+    });
+    return client ? chart.scrollLeft + client.x - current.chartRect.left : ratio * chart.scrollWidth;
   };
   const positionCrosshair = () => {
     if (!valid.length) return 0;
@@ -1059,8 +1070,14 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
     if (!valid.length) return;
     const current = chartGeometry();
     if (!current) return;
-    const viewX = (event.clientX - current.svgRect.left) / Math.max(1, current.svgRect.width) * current.width;
-    const ratio = Math.max(0, Math.min(1, (viewX - current.left) / Math.max(1, current.right - current.left)));
+    const pointer = clientPointToSvg(current.svg, event.clientX, event.clientY, {
+      x: current.viewBox?.x || 0,
+      y: current.viewBox?.y || 0,
+      width: current.width,
+      height: current.height
+    });
+    if (!pointer) return;
+    const ratio = Math.max(0, Math.min(1, (pointer.x - current.left) / Math.max(1, current.right - current.left)));
     selectIndex(nearestItemIndexByRatio(valid, ratio, geometry.itemRatio), { x: event.clientX, y: event.clientY }, { commit, phase: commit ? "commit" : "preview" });
   };
   chart.onpointermove = selectPointer;
@@ -1112,6 +1129,7 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
 
 function attachScatterNavigation(chart, items, formatter, viewBox) {
   const valid = items.filter((item) => Number.isFinite(item.plotX) && Number.isFinite(item.plotY));
+  chart._resizeObserver?.disconnect();
   chart._chartItems = valid;
   const currentIndex = valid.findIndex((item) => item.row.role === "current");
   chart._chartIndex = currentIndex >= 0 ? currentIndex : Math.max(0, valid.length - 1);
@@ -1124,20 +1142,26 @@ function attachScatterNavigation(chart, items, formatter, viewBox) {
   const markerPosition = (item) => {
     const svg = chart.querySelector("svg");
     if (!svg) return { left: 0, top: 0 };
-    const svgRect = svg.getBoundingClientRect();
     const chartRect = chart.getBoundingClientRect();
+    const point = svgPointToClient(svg, item.plotX, item.plotY, viewBox);
+    if (!point) return { left: 0, top: 0 };
     return {
-      left: chart.scrollLeft + svgRect.left - chartRect.left + item.plotX / viewBox.width * svgRect.width,
-      top: chart.scrollTop + svgRect.top - chartRect.top + item.plotY / viewBox.height * svgRect.height
+      left: chart.scrollLeft + point.x - chartRect.left,
+      top: chart.scrollTop + point.y - chartRect.top
     };
+  };
+  const positionMarker = () => {
+    if (!valid.length) return;
+    const item = valid[Math.max(0, Math.min(valid.length - 1, chart._chartIndex))];
+    const position = markerPosition(item);
+    marker.style.left = `${position.left}px`;
+    marker.style.top = `${position.top}px`;
   };
   const selectIndex = (index, point = null) => {
     if (!valid.length) return;
     chart._chartIndex = Math.max(0, Math.min(valid.length - 1, index));
     const item = valid[chart._chartIndex];
-    const position = markerPosition(item);
-    marker.style.left = `${position.left}px`;
-    marker.style.top = `${position.top}px`;
+    positionMarker();
     chart.classList.add("is-exploring");
     const text = formatter(item.row, chart._chartIndex);
     showTooltip(chart, text, point);
@@ -1146,13 +1170,12 @@ function attachScatterNavigation(chart, items, formatter, viewBox) {
   const nearestIndex = (event) => {
     const svg = chart.querySelector("svg");
     if (!svg || !valid.length) return -1;
-    const box = svg.getBoundingClientRect();
-    const pointerX = (event.clientX - box.left) / Math.max(1, box.width) * viewBox.width;
-    const pointerY = (event.clientY - box.top) / Math.max(1, box.height) * viewBox.height;
+    const pointer = clientPointToSvg(svg, event.clientX, event.clientY, viewBox);
+    if (!pointer) return -1;
     let nearest = 0;
     let distance = Number.POSITIVE_INFINITY;
     valid.forEach((item, index) => {
-      const candidate = (item.plotX - pointerX) ** 2 + (item.plotY - pointerY) ** 2;
+      const candidate = (item.plotX - pointer.x) ** 2 + (item.plotY - pointer.y) ** 2;
       if (candidate < distance) {
         distance = candidate;
         nearest = index;
@@ -1181,6 +1204,15 @@ function attachScatterNavigation(chart, items, formatter, viewBox) {
     const next = event.key === "Home" ? 0 : event.key === "End" ? valid.length - 1 : chart._chartIndex + (event.key === "ArrowLeft" ? -1 : 1);
     selectIndex(next);
   };
+  positionMarker();
+  requestAnimationFrame(positionMarker);
+  if (typeof ResizeObserver !== "undefined") {
+    const observer = new ResizeObserver(positionMarker);
+    observer.observe(chart);
+    const svg = chart.querySelector("svg");
+    if (svg) observer.observe(svg);
+    chart._resizeObserver = observer;
+  }
 }
 
 function sortableValue(text) {

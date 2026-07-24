@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "contract": "fearngreed-engine-parity-matrix",
+  "projectId": "fearngreed",
+  "methodologyVersion": "fear-flow-v5",
+  "auditedRevision": "e1e1e72",
+  "authorities": {
+    "canonicalPublishedResult": "python_pipeline_generated_json",
+    "interactiveScenario": "python_control_contract_after_backend_connection",
+    "browserPreviewBeforeConnection": "browser_user_scenario_not_result_authority",
+    "migrationRule": "fail_closed_until_all_required_paths_are_verified"
+  },
+  "defaults": {
+    "visibleBrowserScenario": {
+      "window": "ytd",
+      "historyEndMode": "latest",
+      "model": "raw",
+      "eventAsset": "KOSPI",
+      "eventSample": "all",
+      "pairId": "1x",
+      "policy": "compare",
+      "strategyVariant": "raw_ols",
+      "costBps": 10,
+      "priceSample": "common",
+      "longExitPercentile": 80,
+      "lookback": 196,
+      "minimumR2": 0.4,
+      "extremeTail": 2,
+      "maxHolding": 20
+    },
+    "javascriptLibraryWhenCalledWithoutPageOverrides": {
+      "track": "robust",
+      "lookback": 252,
+      "minimumR2": 0.2,
+      "extremeTail": 5,
+      "pairId": "1x",
+      "policy": "long_inverse_cash",
+      "costBps": 10,
+      "period": "pair",
+      "longExitPercentile": 80,
+      "maxHolding": 20,
+      "eventSample": "nonOverlapping20d",
+      "eventHorizons": [1, 5, 10, 20],
+      "eventBootstrapSamples": 10000,
+      "eventBootstrapSeed": 20260715,
+      "eventBootstrapMethod": "iid_seeded_mulberry32"
+    },
+    "pythonCanonicalPipeline": {
+      "track": "robust",
+      "lookback": 252,
+      "minimumObservations": 200,
+      "minimumR2": 0.2,
+      "extremeTail": 5,
+      "costBps": 10,
+      "longExitPercentile": 80,
+      "inverseExitPercentile": 20,
+      "maxHolding": 20,
+      "eventSamples": ["all", "nonOverlapping20d"],
+      "eventHorizons": [1, 5, 10, 20],
+      "eventBootstrapSamples": 10000,
+      "eventBootstrapSeed": 20260715,
+      "eventBootstrapMethod": "moving_block_numpy_pcg64",
+      "eventBenchmark": "all_session_mean_forward_return"
+    }
+  },
+  "visibleControls": [
+    {"id": "theme", "kind": "display", "default": "system_or_saved", "engine": null, "affects": ["presentation"]},
+    {"id": "history-series", "kind": "display", "default": ["long_inverse_cash"], "engine": null, "affects": ["chart_visibility"]},
+    {"id": "history-chart-date", "kind": "display", "default": "evaluation_end", "engine": null, "affects": ["chart_focus"]},
+    {"id": "chart-latest", "kind": "display", "default": "evaluation_end", "engine": null, "affects": ["chart_focus"]},
+    {"id": "table-filter", "kind": "display", "default": "", "engine": null, "affects": ["visible_rows"]},
+    {"id": "table-export", "kind": "operation", "default": null, "engine": null, "affects": ["download_only"]},
+    {"id": "model", "kind": "analysis", "default": "raw", "engine": "signal-engine.js", "affects": ["signal", "event", "strategy"]},
+    {"id": "backtest-policy", "kind": "analysis", "default": "compare", "engine": "strategy-engine.js", "affects": ["strategy"]},
+    {"id": "backtest-pair", "kind": "analysis", "default": "1x", "engine": "strategy-engine.js", "affects": ["strategy"]},
+    {"id": "backtest-cost", "kind": "analysis", "default": 10, "engine": "strategy-engine.js", "affects": ["strategy"]},
+    {"id": "backtest-period", "kind": "analysis", "default": "common", "engine": "strategy-engine.js", "affects": ["strategy"]},
+    {"id": "long-exit-percentile", "kind": "analysis", "default": 80, "engine": "strategy-engine.js", "affects": ["strategy"]},
+    {"id": "signal-lookback", "kind": "analysis", "default": 196, "engine": "signal-engine.js", "affects": ["signal", "event", "strategy"]},
+    {"id": "signal-minimum-r2", "kind": "analysis", "default": 0.4, "engine": "signal-engine.js", "affects": ["signal", "event", "strategy"]},
+    {"id": "signal-extreme-tail", "kind": "analysis", "default": 2, "engine": "signal-engine.js", "affects": ["signal", "event", "strategy"]},
+    {"id": "signal-max-holding", "kind": "analysis", "default": 20, "engine": "strategy-engine.js", "affects": ["strategy"]},
+    {"id": "evaluation-window", "kind": "analysis", "default": "ytd_latest", "engine": "signal-engine.js+strategy-engine.js", "affects": ["event", "strategy", "displayed_signal_date"]},
+    {"id": "event-asset", "kind": "analysis", "default": "KOSPI", "engine": "signal-engine.js", "affects": ["event"]},
+    {"id": "event-sample", "kind": "analysis", "default": "all", "engine": "signal-engine.js", "affects": ["event"]},
+    {"id": "reset-controls", "kind": "operation", "default": null, "engine": "app.js", "affects": ["draft_and_applied_browser_state"]},
+    {"id": "share-view", "kind": "operation", "default": null, "engine": "app.js", "affects": ["url_only"]}
+  ],
+  "paths": [
+    {
+      "id": "rolling-signal-numeric-tail5",
+      "javascript": "assets/signal-engine.js",
+      "python": "src/fearngreed/model.py",
+      "fixtureCases": ["robust-60-tail5", "scaled-60-tail5", "raw-60-tail5"],
+      "resultFields": ["alpha", "beta", "rollingR2", "fitScore", "expected", "residual", "residualZ", "percentile", "quality", "trainingCount", "tradeEligible"],
+      "comparison": {"mode": "absolute_tolerance", "tolerance": 1e-10},
+      "status": "verified"
+    },
+    {
+      "id": "signal-state-variable-extreme-tail",
+      "javascript": "assets/signal-engine.js:classifyDynamicPercentile",
+      "python": "src/fearngreed/control_contract.py:classify_control_percentile",
+      "fixtureCases": ["percentile-5-tail2", "percentile-95-tail2"],
+      "resultFields": ["state"],
+      "comparison": {"mode": "exact"},
+      "status": "verified"
+    },
+    {
+      "id": "actual-etf-strategy-full-path",
+      "javascript": "assets/strategy-engine.js:runActualEtfPairScenario",
+      "python": "src/fearngreed/backtest.py:run_actual_etf_pair_backtest",
+      "fixtureCases": ["1x-long-cash", "1x-long-inverse", "2x-long-cash", "2x-long-inverse"],
+      "resultFields": ["position", "pendingAction", "pendingReason", "pendingSide", "metrics", "trades", "actions", "equity"],
+      "comparison": {"mode": "structural_with_numeric_tolerance", "tolerance": 1e-10},
+      "status": "verified"
+    },
+    {
+      "id": "event-selection-and-forward-return",
+      "javascript": "assets/signal-engine.js:runDynamicEventStudy",
+      "python": "src/fearngreed/events.py:extreme_entries+event_returns",
+      "fixtureCases": ["event-all-kospi-1d-2d"],
+      "resultFields": ["date", "state", "percentile", "return1d", "return2d"],
+      "comparison": {"mode": "structural_with_numeric_tolerance", "tolerance": 1e-12},
+      "status": "verified"
+    },
+    {
+      "id": "event-summary-confidence-interval",
+      "javascript": "preview_only_not_result_authority",
+      "python": "moving_block_numpy_pcg64_with_unconditional_benchmark",
+      "fixtureCases": ["event-all-kospi-1d-2d"],
+      "resultFields": ["meanCi95", "benchmarkMean", "meanExcessReturn", "meanExcessReturnCi95"],
+      "comparison": {"mode": "single_python_result_authority"},
+      "status": "verified"
+    },
+    {
+      "id": "visible-page-default-end-to-end",
+      "javascript": "assets/app.js:DEFAULT_CONTROLS",
+      "python": "src/fearngreed/control_contract.py:normalize_control_inputs",
+      "fixtureCases": ["visible-browser-defaults"],
+      "resultFields": ["requested", "normalized", "effective", "configHash", "inputSchemaHash"],
+      "comparison": {"mode": "exact_config_identity"},
+      "status": "verified"
+    }
+  ],
+  "resultFieldMap": {
+    "signal": {
+      "javascript": ["date", "alpha", "beta", "rollingR2", "fitScore", "expected", "observed", "residual", "residualZ", "percentile", "state", "quality", "trainingCount", "tradeEligible", "fitMethod"],
+      "python": ["date", "alpha", "beta", "rolling_r2", "fit_score", "expected_flow", "flow_share", "residual", "residual_z", "percentile", "state", "quality", "training_count", "trade_eligible", "fit_method"]
+    },
+    "strategy": {
+      "javascript": ["position", "pendingAction", "pendingReason", "pendingSide", "longExitPercentile", "inverseExitPercentile", "metrics", "trades", "actions", "equity", "calculationSource"],
+      "python": ["position", "pending_action", "pending_reason", "pending_side", "long_exit_percentile", "inverse_exit_percentile", "metrics", "trades", "actions", "equity", "calculationSource"]
+    },
+    "event": {
+      "javascript": ["events", "summary", "bootstrap", "informationCutoffDate"],
+      "python": ["events", "summary", "benchmark"],
+      "sharedVerifiedSubset": ["date", "state", "percentile", "forward_returns"],
+      "nonEquivalentFields": ["summary.meanCi95", "summary.benchmarkMean", "summary.meanExcessReturn", "summary.meanExcessReturnCi95"]
+    }
+  },
+  "migrationGate": {
+    "requiredPathIds": [
+      "rolling-signal-numeric-tail5",
+      "signal-state-variable-extreme-tail",
+      "actual-etf-strategy-full-path",
+      "event-selection-and-forward-return",
+      "event-summary-confidence-interval",
+      "visible-page-default-end-to-end"
+    ],
+    "backendMigrationAllowed": true,
+    "blockingPathIds": [],
+    "requiredBeforeReady": [],
+    "connectionRequirements": [
+      "Keep the current browser calculation explicitly preview-only until the Control API result is connected.",
+      "Accept only complete requests validated by fear-greed/control-inputs-v1.",
+      "Return server-issued configHash, effectiveConfigHash, inputSchemaHash, codeIdentity, dataIdentity, and artifact SHA-256.",
+      "Replace visible signal, event, and strategy results atomically from one Python-bound response."
+    ]
+  }
+}

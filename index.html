@@ -38,7 +38,6 @@
       <div class="hero-copy">
         <p class="eyebrow">KOSPI · 개인 수급 · PIT rolling regression</p>
         <h1>Fear &amp; Greed <span>Flow Lab</span></h1>
-        <p class="lede">가격 변화로 설명되는 통상적 개인 수급에서 얼마나 벗어났는지 측정하고, 같은 신호를 실제 ETF로 실행한 성과까지 한 화면에서 비교합니다.</p>
       </div>
       <aside class="status-panel" aria-labelledby="current-state-label">
         <div class="status-top"><span id="status-badge" class="badge degraded">운영 상태 확인 중</span><span id="confidence-badge" class="badge neutral">모형 품질 —</span></div>
@@ -96,9 +95,9 @@
             <div><span id="history-callout-series">강조 그래프</span><strong id="history-callout-value">—</strong><small id="history-callout-context">값을 준비하는 중입니다.</small></div>
             <dl><div><dt>데이터 최신일</dt><dd id="history-data-date">—</dd></div><div><dt>평가 종료일</dt><dd id="history-evaluation-date">—</dd></div></dl>
           </aside>
-          <div id="history-chart" class="chart chart-large unified-strategy-chart" role="img" aria-roledescription="대화형 통합 시계열 차트" aria-label="KOSPI 가격, 종가 신호, 다음 시가 실행과 선택 전략 결과" aria-describedby="history-help" tabindex="0"></div>
+          <div id="history-chart" class="chart chart-large unified-strategy-chart" role="img" aria-roledescription="대화형 통합 시계열 차트" aria-label="KOSPI 가격, 종가 신호, 다음 시가 실행과 선택 전략 결과" aria-describedby="history-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div>
         </div>
-        <p id="history-help" class="chart-help">가리켜 미리 보고 클릭·탭·화살표 키로 선택일을 고정합니다.</p>
+        <p id="history-help" class="sr-only">가리켜 미리 보고 클릭·탭·화살표 키로 선택일을 고정합니다.</p>
         <details class="chart-guide"><summary>신호·체결·전략 상세</summary><div id="history-exposure-note" class="history-exposure-note" aria-live="polite"></div><p>공포 원과 탐욕 마름모는 종가 상태의 첫 관측입니다. 주문은 정책별 레인의 다음 유효 거래일 시가에 표시하고, 같은 시가의 청산과 반대 ETF 매수는 하나의 교체로 표시합니다. 시작 경계 이전 체결은 흐리게 표시합니다.</p></details>
         <details class="data-alternative"><summary>차트 값 표로 보기</summary><div class="table-scroll" id="history-data-table"></div></details>
       </article>
@@ -106,16 +105,16 @@
       <article class="card">
         <div class="card-head"><div><div class="title-with-scope"><h2 id="scatter-title">수익률 × 거래대금 대비 개인 순매수 비율</h2><span id="scatter-model-scope" class="scope-badge">선택 모형</span></div><p id="scatter-subtitle">선택한 과거 전용 학습창 · 회귀선과 현재 잔차</p></div><span class="tag">Relationship</span></div>
         <div class="legend"><span><i class="legend-dot observation"></i>학습 관측</span><span><i class="legend-dot current"></i>평가 종료일 관측</span><span><i class="legend-line regression"></i>회귀선</span><span id="scatter-zone-legend-fear"><i class="legend-zone fear"></i>극단적 공포 영역</span><span id="scatter-zone-legend-greed"><i class="legend-zone greed"></i>극단적 탐욕 영역</span></div>
-        <div id="scatter-chart" class="chart" role="img" aria-roledescription="대화형 산점도" aria-label="KOSPI 수익률과 개인 순매수 산점도" aria-describedby="scatter-help" tabindex="0"></div>
+        <div id="scatter-chart" class="chart" role="img" aria-roledescription="대화형 산점도" aria-label="KOSPI 수익률과 개인 순매수 산점도" aria-describedby="scatter-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div>
         <p id="scatter-note" class="chart-note"></p>
-        <p id="scatter-help" class="chart-help">포인터는 가장 가까운 실제 관측점을 선택합니다. 키보드는 날짜 순서로 좌우 화살표·Home·End를 지원합니다.</p>
+        <p id="scatter-help" class="sr-only">포인터는 가장 가까운 실제 관측점을 선택합니다. 키보드는 날짜 순서로 좌우 화살표·Home·End를 지원합니다.</p>
         <details class="data-alternative"><summary>최근 관측값 표로 보기</summary><div class="table-scroll" id="scatter-data-table"></div></details>
       </article>
 
       <article class="card">
         <div class="card-head"><div><div class="title-with-scope"><h2>선택 트랙 잔차 백분위</h2><span id="residual-model-scope" class="scope-badge practical">분석 설정 연동</span></div><p>선택 평가 기간 · 사용자 극단 경계 · 낮은 적합도는 회색 점선과 거래 차단으로 구분</p></div><button class="latest-button" type="button" data-chart-latest="residual-chart">기간 끝으로</button></div>
-        <div id="residual-chart" class="chart" role="img" aria-roledescription="대화형 시계열 차트" aria-label="규모보정 회귀 잔차의 과거 분포 백분위 시계열" aria-describedby="residual-help" tabindex="0"></div>
-        <p id="residual-help" class="chart-help">화살표 키로 날짜를 이동하고, 좁은 화면에서는 차트만 좌우로 스크롤합니다.</p>
+        <div id="residual-chart" class="chart" role="img" aria-roledescription="대화형 시계열 차트" aria-label="규모보정 회귀 잔차의 과거 분포 백분위 시계열" aria-describedby="residual-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div>
+        <p id="residual-help" class="sr-only">화살표 키로 날짜를 이동하고, 좁은 화면에서는 차트만 좌우로 스크롤합니다.</p>
         <details class="data-alternative"><summary>최근 백분위 표로 보기</summary><div class="table-scroll" id="residual-data-table"></div></details>
       </article>
     </section>
@@ -198,8 +197,8 @@
       <article class="card event-visual-card">
         <div class="card-head"><div><h3>평균 선행수익률과 95% 신뢰구간</h3><p id="event-visual-subtitle">0% 기준선 · 공급된 경우 벤치마크와 초과수익 포함</p></div><span class="tag">Uncertainty</span></div>
         <div class="legend"><span><i class="legend-dot fear"></i>극단 공포 평균</span><span><i class="legend-dot greed"></i>극단 탐욕 평균</span><span><i class="legend-line interval"></i>95% CI</span><span id="event-benchmark-legend"><i class="legend-dot benchmark"></i>비교 벤치마크</span></div>
-        <div id="event-ci-chart" class="chart event-ci-chart" role="img" aria-roledescription="대화형 사건 신뢰구간 차트" aria-label="극단 상태 이후 평균 선행수익률과 95% 신뢰구간" aria-describedby="event-chart-help event-benchmark-note" tabindex="0"></div>
-        <p id="event-chart-help" class="chart-help">포인터로 사건 요약을 확인하고, 키보드는 좌우 화살표·Home·End를 사용합니다.</p>
+        <div id="event-ci-chart" class="chart event-ci-chart" role="img" aria-roledescription="대화형 사건 신뢰구간 차트" aria-label="극단 상태 이후 평균 선행수익률과 95% 신뢰구간" aria-describedby="event-chart-help event-benchmark-note" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div>
+        <p id="event-chart-help" class="sr-only">포인터로 사건 요약을 확인하고, 키보드는 좌우 화살표·Home·End를 사용합니다.</p>
         <p id="event-benchmark-note" class="chart-note"></p>
       </article>
       <article class="card table-card">
@@ -212,7 +211,7 @@
     <section id="strategy" class="section-block" aria-labelledby="strategy-title">
       <div class="section-head"><div><p class="eyebrow">ACTUAL LISTED ETF EXECUTION</p><div class="title-with-scope"><h2 id="strategy-title">롱 / 현금 · 롱 / 인버스 과거검증</h2><span id="strategy-model-scope" class="scope-badge fixed">실전 신호</span></div></div><p class="source-line">실제 ETF 익일 시가 · 사용자 최대 보유일 · 현금 수익률 0%</p></div>
       <div class="strategy-grid">
-        <article class="card secondary-detail-card"><div class="card-head"><div><span class="detail-kicker">PERFORMANCE DETAIL</span><h3 id="equity-title">선택 모형 누적수익률과 낙폭</h3><p id="equity-subtitle">수익률 · 낙폭</p></div><button class="latest-button" type="button" data-chart-latest="equity-chart">기간 끝으로</button></div><div class="legend"><span id="equity-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="equity-legend-long-inverse"><i class="legend-line longshort"></i>롱 / 인버스 / 현금</span><span><i class="legend-line buyhold"></i>롱 ETF 매수·보유</span></div><div id="equity-chart" class="chart chart-stack" role="img" aria-roledescription="대화형 보조 성과 차트" aria-label="선택 실제 ETF 페어의 롱 현금, 롱 인버스 현금, 매수 보유 누적수익률 및 낙폭 상세" aria-describedby="equity-help" tabindex="0"></div><p id="equity-help" class="chart-help">화살표 키로 날짜를 이동합니다.</p><details class="data-alternative"><summary>차트 끝값 표로 보기</summary><div class="table-scroll" id="equity-data-table"></div></details></article>
+        <article class="card secondary-detail-card"><div class="card-head"><div><span class="detail-kicker">PERFORMANCE DETAIL</span><h3 id="equity-title">선택 모형 누적수익률과 낙폭</h3><p id="equity-subtitle">수익률 · 낙폭</p></div><button class="latest-button" type="button" data-chart-latest="equity-chart">기간 끝으로</button></div><div class="legend"><span id="equity-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="equity-legend-long-inverse"><i class="legend-line longshort"></i>롱 / 인버스 / 현금</span><span><i class="legend-line buyhold"></i>롱 ETF 매수·보유</span></div><div id="equity-chart" class="chart chart-stack" role="img" aria-roledescription="대화형 보조 성과 차트" aria-label="선택 실제 ETF 페어의 롱 현금, 롱 인버스 현금, 매수 보유 누적수익률 및 낙폭 상세" aria-describedby="equity-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div><p id="equity-help" class="sr-only">화살표 키로 날짜를 이동합니다.</p><details class="data-alternative"><summary>차트 끝값 표로 보기</summary><div class="table-scroll" id="equity-data-table"></div></details></article>
         <article class="card"><div class="card-head"><div><h3>평가 종료일 성과</h3><p id="backtest-card-subtitle">평가 종료일과 적용 조건을 불러오는 중입니다.</p></div></div><div id="backtest-cards" class="backtest-cards" aria-live="polite"></div></article>
       </div>
       <article id="open-trade-card" class="card open-trade-card" aria-labelledby="open-trade-title">
@@ -252,15 +251,16 @@
           </div>
           <p class="flow-normalization-conclusion">따라서 서버 정식 모형은 순매수율을 “더 옳은 값”이 아니라 <strong>장기 시장 규모 영향을 줄이려는 연구 입력</strong>으로 사용합니다. 페이지는 절대수급 OLS로 시작하며, 세 연구 트랙은 같은 입력 패널에서 언제든 바꿔 볼 수 있습니다.</p>
         </aside>
-        <div><div class="card-head"><div><h3>보조 진단</h3><p>50일 이격도, MDD, 환율·세션 정렬 스프레드를 선택 평가 기간에 맞춰 확인합니다.</p></div><button class="latest-button" type="button" data-chart-latest="diagnostic-chart">기간 끝으로</button></div><dl id="diagnostic-list"></dl><div id="diagnostic-chart" class="chart compact-chart" role="img" aria-roledescription="대화형 상대 스프레드 차트" aria-label="Micron 환율 환산 대비 SK하이닉스 상대 스프레드" aria-describedby="diagnostic-help" tabindex="0"></div><p id="diagnostic-help" class="chart-help">선택 평가 기간과 종료일을 따릅니다. 좌우 화살표·Home·End로 날짜를 확인할 수 있습니다.</p><details class="data-alternative"><summary>선택 기간 상대 진단 표로 보기</summary><div class="table-scroll" id="diagnostic-data-table"></div></details></div>
+        <div><div class="card-head"><div><h3>보조 진단</h3><p>50일 이격도, MDD, 환율·세션 정렬 스프레드를 선택 평가 기간에 맞춰 확인합니다.</p></div><button class="latest-button" type="button" data-chart-latest="diagnostic-chart">기간 끝으로</button></div><dl id="diagnostic-list"></dl><div id="diagnostic-chart" class="chart compact-chart" role="img" aria-roledescription="대화형 상대 스프레드 차트" aria-label="Micron 환율 환산 대비 SK하이닉스 상대 스프레드" aria-describedby="diagnostic-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div><p id="diagnostic-help" class="sr-only">선택 평가 기간과 종료일을 따릅니다. 좌우 화살표·Home·End로 날짜를 확인할 수 있습니다.</p><details class="data-alternative"><summary>선택 기간 상대 진단 표로 보기</summary><div class="table-scroll" id="diagnostic-data-table"></div></details></div>
         <div><h3>분석 결과 연결 방식</h3><p>사건 연구는 신호일 종가, 전략은 다음 ETF 시가 체결 기준입니다. 절대수급 OLS는 명목 원화 수급을, 규모보정 OLS와 강건 회귀는 거래대금 대비 수급 강도를 측정합니다.</p><a class="text-link" href="docs/methodology.md">전체 계산 방법 →</a></div>
+        <section class="span-details"><h3>연구 범위</h3><p>비상업적 개인 연구 · 투자 권유 아님 · 출처: 한국거래소 통계정보, pykrx, yfinance</p></section>
         <div class="span-details operations-links" aria-label="데이터와 운영 링크"><a href="data/summary.json">허브 요약</a><a href="data/live-signal.json">당일 잠정 신호</a><a href="data/dashboard.json">대시보드 데이터</a><a href="data/history.json">시계열 데이터</a><a href="data/strategy-comparison.json">전략 비교 데이터</a><a href="data/automation-status.json">자동화 상태</a><a href="docs/methodology.md">방법론</a><a href="https://github.com/SonChangGi/fearNgreed/actions">갱신 기록</a></div>
       </div>
     </details>
   </main>
 
   <footer class="site-footer">
-    <div class="footer-copy"><strong>Fear &amp; Greed Flow Lab</strong><p>비상업적 개인 연구 · 투자 권유 아님 · 출처: 한국거래소 통계정보, pykrx, yfinance</p></div>
+    <div class="footer-copy"><strong>Fear &amp; Greed Flow Lab</strong></div>
     <div class="footer-links"><a class="footer-primary" href="https://sonchanggi.github.io/quant-dashboard/">통합 대시보드</a><a href="https://github.com/SonChangGi/fearNgreed">GitHub</a></div>
   </footer>
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>

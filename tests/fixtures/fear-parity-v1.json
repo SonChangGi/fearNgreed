@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "contract": "fearngreed-parity-fixture",
+  "fixtureId": "fear-parity-v1",
+  "signalSeries": {
+    "startDate": "2025-01-02",
+    "count": 84,
+    "returnCycle": [-0.018, -0.011, -0.006, -0.002, 0.003, 0.007, 0.012, 0.016, 0.009, -0.004, 0.005, -0.014],
+    "scaledNoiseCycle": [0.0021, -0.0015, 0.0007, -0.0027, 0.0012, 0.0031, -0.0009, 0.0018, -0.0034, 0.0004, 0.0026, -0.0011],
+    "rawNoiseCycle": [0.18, -0.11, 0.07, -0.22, 0.13, 0.25, -0.08, 0.16, -0.29, 0.05, 0.21, -0.14],
+    "scaledSlope": -0.62,
+    "rawSlope": -7.5,
+    "scaledLevel": 0.001,
+    "rawLevel": 0.03
+  },
+  "signalParityConfigs": [
+    {
+      "caseId": "robust-60-tail5",
+      "track": "robust",
+      "lookback": 60,
+      "minimumR2": 0.2,
+      "extremeTail": 5
+    },
+    {
+      "caseId": "scaled-60-tail5",
+      "track": "scaled",
+      "lookback": 60,
+      "minimumR2": 0.2,
+      "extremeTail": 5
+    },
+    {
+      "caseId": "raw-60-tail5",
+      "track": "raw",
+      "lookback": 60,
+      "minimumR2": 0.2,
+      "extremeTail": 5
+    }
+  ],
+  "classificationCases": [
+    {"percentile": 2, "browserExtremeTail": 2},
+    {"percentile": 5, "browserExtremeTail": 2},
+    {"percentile": 95, "browserExtremeTail": 2},
+    {"percentile": 98, "browserExtremeTail": 2}
+  ],
+  "strategyRows": [
+    {"date": "2026-01-02", "state": "neutral", "percentile": 50, "eligible": true, "kospiClose": 100, "long1Open": 100, "long1Close": 101, "inverse1Open": 50, "inverse1Close": 49.8, "long2Open": 100, "long2Close": 102, "inverse2Open": 50, "inverse2Close": 49.4},
+    {"date": "2026-01-05", "state": "extreme_fear", "percentile": 2, "eligible": true, "kospiClose": 97, "long1Open": 98, "long1Close": 97, "inverse1Open": 51, "inverse1Close": 51.5, "long2Open": 96, "long2Close": 94, "inverse2Open": 52, "inverse2Close": 53},
+    {"date": "2026-01-06", "state": "fear", "percentile": 12, "eligible": true, "kospiClose": 99, "long1Open": 97, "long1Close": 99, "inverse1Open": 51, "inverse1Close": 50.5, "long2Open": 94, "long2Close": 98, "inverse2Open": 53, "inverse2Close": 51.5},
+    {"date": "2026-01-07", "state": "neutral", "percentile": 48, "eligible": true, "kospiClose": 101, "long1Open": 100, "long1Close": 101, "inverse1Open": 50, "inverse1Close": 49.5, "long2Open": 100, "long2Close": 103, "inverse2Open": 50, "inverse2Close": 48.7},
+    {"date": "2026-01-08", "state": "extreme_greed", "percentile": 98, "eligible": true, "kospiClose": 104, "long1Open": 103, "long1Close": 104, "inverse1Open": 48.5, "inverse1Close": 48, "long2Open": 107, "long2Close": 110, "inverse2Open": 46, "inverse2Close": 44.5},
+    {"date": "2026-01-09", "state": "greed", "percentile": 88, "eligible": true, "kospiClose": 102, "long1Open": 102, "long1Close": 102, "inverse1Open": 49, "inverse1Close": 49.8, "long2Open": 105, "long2Close": 104, "inverse2Open": 47, "inverse2Close": 48.5},
+    {"date": "2026-01-12", "state": "fear", "percentile": 20, "eligible": true, "kospiClose": 100, "long1Open": 100, "long1Close": 100, "inverse1Open": 50, "inverse1Close": 51, "long2Open": 101, "long2Close": 100, "inverse2Open": 50, "inverse2Close": 52},
+    {"date": "2026-01-13", "state": "neutral", "percentile": 44, "eligible": true, "kospiClose": 101, "long1Open": 101, "long1Close": 101.5, "inverse1Open": 50.5, "inverse1Close": 50, "long2Open": 102, "long2Close": 103, "inverse2Open": 51, "inverse2Close": 50},
+    {"date": "2026-01-14", "state": "extreme_fear", "percentile": 1, "eligible": true, "kospiClose": 98, "long1Open": 99, "long1Close": 98, "inverse1Open": 51, "inverse1Close": 52, "long2Open": 97, "long2Close": 95, "inverse2Open": 53, "inverse2Close": 55},
+    {"date": "2026-01-15", "state": "fear", "percentile": 10, "eligible": true, "kospiClose": 100, "long1Open": 98, "long1Close": 100, "inverse1Open": 52, "inverse1Close": 51, "long2Open": 95, "long2Close": 99, "inverse2Open": 55, "inverse2Close": 53},
+    {"date": "2026-01-16", "state": "neutral", "percentile": 55, "eligible": true, "kospiClose": 102, "long1Open": 101, "long1Close": 102, "inverse1Open": 50.5, "inverse1Close": 50, "long2Open": 102, "long2Close": 105, "inverse2Open": 51, "inverse2Close": 49},
+    {"date": "2026-01-19", "state": "greed", "percentile": 82, "eligible": true, "kospiClose": 103, "long1Open": 103, "long1Close": 103, "inverse1Open": 49.5, "inverse1Close": 49, "long2Open": 106, "long2Close": 107, "inverse2Open": 48, "inverse2Close": 47}
+  ],
+  "strategyConfigs": [
+    {"caseId": "1x-long-cash", "pairId": "1x", "policyId": "long_cash", "costBps": 10, "longExitPercentile": 80, "maxHolding": 20},
+    {"caseId": "1x-long-inverse", "pairId": "1x", "policyId": "long_inverse_cash", "costBps": 10, "longExitPercentile": 80, "maxHolding": 20},
+    {"caseId": "2x-long-cash", "pairId": "2x", "policyId": "long_cash", "costBps": 10, "longExitPercentile": 80, "maxHolding": 20},
+    {"caseId": "2x-long-inverse", "pairId": "2x", "policyId": "long_inverse_cash", "costBps": 10, "longExitPercentile": 80, "maxHolding": 20}
+  ],
+  "eventConfig": {
+    "track": "robust",
+    "asset": "KOSPI",
+    "sample": "all",
+    "horizons": [1, 2]
+  }
+}

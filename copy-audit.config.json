@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "projectId": "fear-and-greed",
+  "rootDir": ".",
+  "targets": [
+    {
+      "id": "rendered-shell",
+      "path": "index.html",
+      "mode": "rendered-html",
+      "extensions": [".html"]
+    },
+    {
+      "id": "dynamic-copy",
+      "path": "assets/app.js",
+      "mode": "source",
+      "extensions": [".js"]
+    }
+  ],
+  "excludePaths": ["node_modules", "coverage"],
+  "roleGates": [],
+  "minDuplicateLength": 999,
+  "retainedVisibleCopy": [],
+  "additionalBannedPatterns": [
+    {
+      "id": "fear-visible-chart-manual",
+      "description": "Fear 차트의 표준 조작법을 상시 노출하는 문구",
+      "pattern": "가리켜 미리 보고|포인터는 가장 가까운 실제 관측점을 선택합니다"
+    }
+  ]
+}
