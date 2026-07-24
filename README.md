@@ -19,6 +19,7 @@ uv sync
 uv run --frozen pytest
 uv run --frozen ruff check .
 npm test
+npm run parity
 uv run --frozen python -m fearngreed.verify
 with-krx-keychain --check
 with-krx-keychain uv run --frozen python -m fearngreed.refresh --probe
@@ -40,7 +41,7 @@ python3 -m http.server 8000
 - `schemas/summary.schema.json`: Quant Dashboard 계약의 엄격한 JSON Schema
 - `schemas/live-signal.schema.json`: 잠정 신호의 날짜·수집창·모형 계약
 
-방법론은 [docs/methodology.md](docs/methodology.md), 데이터/비밀정보 경계는 [docs/data-contract.md](docs/data-contract.md)를 참고한다.
+방법론은 [docs/methodology.md](docs/methodology.md), 데이터/비밀정보 경계는 [docs/data-contract.md](docs/data-contract.md), 브라우저 사용자 시나리오와 Python 정식 산출의 계산 경계 및 backend 이전 gate는 [docs/parity-audit.md](docs/parity-audit.md)를 참고한다.
 
 ## 자동화
 

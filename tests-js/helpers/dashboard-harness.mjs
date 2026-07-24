@@ -20,7 +20,7 @@ export async function waitFor(predicate, message, timeoutMs = 90_000) {
   throw new Error(`Timed out: ${message}`);
 }
 
-export async function bootDashboard({ url = "http://fearngreed.test/", storage = {}, dataOverrides = {} } = {}) {
+export async function bootDashboard({ url = "http://fearngreed.test/", storage = {}, dataOverrides = {}, setupWindow = null } = {}) {
   const window = new Window({ url });
   const html = (await readFile(path.join(ROOT, "index.html"), "utf8")).replace(/<script\b[\s\S]*?<\/script>/gi, "");
   window.document.write(html);
@@ -77,6 +77,7 @@ export async function bootDashboard({ url = "http://fearngreed.test/", storage =
     return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
   };
   window.fetch = localFetch;
+  if (typeof setupWindow === "function") setupWindow(window);
 
   installGlobal("window", window);
   installGlobal("document", window.document);

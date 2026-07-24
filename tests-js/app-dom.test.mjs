@@ -80,6 +80,39 @@ function failNextInnerHtmlWrite(target) {
   return () => { delete target.innerHTML; };
 }
 
+function pointerEvent(window, type, { clientX, clientY, pointerType = "mouse" }) {
+  const event = new window.Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    clientX: { configurable: true, value: clientX },
+    clientY: { configurable: true, value: clientY },
+    pointerType: { configurable: true, value: pointerType }
+  });
+  return event;
+}
+
+function affineMatrix({ scale, left, top }) {
+  return {
+    a: scale,
+    b: 0,
+    c: 0,
+    d: scale,
+    e: left,
+    f: top,
+    transformPoint: ({ x, y }) => ({ x: x * scale + left, y: y * scale + top }),
+    inverse() {
+      return {
+        a: 1 / scale,
+        b: 0,
+        c: 0,
+        d: 1 / scale,
+        e: -left / scale,
+        f: -top / scale,
+        transformPoint: ({ x, y }) => ({ x: (x - left) / scale, y: (y - top) / scale })
+      };
+    }
+  };
+}
+
 test("legacy theme aliases migrate to the canonical shared key", { concurrency: false, timeout: 120_000 }, async () => {
   const legacyKeys = ["quant-calm-theme", "quant-dashboard-theme", "dram-price-theme"];
   for (const legacyKey of legacyKeys) {
@@ -492,6 +525,60 @@ test("integrated chart exploration changes only local chart context", { concurre
   assert.equal(document.querySelector('[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true");
   click(window, '[data-backtest-policy="compare"]');
   assert.equal(document.querySelector('[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true", "a hidden series must not revive when compare mode returns");
+});
+
+test("scatter and event charts select both letterboxed edges and reposition their marker after resize", { concurrency: false, timeout: 120_000 }, async () => {
+  const resizeObservers = [];
+  const window = await bootDashboard({
+    setupWindow(currentWindow) {
+      currentWindow.ResizeObserver = class ResizeObserver {
+        constructor(callback) {
+          this.callback = callback;
+          this.targets = new Set();
+          resizeObservers.push(this);
+        }
+        observe(target) { this.targets.add(target); }
+        disconnect() { this.targets.clear(); }
+      };
+    }
+  });
+
+  for (const selector of ["#scatter-chart", "#event-ci-chart"]) {
+    const chart = window.document.querySelector(selector);
+    const svg = chart.querySelector("svg");
+    assert.ok(chart._chartItems.length > 1, `${selector} needs multiple selectable observations`);
+    let transform = affineMatrix({ scale: 0.72, left: 137, top: 41 });
+    svg.getScreenCTM = () => transform;
+    chart.getBoundingClientRect = () => ({
+      x: 17, y: 13, left: 17, top: 13, right: 917, bottom: 333, width: 900, height: 320, toJSON: () => ({})
+    });
+
+    const first = chart._chartItems[0];
+    const last = chart._chartItems.at(-1);
+    const firstClient = transform.transformPoint({ x: first.plotX, y: first.plotY });
+    chart.dispatchEvent(pointerEvent(window, "pointermove", {
+      clientX: firstClient.x,
+      clientY: firstClient.y
+    }));
+    assert.equal(chart._chartIndex, 0, `${selector} must select its first plotted observation`);
+
+    const lastClient = transform.transformPoint({ x: last.plotX, y: last.plotY });
+    chart.dispatchEvent(pointerEvent(window, "pointermove", {
+      clientX: lastClient.x,
+      clientY: lastClient.y
+    }));
+    assert.equal(chart._chartIndex, chart._chartItems.length - 1, `${selector} must select its last plotted observation`);
+
+    const marker = chart.querySelector(".chart-crosshair-point");
+    const before = Number.parseFloat(marker.style.left);
+    transform = affineMatrix({ scale: 0.94, left: 89, top: 27 });
+    const observer = resizeObservers.find((candidate) => candidate.targets.has(chart));
+    assert.ok(observer, `${selector} must observe responsive geometry changes`);
+    observer.callback([]);
+    const expected = transform.transformPoint({ x: last.plotX, y: last.plotY }).x - 17;
+    assert.ok(Math.abs(Number.parseFloat(marker.style.left) - expected) < 1e-6);
+    assert.notEqual(Number.parseFloat(marker.style.left), before);
+  }
 });
 
 test("current open trades expose execution details and follow policy, pair, and date controls", { concurrency: false, timeout: 120_000 }, async () => {

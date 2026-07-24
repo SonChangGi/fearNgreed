@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --check assets/app.js && node --check assets/chart-navigation.js && node --check assets/strategy-engine.js && node --test tests-js/*.test.mjs",
+    "test": "node --check assets/app.js && node --check assets/control-api.js && node --check assets/chart-navigation.js && node --check assets/strategy-engine.js && node --test tests-js/*.test.mjs",
+    "parity": "node scripts/verify-parity.mjs",
+    "parity:require-ready": "node scripts/verify-parity.mjs --require-ready",
     "check": "npm test"
   },
   "devDependencies": {

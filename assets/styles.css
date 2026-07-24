@@ -991,6 +991,122 @@ thead th,
   font-size: 12px;
 }
 
+.control-api-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.control-api-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.control-api-head h3,
+.control-api-head p {
+  margin: 0;
+}
+
+.control-api-head p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+.control-authority {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  padding: 6px 10px;
+  font-size: .75rem;
+  font-weight: 650;
+}
+
+.control-authority[data-state="pending"] {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.control-authority[data-state="verified-bound"] {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.control-api-fields {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(180px, 1fr) auto auto auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.control-api-fields label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: .75rem;
+  font-weight: 600;
+}
+
+.control-api-fields input,
+.control-api-fields button {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit;
+}
+
+.control-api-fields input {
+  min-width: 0;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0 12px;
+}
+
+.control-api-fields button {
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0 14px;
+  font-weight: 650;
+}
+
+.control-api-fields .control-api-run {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.control-api-fields button:disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.control-api-status {
+  min-height: 1.3em;
+  margin: 0;
+  color: var(--muted);
+  font-size: .75rem;
+}
+
+.control-api-status[data-state="error"] {
+  color: var(--danger);
+}
+
+.control-api-status[data-state="ok"] {
+  color: var(--ok);
+}
+
+@media (max-width: 860px) {
+  .control-api-fields {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .control-api-fields label {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

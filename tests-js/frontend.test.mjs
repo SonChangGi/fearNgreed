@@ -458,11 +458,16 @@ test('integrated history uses readable axes, explicit policy lanes, and only vis
 test('chart selection snapshot is dynamic while period-end cards and tables stay fixed',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
   for(const id of ['history-selected-snapshot','history-selected-title','history-selected-content','history-chart-callout','history-chart-date','history-callout-series','history-callout-value','history-data-date','history-evaluation-date']) assert.match(html,new RegExp(`id="${id}"`));
-  assert.match(html,/가리켜 미리 보고 클릭·탭·화살표 키로 선택일을 고정합니다/);
+  assert.match(html,/id="history-chart"[^>]*aria-describedby="history-help"[^>]*aria-keyshortcuts="ArrowLeft ArrowRight Home End"[^>]*tabindex="0"/);
+  assert.match(html,/id="history-help" class="sr-only"/);
   assert.doesNotMatch(html,/차트 선택은 평가 종료일 성과를 바꾸지 않습니다/);
   assert.match(html,/평가 종료일 성과/);
   assert.match(app,/function renderHistorySelectedSnapshot/);
   assert.match(app,/function historySeriesValueText/);
+  assert.match(app,/chart\.onpointermove = selectPointer/);
+  assert.match(app,/chart\.onpointerdown = \(event\) =>/);
+  assert.match(app,/chart\.onkeydown = \(event\) =>/);
+  assert.match(app,/\["ArrowLeft", "ArrowRight", "Home", "End"\]/);
   assert.match(app,/persistSelection: true/);
   assert.match(app,/showTooltip: false/);
   assert.match(app,/typeof geometry\.onSelect === "function"/);
@@ -498,7 +503,10 @@ test('frontend decodes compact columnar history and scatter pointer uses nearest
   assert.match(app,/seriesColumns/);
   assert.match(app,/seriesRows/);
   assert.match(app,/function attachScatterNavigation/);
-  assert.match(app,/\(item\.plotX - pointerX\) \*\* 2 \+ \(item\.plotY - pointerY\) \*\* 2/);
+  assert.match(app,/\(item\.plotX - pointer\.x\) \*\* 2 \+ \(item\.plotY - pointer\.y\) \*\* 2/);
+  assert.match(app,/clientPointToSvg\(svg, event\.clientX, event\.clientY, viewBox\)/);
+  assert.match(app,/svgPointToClient\(svg, item\.plotX, item\.plotY, viewBox\)/);
+  assert.match(app,/new ResizeObserver\(positionMarker\)/);
   assert.match(app,/selectedScatterFit\(\)/);
   assert.match(app,/fit\.trainingRows/);
 });
