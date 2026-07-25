@@ -257,7 +257,10 @@ test("latest-following custom ranges advance every connected output while fixed 
   const fixedDocument = fixed.document;
   assert.equal(fixedDocument.querySelector("#history-end").value, historicalEnd);
   assert.match(fixedDocument.querySelector("#history-range-status").textContent, /사용자 지정 · 종료일 고정/);
-  assert.match(fixedDocument.querySelector("#asof").textContent, /평가 2026-07-14 · 데이터 2026-07-22/);
+  assert.match(
+    fixedDocument.querySelector("#asof").textContent,
+    new RegExp(`평가 ${historicalEnd} · 데이터 ${CONFIRMED_DATA_AS_OF}`)
+  );
   assert.match(fixedDocument.querySelector("#backtest-card-subtitle").textContent, /평가 종료일 2026-07-14/);
   assert.match(fixedDocument.querySelector("#open-trade-subtitle").textContent, /2026-07-14 종가 평가/);
   assert.equal(fixedDocument.querySelector("#history-follow-latest").hidden, false);
