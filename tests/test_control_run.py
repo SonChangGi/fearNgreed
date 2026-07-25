@@ -13,6 +13,7 @@ from fearngreed.control_contract import (
     INPUT_SCHEMA_HASH,
     INPUT_SCHEMA_VERSION,
     canonical_sha256,
+    classify_control_percentile,
 )
 from fearngreed.control_run import (
     RESULT_IDENTITY_VERSION,
@@ -124,9 +125,18 @@ def test_extreme_tail_changes_bound_python_result_without_changing_core_rule(
         output_dir=root / "outputs" / "second",
     )["artifact"]
 
-    assert first["summary"]["signalState"] == "fear"
-    assert second["summary"]["signalState"] == "extreme_fear"
+    assert first["summary"]["signalDate"] == second["summary"]["signalDate"]
+    assert first["summary"]["signalPercentile"] == second["summary"]["signalPercentile"]
+    percentile = first["summary"]["signalPercentile"]
+    assert first["summary"]["signalState"] == classify_control_percentile(percentile, 2)
+    assert second["summary"]["signalState"] == classify_control_percentile(percentile, 15)
+    assert first["effectiveInputs"]["signalExtremeTail"] == 2
+    assert second["effectiveInputs"]["signalExtremeTail"] == 15
     assert first["resultKey"] != second["resultKey"]
+    assert (
+        first["resultIdentity"]["keyParts"]["binding"]["effectiveConfigHash"]
+        != second["resultIdentity"]["keyParts"]["binding"]["effectiveConfigHash"]
+    )
     assert classify_percentile(5) == "extreme_fear"
     assert classify_percentile(95) == "extreme_greed"
 
