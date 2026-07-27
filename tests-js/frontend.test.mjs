@@ -177,7 +177,7 @@ test('shared shell uses the canonical project order and common theme storage con
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   const nav=html.match(/<div class="quant-nav-scroll"[\s\S]*?<\/div>/)?.[0]||'';
   const labels=[...nav.matchAll(/class="quant-nav-link(?: is-active)?"[^>]*>([^<]+)<\/a>/g)].map((match)=>match[1]);
-  assert.deepEqual(labels,['Hub','Fear &amp; Greed','Momentum','DRAM','Best Factor','ETF','SOX','Risk Score','Port','Valuation','Kelly']);
+  assert.deepEqual(labels,['Hub','Fear &amp; Greed','Momentum','DRAM','Best Factor','ETF','SOX','Port','Kelly']);
   assert.match(html,/https:\/\/sonchanggi\.github\.io\/kelly\//);
   for(const key of ['quant-research-theme','quant-calm-theme','quant-dashboard-theme','dram-price-theme']) {
     assert.match(html,new RegExp(key));
