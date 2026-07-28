@@ -150,9 +150,9 @@ test('performance lookup includes return, win rate, annualized position changes,
 });
 
 test('mobile navigation remains available and chart encodings are not color-only',async()=>{
-  const [html,css]=await Promise.all([read('index.html'),read('assets/styles.css')]);
-  assert.match(html,/class="quant-nav-link is-active"[^>]+aria-current="page"/);
-  assert.match(css,/\.quant-nav-scroll[^}]*overflow-x:\s*auto/s);
+  const [html,css,sharedNav]=await Promise.all([read('index.html'),read('assets/styles.css'),read('assets/shared-nav.css')]);
+  assert.match(html,/class="quant-shared-nav__link is-active"[^>]+aria-current="page"/);
+  assert.match(sharedNav,/\.quant-shared-nav__links[^}]*overflow-x:\s*auto/s);
   assert.match(css,/\.legend-dot\.greed[^}]*rotate\(45deg\)/s);
   assert.match(css,/\.line-buyhold[^}]*stroke-dasharray/s);
   assert.match(html,/aria-roledescription="대화형/);
@@ -160,7 +160,7 @@ test('mobile navigation remains available and chart encodings are not color-only
 
 test('shared shell, jump navigation, pointer charts and table tools match the quant family',async()=>{
   const [html,css,app]=await Promise.all([read('index.html'),read('assets/styles.css'),read('assets/app.js')]);
-  assert.match(html,/class="quant-common-nav"/);
+  assert.match(html,/class="quant-shared-nav"/);
   assert.match(html,/class="page-jump-nav"/);
   assert.match(html,/href="#top" aria-label="맨 위로 이동"/);
   assert.match(html,/href="#page-bottom" aria-label="맨 아래로 이동"/);
@@ -175,9 +175,11 @@ test('shared shell, jump navigation, pointer charts and table tools match the qu
 
 test('shared shell uses the canonical project order and common theme storage contract',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
-  const nav=html.match(/<div class="quant-nav-scroll"[\s\S]*?<\/div>/)?.[0]||'';
-  const labels=[...nav.matchAll(/class="quant-nav-link(?: is-active)?"[^>]*>([^<]+)<\/a>/g)].map((match)=>match[1]);
-  assert.deepEqual(labels,['Hub','Fear &amp; Greed','Momentum','DRAM','Best Factor','ETF','SOX','Port','Kelly']);
+  const nav=html.match(/<div class="quant-shared-nav__links"[\s\S]*?<\/div>/)?.[0]||'';
+  const labels=[...nav.matchAll(/class="quant-shared-nav__link(?: is-active)?"[^>]*>([^<]+)<\/a>/g)].map((match)=>match[1]);
+  assert.deepEqual(labels,['Fear &amp; Greed','Momentum','DRAM','Best Factor','ETF','SOX','Port','Kelly']);
+  assert.match(html,/class="quant-shared-nav__brand"[^>]+https:\/\/sonchanggi\.github\.io\/quant-dashboard\//);
+  assert.match(nav,/class="quant-shared-nav__link is-active" href="https:\/\/sonchanggi\.github\.io\/fearNgreed\/" aria-current="page"/);
   assert.match(html,/https:\/\/sonchanggi\.github\.io\/kelly\//);
   for(const key of ['quant-research-theme','quant-calm-theme','quant-dashboard-theme','dram-price-theme']) {
     assert.match(html,new RegExp(key));
@@ -197,7 +199,7 @@ test('common design controls and decision-critical chart metadata keep practical
   const typeStart=css.indexOf('/* Interactive copy and decision-critical');
   assert.ok(touchStart>=0 && typeStart>touchStart);
   const touchBlock=css.slice(touchStart,typeStart);
-  for(const selector of ['.quant-nav-link','.local-nav a','.segmented button','.signal-learning-grid input','.history-chart-callout input','.history-custom-range button','.table-toolbar button','.table-sort']) {
+  for(const selector of ['.local-nav a','.segmented button','.signal-learning-grid input','.history-chart-callout input','.history-custom-range button','.table-toolbar button','.table-sort']) {
     assert.match(touchBlock,new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
   }
   assert.match(touchBlock,/min-height:\s*44px/);
@@ -211,12 +213,12 @@ test('common design controls and decision-critical chart metadata keep practical
 });
 
 test('common design v1.2 keeps compact typography and one closed operations surface',async()=>{
-  const [html,css,app]=await Promise.all([read('index.html'),read('assets/styles.css'),read('assets/app.js')]);
+  const [html,css,app,sharedNav]=await Promise.all([read('index.html'),read('assets/styles.css'),read('assets/app.js'),read('assets/shared-nav.css')]);
   assert.match(css,/body\s*\{[\s\S]*?font-size:\s*15px;[\s\S]*?line-height:\s*1\.55;/);
   assert.match(css,/\.hero h1\s*\{[^}]*font-size:\s*clamp\(2rem,\s*4vw,\s*3\.25rem\)/);
   assert.match(css,/\.section-head h2\s*\{[^}]*font-size:\s*clamp\(1\.35rem,\s*2\.3vw,\s*1\.8rem\)/);
   assert.doesNotMatch(css,/font-weight:\s*(?:8\d\d|9\d\d)/);
-  assert.match(css,/\.quant-nav-link\.is-active[^}]*color:\s*var\(--primary-strong\)[^}]*background:\s*var\(--primary-soft\)/);
+  assert.match(sharedNav,/\.quant-shared-nav__link\[aria-current="page"\],[\s\S]*?background:\s*var\(--quant-nav-active-bg\)\s*!important/);
   assert.equal((html.match(/id="status-detail-summary"/g)||[]).length,1);
   assert.match(html,/<details class="card research-details" id="method">[\s\S]*?id="status-detail-summary">데이터 · 출처 · 운영 상세/);
   assert.ok(html.indexOf('id="quality-strip"') > html.indexOf('id="method"'));

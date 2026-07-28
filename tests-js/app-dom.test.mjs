@@ -120,7 +120,7 @@ test("legacy theme aliases migrate to the canonical shared key", { concurrency: 
     assert.equal(window.document.documentElement.dataset.theme, "dark");
     assert.equal(window.localStorage.getItem("quant-research-theme"), "dark");
     legacyKeys.forEach((key) => assert.equal(window.localStorage.getItem(key), null));
-    click(window, "#theme");
+    click(window, "#theme-toggle");
     assert.equal(window.document.documentElement.dataset.theme, "light");
     assert.equal(window.localStorage.getItem("quant-research-theme"), "light");
   }

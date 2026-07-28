@@ -3348,11 +3348,11 @@ function setTheme(theme) {
   const value = theme === "dark" ? "dark" : "light";
   document.documentElement.dataset.theme = value;
   document.documentElement.style.colorScheme = value;
-  const button = $("#theme");
+  const button = $("#theme-toggle");
   button.setAttribute("aria-pressed", String(value === "dark"));
   button.setAttribute("aria-label", value === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환");
   button.title = value === "dark" ? "라이트 테마로 전환" : "다크 테마로 전환";
-  const label = button.querySelector(".theme-label");
+  const label = button.querySelector(".quant-shared-nav__theme-text");
   if (label) label.textContent = value === "dark" ? "라이트 모드" : "다크 모드";
 }
 
@@ -3412,7 +3412,7 @@ function initializeTheme() {
   const requested = requestedTheme();
   const saved = storedTheme();
   setTheme(requested || saved || systemTheme() || "light");
-  $("#theme").addEventListener("click", () => {
+  $("#theme-toggle").addEventListener("click", () => {
     const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     setTheme(next);
     saveTheme(next);
