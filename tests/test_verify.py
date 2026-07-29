@@ -595,14 +595,16 @@ def test_cross_artifact_verifier_reproduces_default_position_path() -> None:
                     "historyReconciliation": {
                         "state": "ok",
                         "unresolvedCount": 0,
-                        "officialSessionCount": 4,
+                        "officialSessionCount": 3,
+                        "reconciledSessionCount": 4,
                     }
                 },
                 "069500": {
                     "historyReconciliation": {
                         "state": "ok",
                         "unresolvedCount": 0,
-                        "officialSessionCount": 4,
+                        "officialSessionCount": 3,
+                        "reconciledSessionCount": 4,
                     }
                 },
             }

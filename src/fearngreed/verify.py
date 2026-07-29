@@ -487,11 +487,19 @@ def _verify_cross_artifact_consistency(
             and row.get(f"p{ticker}Open") is not None
             and row.get(f"p{ticker}Close") is not None
         ]
-        official_count = reconciliation.get("officialSessionCount")
+        # Incremental reconciliation intentionally preserves the published
+        # adjusted-price path before the mutable boundary.  A later KRX
+        # calendar response can therefore contain fewer historical sessions
+        # than the validated backtest path.  New reports expose the exact
+        # reconciled count; older published contracts fall back to the
+        # official count.
+        reconciled_count = reconciliation.get(
+            "reconciledSessionCount", reconciliation.get("officialSessionCount")
+        )
         if (
             not price_rows
-            or not isinstance(official_count, int)
-            or len(price_rows) != official_count
+            or not isinstance(reconciled_count, int)
+            or len(price_rows) != reconciled_count
         ):
             raise ValueError(f"{ticker} history sessions do not match the reconciled backtest")
         if price_rows[0].get("date") != start or price_rows[-1].get("date") != end:

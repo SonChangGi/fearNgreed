@@ -587,6 +587,7 @@ def test_incremental_reconciliation_preserves_frozen_adjusted_sessions() -> None
     assert report["state"] == "ok"
     assert report["reconciliationStart"] == boundary.date().isoformat()
     assert report["frozenSessionCount"] == 5
+    assert report["reconciledSessionCount"] == len(research)
     assert index[1] in reconciled.index
     pd.testing.assert_frame_equal(
         reconciled.loc[reconciled.index < boundary],
@@ -619,6 +620,7 @@ def test_full_reconciliation_still_applies_official_calendar_to_all_sessions() -
     assert report["state"] == "ok"
     assert report["reconciliationStart"] is None
     assert report["frozenSessionCount"] == 0
+    assert report["reconciledSessionCount"] == len(revised_official)
     assert report["extraCount"] == 1
     assert index[1] not in reconciled.index
     assert reconciled.index.equals(revised_official.index)
@@ -651,6 +653,7 @@ def test_incremental_reconciliation_repairs_only_mutable_adjusted_gap() -> None:
     assert report["state"] == "ok"
     assert report["missingCount"] == 1
     assert report["filledCount"] == 1
+    assert report["reconciledSessionCount"] == len(research)
     assert mutable_gap in reconciled.index
     pd.testing.assert_frame_equal(
         reconciled.loc[reconciled.index < boundary],

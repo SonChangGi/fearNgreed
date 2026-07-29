@@ -619,6 +619,7 @@ def _reconcile_adjusted_etf_history(
         "extraCount": 0,
         "reconciliationStart": None,
         "frozenSessionCount": 0,
+        "reconciledSessionCount": 0,
     }
     if official is None or research is None or official.empty or research.empty:
         report["reason"] = "official_or_adjusted_history_missing"
@@ -685,9 +686,13 @@ def _reconcile_adjusted_etf_history(
     report["frozenSessionCount"] = int(len(frozen_research))
 
     def with_frozen(mutable: pd.DataFrame) -> pd.DataFrame:
-        if frozen_research.empty:
-            return mutable.sort_index()
-        return pd.concat([frozen_research, mutable], axis=0).sort_index()
+        reconciled = (
+            mutable.sort_index()
+            if frozen_research.empty
+            else pd.concat([frozen_research, mutable], axis=0).sort_index()
+        )
+        report["reconciledSessionCount"] = int(len(reconciled))
+        return reconciled
 
     if official_scope.empty or research_scope.empty:
         report["reason"] = "reconciliation_scope_empty"
