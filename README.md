@@ -57,7 +57,7 @@ GitHub Secrets가 아직 비어 있어도 이 Mac에서는 같은 확정 시각�
 scripts/install-official-refresh-launch-agent
 ```
 
-15:47 KST 잠정 신호는 시간외 종가매매 창 안에서 빠르게 확인할 수 있도록 로그인된 Mac의 `launchd`에서 별도로 계산한다. 공식 JSON이나 Git 이력은 건드리지 않고 `var/live-signal-local.json`만 갱신하며, 공급자 데이터가 늦으면 15:50·15:53·15:56까지 제한적으로 재시도한다. 로컬 페이지는 이 파일과 공개 `data/live-signal.json` 중 더 최신인 관측을 읽는다. GitHub의 `live-signal.yml`도 평일 15:47 KST에 같은 별도 계약을 best-effort로 수집·검증·배포하지만, 예약 시작과 Pages 반영 시각은 보장되지 않으므로 시간 민감 알림은 로컬 경로를 사용한다.
+15:47 KST 잠정 신호는 시간외 종가매매 창 안에서 빠르게 확인할 수 있도록 로그인된 Mac의 `launchd`에서 별도로 계산한다. 공식 JSON이나 Git 이력은 건드리지 않고 `var/live-signal-local.json`만 갱신하며, 공급자 데이터가 늦으면 15:50·15:53·15:56까지 제한적으로 재시도한다. 로컬 페이지는 이 파일과 공개 `data/live-signal.json` 중 더 최신인 관측을 읽는다. GitHub의 `live-signal.yml`도 평일 15:47 KST에 같은 창 내부 재시도 계약으로 best-effort 수집·검증·배포한다. 최종 입력 미준비는 KRX 휴일과 공급자 지연을 섣불리 혼동하지 않고 Actions warning/summary에 남긴다. 예약 시작과 Pages 반영 시각은 보장되지 않으므로 시간 민감 알림은 로컬 경로를 사용한다.
 
 ```bash
 scripts/install-live-signal-launch-agent
