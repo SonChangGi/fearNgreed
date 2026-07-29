@@ -559,6 +559,106 @@ def test_incremental_reconciliation_keeps_prior_gap_repair_provenance() -> None:
     assert merged["filledDateSample"] == prior["filledDateSample"]
 
 
+def test_incremental_reconciliation_preserves_frozen_adjusted_sessions() -> None:
+    index = pd.bdate_range("2026-07-06", periods=8)
+    official = pd.DataFrame(
+        {
+            "open": np.arange(99.0, 107.0),
+            "high": np.arange(101.0, 109.0),
+            "low": np.arange(98.0, 106.0),
+            "close": np.arange(100.0, 108.0),
+        },
+        index=index,
+    )
+    research = official[["open", "close"]].copy()
+    boundary = index[5]
+
+    # A later KRX response no longer includes an old published session.  The
+    # incremental refresh must not rewrite that frozen adjusted-price path.
+    revised_official = official.drop(index=index[1])
+    reconciled, report = _reconcile_adjusted_etf_history(
+        revised_official,
+        research,
+        expected_date=index[-1],
+        reconciliation_start=boundary,
+    )
+
+    assert reconciled is not None
+    assert report["state"] == "ok"
+    assert report["reconciliationStart"] == boundary.date().isoformat()
+    assert report["frozenSessionCount"] == 5
+    assert index[1] in reconciled.index
+    pd.testing.assert_frame_equal(
+        reconciled.loc[reconciled.index < boundary],
+        research.loc[research.index < boundary],
+        check_freq=False,
+    )
+
+
+def test_full_reconciliation_still_applies_official_calendar_to_all_sessions() -> None:
+    index = pd.bdate_range("2026-07-06", periods=8)
+    official = pd.DataFrame(
+        {
+            "open": np.arange(99.0, 107.0),
+            "high": np.arange(101.0, 109.0),
+            "low": np.arange(98.0, 106.0),
+            "close": np.arange(100.0, 108.0),
+        },
+        index=index,
+    )
+    research = official[["open", "close"]].copy()
+    revised_official = official.drop(index=index[1])
+
+    reconciled, report = _reconcile_adjusted_etf_history(
+        revised_official,
+        research,
+        expected_date=index[-1],
+    )
+
+    assert reconciled is not None
+    assert report["state"] == "ok"
+    assert report["reconciliationStart"] is None
+    assert report["frozenSessionCount"] == 0
+    assert report["extraCount"] == 1
+    assert index[1] not in reconciled.index
+    assert reconciled.index.equals(revised_official.index)
+
+
+def test_incremental_reconciliation_repairs_only_mutable_adjusted_gap() -> None:
+    index = pd.bdate_range("2026-07-06", periods=8)
+    official = pd.DataFrame(
+        {
+            "open": np.arange(99.0, 107.0),
+            "high": np.arange(101.0, 109.0),
+            "low": np.arange(98.0, 106.0),
+            "close": np.arange(100.0, 108.0),
+        },
+        index=index,
+    )
+    research = official[["open", "close"]].astype(float)
+    boundary = index[5]
+    mutable_gap = index[6]
+    research_with_gap = research.drop(index=mutable_gap)
+
+    reconciled, report = _reconcile_adjusted_etf_history(
+        official,
+        research_with_gap,
+        expected_date=index[-1],
+        reconciliation_start=boundary,
+    )
+
+    assert reconciled is not None
+    assert report["state"] == "ok"
+    assert report["missingCount"] == 1
+    assert report["filledCount"] == 1
+    assert mutable_gap in reconciled.index
+    pd.testing.assert_frame_equal(
+        reconciled.loc[reconciled.index < boundary],
+        research.loc[research.index < boundary],
+        check_freq=False,
+    )
+
+
 def test_adjusted_gap_with_factor_break_fails_closed() -> None:
     index = pd.bdate_range("2026-07-06", periods=5)
     official = pd.DataFrame(

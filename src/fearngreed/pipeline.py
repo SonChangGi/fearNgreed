@@ -73,6 +73,7 @@ class PipelineInputs:
     kospi_secondary_history_independent: bool = True
     prior_etf_reconciliation: dict[str, dict[str, Any]] = field(default_factory=dict)
     expected_as_of: date | str | pd.Timestamp | None = None
+    etf_reconciliation_start: date | str | pd.Timestamp | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,7 @@ def build_outputs(inputs: PipelineInputs) -> PipelineOutputs:
             inputs.krx_etfs.get(ticker),
             adjusted.get(yahoo_ticker),
             expected_date=signal_cutoff,
+            reconciliation_start=inputs.etf_reconciliation_start,
         )
         reconciliation = _inherit_reconciliation_provenance(
             reconciliation,
@@ -587,6 +589,7 @@ def _reconcile_adjusted_etf_history(
     *,
     expected_date: pd.Timestamp,
     factor_tolerance: float = 0.005,
+    reconciliation_start: date | str | pd.Timestamp | None = None,
 ) -> tuple[pd.DataFrame | None, dict[str, Any]]:
     """Validate Yahoo sessions against KRX and cautiously repair isolated gaps.
 
@@ -595,6 +598,12 @@ def _reconcile_adjusted_etf_history(
     This preserves the adjusted scale without silently treating raw KRX prices
     as adjusted observations. Any unresolved session makes that proxy's event
     study and backtest unavailable.
+
+    ``reconciliation_start`` is the first mutable session of an incremental
+    refresh.  The already-published adjusted path before that boundary remains
+    authoritative, while KRX calendar validation and gap repair continue over
+    the mutable suffix.  Full backfills omit the boundary and retain the
+    original full-history reconciliation behavior.
     """
 
     report: dict[str, Any] = {
@@ -608,6 +617,8 @@ def _reconcile_adjusted_etf_history(
         "filledCount": 0,
         "unresolvedCount": 0,
         "extraCount": 0,
+        "reconciliationStart": None,
+        "frozenSessionCount": 0,
     }
     if official is None or research is None or official.empty or research.empty:
         report["reason"] = "official_or_adjusted_history_missing"
@@ -623,6 +634,16 @@ def _reconcile_adjusted_etf_history(
     if cutoff.tzinfo is not None:
         cutoff = cutoff.tz_convert(None)
     cutoff = cutoff.normalize()
+    boundary: pd.Timestamp | None = None
+    if reconciliation_start is not None:
+        boundary = pd.Timestamp(reconciliation_start)
+        if boundary.tzinfo is not None:
+            boundary = boundary.tz_convert(None)
+        boundary = boundary.normalize()
+        if boundary > cutoff:
+            report["reason"] = "reconciliation_start_after_cutoff"
+            return research, report
+        report["reconciliationStart"] = boundary.date().isoformat()
     official_as_of = _price_frame_as_of(official, cutoff)
     research_as_of = _price_frame_as_of(research, cutoff)
     if official_as_of.index.duplicated().any() or research_as_of.index.duplicated().any():
@@ -646,23 +667,48 @@ def _reconcile_adjusted_etf_history(
 
     report["officialSessionCount"] = int(len(official_as_of))
     report["researchSessionCount"] = int(len(research_as_of))
-    if official_as_of.index[0] > research_as_of.index[0]:
-        report["reason"] = "official_history_coverage_incomplete"
-        report["extraCount"] = int(len(research_as_of.index.difference(official_as_of.index)))
-        return research_as_of, report
+    frozen_research = (
+        research_as_of.loc[research_as_of.index < boundary].copy()
+        if boundary is not None
+        else research_as_of.iloc[0:0].copy()
+    )
+    official_scope = (
+        official_as_of.loc[official_as_of.index >= boundary]
+        if boundary is not None
+        else official_as_of
+    )
+    research_scope = (
+        research_as_of.loc[research_as_of.index >= boundary]
+        if boundary is not None
+        else research_as_of
+    )
+    report["frozenSessionCount"] = int(len(frozen_research))
 
-    extra = research_as_of.index.difference(official_as_of.index)
-    research_on_calendar = research_as_of.loc[
-        research_as_of.index.intersection(official_as_of.index)
+    def with_frozen(mutable: pd.DataFrame) -> pd.DataFrame:
+        if frozen_research.empty:
+            return mutable.sort_index()
+        return pd.concat([frozen_research, mutable], axis=0).sort_index()
+
+    if official_scope.empty or research_scope.empty:
+        report["reason"] = "reconciliation_scope_empty"
+        return with_frozen(research_scope), report
+    if official_scope.index[0] > research_scope.index[0]:
+        report["reason"] = "official_history_coverage_incomplete"
+        report["extraCount"] = int(len(research_scope.index.difference(official_scope.index)))
+        return with_frozen(research_scope), report
+
+    extra = research_scope.index.difference(official_scope.index)
+    research_on_calendar = research_scope.loc[
+        research_scope.index.intersection(official_scope.index)
     ].copy()
-    missing = official_as_of.index.difference(research_on_calendar.index)
-    common = official_as_of.index.intersection(research_on_calendar.index)
+    missing = official_scope.index.difference(research_on_calendar.index)
+    common = official_scope.index.intersection(research_on_calendar.index)
     report["extraCount"] = int(len(extra))
     report["missingCount"] = int(len(missing))
     if common.empty:
         report["reason"] = "no_common_sessions"
         report["unresolvedCount"] = int(len(missing))
-        return research_on_calendar, report
+        return with_frozen(research_on_calendar), report
 
     filled_rows: list[pd.Series] = []
     filled_dates: list[pd.Timestamp] = []
@@ -675,8 +721,8 @@ def _reconcile_adjusted_etf_history(
             continue
         left = before[-1]
         right = after[0]
-        left_raw = float(official_as_of.at[left, "close"])
-        right_raw = float(official_as_of.at[right, "close"])
+        left_raw = float(official_scope.at[left, "close"])
+        right_raw = float(official_scope.at[right, "close"])
         left_adjusted = float(research_on_calendar.at[left, "close"])
         right_adjusted = float(research_on_calendar.at[right, "close"])
         if min(left_raw, right_raw, left_adjusted, right_adjusted) <= 0:
@@ -696,7 +742,7 @@ def _reconcile_adjusted_etf_history(
         # floats into that Series emits a pandas dtype warning and will become
         # an error in a future pandas release.
         scaled = (
-            official_as_of.loc[timestamp].reindex(research_on_calendar.columns).astype(float).copy()
+            official_scope.loc[timestamp].reindex(research_on_calendar.columns).astype(float).copy()
         )
         for column in ("open", "high", "low", "close"):
             if column in scaled.index:
@@ -709,23 +755,25 @@ def _reconcile_adjusted_etf_history(
     report["unresolvedCount"] = unresolved
     if unresolved:
         report["reason"] = "adjacent_adjustment_factor_disagreement"
-        return research_on_calendar, report
+        return with_frozen(research_on_calendar), report
 
     if filled_rows:
         fills = pd.DataFrame(filled_rows)
-        reconciled = pd.concat([research_on_calendar, fills], axis=0).sort_index()
+        reconciled_scope = pd.concat([research_on_calendar, fills], axis=0).sort_index()
         report["source"] = "yfinance_adjusted_plus_scaled_krx_gap_rows"
         report["filledDateSample"] = [
             timestamp.date().isoformat() for timestamp in filled_dates[:3]
         ]
     else:
-        reconciled = research_on_calendar.sort_index()
-    if not official_as_of.index.equals(reconciled.index):
+        reconciled_scope = research_on_calendar.sort_index()
+    if not official_scope.index.equals(reconciled_scope.index):
         report["reason"] = "session_calendar_not_fully_reconciled"
-        report["unresolvedCount"] = int(len(official_as_of.index.difference(reconciled.index)))
-        return reconciled, report
+        report["unresolvedCount"] = int(
+            len(official_scope.index.difference(reconciled_scope.index))
+        )
+        return with_frozen(reconciled_scope), report
     report["state"] = "ok"
-    return reconciled, report
+    return with_frozen(reconciled_scope), report
 
 
 def _inherit_reconciliation_provenance(

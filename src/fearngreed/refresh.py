@@ -387,6 +387,7 @@ def refresh(
                 kospi_secondary_history_independent=seed is None,
                 prior_etf_reconciliation=seed.etf_reconciliation if seed else {},
                 expected_as_of=expected_as_of,
+                etf_reconciliation_start=seed.mutable_start if seed else None,
             )
         )
     except Exception as error:

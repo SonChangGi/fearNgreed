@@ -394,6 +394,22 @@ def test_terminal_open_api_lag_uses_authenticated_target_session(tmp_path, monke
         staticmethod(lambda **_kwargs: object()),
     )
     target = date(2026, 7, 20)
+    mutable_start = date(2026, 7, 14)
+    monkeypatch.setattr(
+        refresh_module,
+        "_load_incremental_seed",
+        lambda _root, _end: IncrementalSeed(
+            mutable_start=mutable_start,
+            methodology_version="fear-flow-v5",
+            data_as_of="2026-07-17",
+            status_state="ok",
+            existing_signature="published-signature",
+            history_rows=[],
+            kospi=pd.DataFrame(),
+            flow=pd.DataFrame(),
+            adjusted={},
+        ),
+    )
     monkeypatch.setattr(
         refresh_module,
         "_latest_open_row",
@@ -449,6 +465,7 @@ def test_terminal_open_api_lag_uses_authenticated_target_session(tmp_path, monke
         captured["coreSource"] = inputs.core_source
         captured["expectedAsOf"] = inputs.expected_as_of
         captured["degradedReasons"] = inputs.degraded_reasons
+        captured["etfReconciliationStart"] = inputs.etf_reconciliation_start
         raise RuntimeError("stop after fallback selection")
 
     monkeypatch.setattr(refresh_module, "build_outputs", capture_build)
@@ -460,11 +477,12 @@ def test_terminal_open_api_lag_uses_authenticated_target_session(tmp_path, monke
             dry_run=True,
         )
 
-    assert authenticated_calls == [(target, target), (date(2010, 1, 4), target)]
+    assert authenticated_calls == [(target, target), (mutable_start, target)]
     assert captured == {
         "coreSource": "authenticated_pykrx_fallback",
         "expectedAsOf": target,
         "degradedReasons": ("krx_open_api_target_session_lag",),
+        "etfReconciliationStart": mutable_start,
     }
 
 
