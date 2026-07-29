@@ -588,14 +588,10 @@ test("current open trades expose execution details and follow policy, pair, and 
   const window = await bootDashboard();
   const { document } = window;
   const initial = document.querySelector("#open-trades").textContent;
-  assert.match(initial, /진입 신호일 · 종가/);
-  assert.match(initial, /진입 체결일 · 시가/);
-  assert.match(initial, /진입 조정시가/);
-  assert.match(initial, /보유 거래일/);
-  assert.match(initial, /평가 손익 · 미실현/);
   assert.match(initial, /다음 예정 행동/);
   assert.equal(document.querySelectorAll("#open-trades .open-trade-panel").length, 2, "compare mode must disclose both policy states");
   assert.match(document.querySelector("#open-trade-subtitle").textContent, new RegExp(`${CONFIRMED_DATA_AS_OF} 종가 평가`));
+  assert.match(initial, /진입 신호일 · 종가|현재 현금/, "the latest confirmed state may legitimately be invested or cash");
 
   click(window, '[data-backtest-policy="long_cash"]');
   assert.equal(document.querySelectorAll("#open-trades .open-trade-panel").length, 1);
@@ -608,10 +604,17 @@ test("current open trades expose execution details and follow policy, pair, and 
   assert.match(twoX, /122630|252670|현금/);
 
   fireInput(window, "#history-start", "2026-04-16");
-  fireInput(window, "#history-end", "2026-06-15");
+  fireInput(window, "#history-end", "2026-04-17");
   submit(window, "#history-range-form");
-  assert.match(document.querySelector("#open-trade-subtitle").textContent, /2026-06-15 종가 평가/);
-  assert.notEqual(document.querySelector("#open-trades").textContent, twoX);
+  const historicalOpenTrade = document.querySelector("#open-trades").textContent;
+  assert.match(document.querySelector("#open-trade-subtitle").textContent, /2026-04-17 종가 평가/);
+  assert.match(historicalOpenTrade, /진입 신호일 · 종가/);
+  assert.match(historicalOpenTrade, /진입 체결일 · 시가/);
+  assert.match(historicalOpenTrade, /진입 조정시가/);
+  assert.match(historicalOpenTrade, /보유 거래일/);
+  assert.match(historicalOpenTrade, /평가 손익 · 미실현/);
+  assert.match(historicalOpenTrade, /다음 예정 행동/);
+  assert.notEqual(historicalOpenTrade, twoX);
 });
 
 test("a newer provisional signal is input-linked but never extends confirmed charts or backtests", { concurrency: false, timeout: 120_000 }, async () => {
