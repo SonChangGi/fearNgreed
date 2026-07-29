@@ -2,7 +2,8 @@ name: Capture same-day fast signal
 
 on:
   schedule:
-    # GitHub cron is best-effort. The local LaunchAgent is the time-sensitive path.
+    # GitHub cron is best-effort. The capture step itself retries at
+    # 15:50/15:53/15:56 KST; the local LaunchAgent remains time-sensitive.
     - cron: "47 6 * * 1-5"
   workflow_dispatch:
 
@@ -221,3 +222,22 @@ jobs:
             [[ $attempt -lt 12 ]] || exit 1
             sleep 5
           done
+      - name: Report missed scheduled capture window
+        if: >-
+          always() &&
+          github.event_name == 'schedule' &&
+          (steps.capture.outputs.outcome == 'skipped_outside_window' ||
+          steps.capture.outputs.outcome == 'skipped_cutoff')
+        run: |
+          echo "::error title=Fast signal capture window missed::The scheduled runner did not complete inside the 15:47-16:00 KST capture window."
+          echo "capture_outcome=${{ steps.capture.outputs.outcome }}"
+          exit 1
+      - name: Report scheduled signal inputs not ready
+        if: >-
+          always() &&
+          github.event_name == 'schedule' &&
+          steps.capture.outputs.outcome == 'skipped_not_ready'
+        run: |
+          echo "::warning title=Fast signal inputs not ready::The bounded 15:47/15:50/15:53/15:56 KST attempts did not receive same-day KRX inputs before cutoff. A confirmed holiday and a delayed provider response are intentionally not conflated."
+          echo "### Same-day fast signal not published" >> "$GITHUB_STEP_SUMMARY"
+          echo "The scheduled run stayed non-blocking because KRX holiday and provider-not-ready responses are indistinguishable before official confirmation. The later official refresh remains authoritative." >> "$GITHUB_STEP_SUMMARY"

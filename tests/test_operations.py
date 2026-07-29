@@ -136,6 +136,8 @@ def test_fast_signal_workflow_is_separate_bounded_and_secret_scoped() -> None:
     workflow = (ROOT / ".github" / "workflows" / "live-signal.yml").read_text(encoding="utf-8")
 
     assert 'cron: "47 6 * * 1-5"' in workflow
+    assert 'cron: "52 6 * * 1-5"' not in workflow
+    assert "15:50/15:53/15:56 KST" in workflow
     assert "ref: main" in workflow
     capture = workflow.split("Capture authenticated preliminary close signal", 1)[1].split(
         "Enforce fast-signal mutation boundary", 1
@@ -154,6 +156,16 @@ def test_fast_signal_workflow_is_separate_bounded_and_secret_scoped() -> None:
     assert "timeout-minutes: 25" in workflow
     assert "timeout --signal=TERM --kill-after=10s 120s" in capture
     assert "live_capture_timeout" in capture
+    assert "Report missed scheduled capture window" in workflow
+    assert "github.event_name == 'schedule'" in workflow
+    assert "steps.capture.outputs.outcome == 'skipped_outside_window'" in workflow
+    assert "steps.capture.outputs.outcome == 'skipped_cutoff'" in workflow
+    missed_window = workflow.split("Report missed scheduled capture window", 1)[1]
+    assert "exit 1" in missed_window
+    assert "Report scheduled signal inputs not ready" in workflow
+    assert "steps.capture.outputs.outcome == 'skipped_not_ready'" in workflow
+    assert "::warning title=Fast signal inputs not ready" in workflow
+    assert "holiday and provider-not-ready responses are indistinguishable" in workflow
 
 
 def test_failed_refresh_preserves_market_outputs_and_last_success(tmp_path, monkeypatch) -> None:
