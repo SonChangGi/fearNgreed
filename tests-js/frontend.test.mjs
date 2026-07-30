@@ -459,24 +459,32 @@ test('integrated history uses readable axes, explicit policy lanes, and only vis
 
 test('chart selection snapshot is dynamic while period-end cards and tables stay fixed',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
-  for(const id of ['history-selected-snapshot','history-selected-title','history-selected-content','history-chart-callout','history-chart-date','history-callout-series','history-callout-value','history-data-date','history-evaluation-date']) assert.match(html,new RegExp(`id="${id}"`));
-  assert.match(html,/id="history-chart"[^>]*aria-describedby="history-help"[^>]*aria-keyshortcuts="ArrowLeft ArrowRight Home End"[^>]*tabindex="0"/);
-  assert.match(html,/id="history-help" class="sr-only"/);
+  for(const id of ['history-selected-snapshot','history-selected-title','history-selected-content','history-range-clear','history-chart-callout','history-chart-date','history-callout-series','history-callout-value','history-kospi-close','history-kospi-buyhold','history-data-date','history-evaluation-date']) assert.match(html,new RegExp(`id="${id}"`));
+  assert.match(html,/id="history-selected-snapshot"[^>]*aria-live="polite"/);
+  assert.match(html,/id="history-chart"[^>]*aria-describedby="history-help"[^>]*aria-keyshortcuts="[^"]*Shift\+ArrowLeft[^"]*Escape"[^>]*tabindex="0"/);
+  assert.match(html,/id="history-help" class="chart-note history-interaction-help"/);
+  assert.match(html,/마우스·펜으로 가로 드래그[\s\S]*Shift\+화살표[\s\S]*Esc/);
   assert.doesNotMatch(html,/차트 선택은 평가 종료일 성과를 바꾸지 않습니다/);
   assert.match(html,/평가 종료일 성과/);
   assert.match(app,/function renderHistorySelectedSnapshot/);
+  assert.match(app,/historyIntervalSnapshot/);
+  assert.match(app,/rangeSelection: true/);
+  assert.match(app,/id="history-range-brush"/);
   assert.match(app,/function historySeriesValueText/);
-  assert.match(app,/chart\.onpointermove = selectPointer/);
+  assert.match(app,/chart\.onpointermove = \(event\) =>/);
   assert.match(app,/chart\.onpointerdown = \(event\) =>/);
   assert.match(app,/chart\.onkeydown = \(event\) =>/);
   assert.match(app,/\["ArrowLeft", "ArrowRight", "Home", "End"\]/);
   assert.match(app,/persistSelection: true/);
   assert.match(app,/showTooltip: false/);
   assert.match(app,/typeof geometry\.onSelect === "function"/);
-  assert.match(app,/chart\._selectLatest = \(\) => selectIndex\(latestIndex, null, \{ commit: persistSelection, phase: "latest" \}\)/);
+  assert.match(app,/chart\._selectLatest = \(\) => \{[\s\S]*?selectIndex\(latestIndex, null, \{ commit: persistSelection, phase: "latest" \}\)/);
   assert.match(app,/chart\._selectLatest\?\.\(\)/);
   assert.match(app,/const scenarioBundle = selectedScenarioBundle\(\);[\s\S]*renderHistory\(scenarioBundle\)[\s\S]*renderBacktests\(scenarioBundle\)/);
   assert.match(css,/\.history-selected-snapshot/);
+  assert.match(css,/\.history-range-band/);
+  assert.match(css,/\.history-range-boundary/);
+  assert.match(css,/\.history-range-clear/);
   assert.match(css,/\.unified-strategy-chart\.has-active-series \.history-series:not\(\.is-active\)/);
   assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.history-series-controls \{ display: grid/);
   assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.history-chart-callout \{ grid-template-columns:/);

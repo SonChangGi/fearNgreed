@@ -7,6 +7,45 @@ import {
   nearestItemIndexByRatio,
   svgPointToClient
 } from "../assets/chart-navigation.js";
+import {
+  historyIntervalSnapshot,
+  normalizeHistoryRange,
+  relativeReturn
+} from "../assets/history-chart-state.js";
+
+test("history interval returns use value ratios and normalize reverse drags", () => {
+  const rows = [
+    { date: "2026-07-01", kospiClose: 100, longCashValue: 1, longShortValue: 1, buyHoldValue: 1 },
+    { date: "2026-07-02", kospiClose: 110, longCashValue: 1.1, longShortValue: .8, buyHoldValue: 1.25 },
+    { date: "2026-07-03", kospiClose: 99, longCashValue: 1.32, longShortValue: 1, buyHoldValue: 1 }
+  ];
+  assert.deepEqual(normalizeHistoryRange(rows.length, 2, 1), { startIndex: 1, endIndex: 2, count: 2 });
+  assert.ok(Math.abs(relativeReturn(1.1, 1.32) - .2) < 1e-12);
+  const forward = historyIntervalSnapshot(rows, 1, 2);
+  const reverse = historyIntervalSnapshot(rows, 2, 1);
+  assert.deepEqual(reverse, forward);
+  assert.ok(Math.abs(forward.returns.kospi - (-.1)) < 1e-12);
+  assert.ok(Math.abs(forward.returns.long_cash - .2) < 1e-12);
+  assert.ok(Math.abs(forward.returns.long_inverse_cash - .25) < 1e-12);
+  assert.ok(Math.abs(forward.returns.buyhold - (-.2)) < 1e-12);
+});
+
+test("history interval helpers fail closed for missing or zero start values", () => {
+  assert.equal(relativeReturn(0, 1), null);
+  assert.equal(relativeReturn(null, 1), null);
+  assert.equal(relativeReturn(1, null), null);
+  assert.equal(relativeReturn(Number.NaN, 1), null);
+  assert.equal(normalizeHistoryRange(0, 0, 1), null);
+  const rows = [
+    { date: "2026-07-01", kospiClose: 100, longCashValue: null, buyHoldValue: 0 },
+    { date: "2026-07-02", kospiClose: 105, longCashValue: 1.1, buyHoldValue: 1.2 }
+  ];
+  const snapshot = historyIntervalSnapshot(rows, 0, 1, { showLongShort: false });
+  assert.ok(Math.abs(snapshot.returns.kospi - .05) < 1e-12);
+  assert.equal(snapshot.returns.long_cash, null);
+  assert.equal(snapshot.returns.buyhold, null);
+  assert.equal("long_inverse_cash" in snapshot.returns, false);
+});
 
 test("chart navigation preserves original source positions across missing observations", () => {
   const items = [{ sourceIndex: 0 }, { sourceIndex: 4 }, { sourceIndex: 5 }];

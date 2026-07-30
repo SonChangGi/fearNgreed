@@ -17,7 +17,11 @@ import {
   nearestItemIndexByRatio,
   svgPointToClient
 } from "./chart-navigation.js?v=20260724-chart-coordinate-v13";
-import { createHistoryChartState } from "./history-chart-state.js?v=20260722-fear-chart-v19";
+import {
+  createHistoryChartState,
+  historyIntervalSnapshot,
+  relativeReturn
+} from "./history-chart-state.js?v=20260730-history-range-v2";
 import {
   FearControlApiClient,
   sameControlInputs
@@ -1061,6 +1065,10 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
   const latestIndex = Number.isInteger(geometry.latestIndex) ? Math.max(0, Math.min(fallbackIndex, geometry.latestIndex)) : fallbackIndex;
   const initialIndex = Number.isInteger(geometry.initialIndex) ? Math.max(0, Math.min(fallbackIndex, geometry.initialIndex)) : latestIndex;
   const persistSelection = geometry.persistSelection === true;
+  const rangeSelection = geometry.rangeSelection === true && typeof geometry.onRangeSelect === "function";
+  let dragState = null;
+  let suppressClick = false;
+  let keyboardRangeAnchor = null;
   chart._resizeObserver?.disconnect();
   chart._chartItems = valid;
   chart._chartIndex = initialIndex;
@@ -1129,7 +1137,7 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
     if (valid.length) selectIndex(persistSelection ? chart._chartPinnedIndex : chart._chartIndex, null, { phase: "focus" });
     else showTooltip(chart, chart.getAttribute("aria-label") || "차트");
   };
-  const selectPointer = (event, commit = false) => {
+  const pointerIndex = (event) => {
     if (!valid.length) return;
     const current = chartGeometry();
     if (!current) return;
@@ -1141,38 +1149,140 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
     });
     if (!pointer) return;
     const ratio = Math.max(0, Math.min(1, (pointer.x - current.left) / Math.max(1, current.right - current.left)));
-    selectIndex(nearestItemIndexByRatio(valid, ratio, geometry.itemRatio), { x: event.clientX, y: event.clientY }, { commit, phase: commit ? "commit" : "preview" });
+    return nearestItemIndexByRatio(valid, ratio, geometry.itemRatio);
   };
-  chart.onpointermove = selectPointer;
-  chart.onpointerdown = (event) => {
-    if (event.pointerType !== "mouse") {
-      chart.focus({ preventScroll: true });
-      selectPointer(event, persistSelection);
+  const selectPointer = (event, commit = false, phase = commit ? "commit" : "preview") => {
+    const index = pointerIndex(event);
+    if (!Number.isInteger(index)) return;
+    selectIndex(index, { x: event.clientX, y: event.clientY }, { commit, phase });
+    return index;
+  };
+  const clearRange = (phase = "clear") => {
+    keyboardRangeAnchor = null;
+    chart.classList.remove("is-range-dragging");
+    if (rangeSelection && typeof geometry.onRangeClear === "function") geometry.onRangeClear({ phase });
+  };
+  chart.onpointermove = (event) => {
+    if (!dragState) {
+      selectPointer(event);
+      return;
+    }
+    if (event.pointerId != null && dragState.pointerId != null && event.pointerId !== dragState.pointerId) return;
+    const index = pointerIndex(event);
+    if (!Number.isInteger(index)) return;
+    const distance = Math.hypot(Number(event.clientX) - dragState.clientX, Number(event.clientY) - dragState.clientY);
+    if (distance >= 4 || index !== dragState.startIndex) dragState.moved = true;
+    selectIndex(index, { x: event.clientX, y: event.clientY }, { phase: "range-preview" });
+    if (dragState.moved) {
+      chart.classList.add("is-range-dragging");
+      geometry.onRangeSelect(dragState.startIndex, index, { committed: false, phase: "preview" });
+      if (event.cancelable) event.preventDefault();
     }
   };
-  chart.onclick = persistSelection ? (event) => selectPointer(event, true) : null;
+  chart.onpointerdown = (event) => {
+    const pointerType = event.pointerType || "mouse";
+    const primaryButton = event.button == null || event.button === 0;
+    if (rangeSelection && ["mouse", "pen"].includes(pointerType) && primaryButton && event.isPrimary !== false) {
+      chart.focus({ preventScroll: true });
+      const startIndex = selectPointer(event, false, "range-anchor");
+      if (!Number.isInteger(startIndex)) return;
+      dragState = {
+        pointerId: event.pointerId,
+        startIndex,
+        clientX: Number(event.clientX),
+        clientY: Number(event.clientY),
+        moved: false
+      };
+      chart.setPointerCapture?.(event.pointerId);
+      if (event.cancelable) event.preventDefault();
+      return;
+    }
+    if (pointerType !== "mouse") {
+      clearRange("tap");
+      selectPointer(event, persistSelection, "tap");
+    }
+  };
+  chart.onpointerup = (event) => {
+    if (!dragState || (event.pointerId != null && dragState.pointerId != null && event.pointerId !== dragState.pointerId)) return;
+    const activeDrag = dragState;
+    const index = pointerIndex(event);
+    dragState = null;
+    chart.releasePointerCapture?.(event.pointerId);
+    chart.classList.remove("is-range-dragging");
+    suppressClick = true;
+    if (activeDrag.moved && Number.isInteger(index) && index !== activeDrag.startIndex) {
+      selectIndex(index, null, { commit: persistSelection, phase: "range-end" });
+      geometry.onRangeSelect(activeDrag.startIndex, index, { committed: true, phase: "commit" });
+    } else {
+      clearRange("click");
+      selectIndex(Number.isInteger(index) ? index : activeDrag.startIndex, null, { commit: persistSelection, phase: "commit" });
+    }
+  };
+  chart.onpointercancel = () => {
+    if (!dragState) return;
+    dragState = null;
+    clearRange("cancel");
+    if (persistSelection) restorePinned();
+  };
+  chart.onclick = persistSelection ? (event) => {
+    if (suppressClick) {
+      suppressClick = false;
+      event.preventDefault();
+      return;
+    }
+    clearRange("click");
+    selectPointer(event, true);
+  } : null;
   chart.onblur = () => {
     $("#tooltip").hidden = true;
+    if (dragState) return;
     if (persistSelection) restorePinned();
     else chart.classList.remove("is-exploring");
   };
   chart.onmouseleave = () => {
     $("#tooltip").hidden = true;
+    if (dragState) return;
     if (persistSelection) restorePinned();
     else if (document.activeElement !== chart) chart.classList.remove("is-exploring");
   };
   chart.onkeydown = (event) => {
-    if (!valid.length || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    if (!valid.length) return;
+    if (rangeSelection && event.key === "Escape") {
+      event.preventDefault();
+      clearRange("keyboard");
+      selectIndex(chart._chartPinnedIndex, null, { phase: "range-clear" });
+      return;
+    }
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     let next = chart._chartIndex;
     if (event.key === "Home") next = 0;
     else if (event.key === "End") next = valid.length - 1;
     else if (event.key === "ArrowLeft") next -= 1;
     else next += 1;
+    next = Math.max(0, Math.min(valid.length - 1, next));
+    if (rangeSelection && event.shiftKey) {
+      if (!Number.isInteger(keyboardRangeAnchor)) keyboardRangeAnchor = chart._chartIndex;
+      selectIndex(next, null, { commit: persistSelection, phase: "range-keyboard" });
+      if (next === keyboardRangeAnchor) clearRange("keyboard-collapse");
+      else geometry.onRangeSelect(keyboardRangeAnchor, next, { committed: true, phase: "keyboard" });
+      return;
+    }
+    clearRange("keyboard");
     selectIndex(next, null, { commit: persistSelection, phase: "keyboard" });
   };
-  chart._selectIndex = (index) => selectIndex(index, null, { commit: persistSelection, phase: "control" });
-  chart._selectLatest = () => selectIndex(latestIndex, null, { commit: persistSelection, phase: "latest" });
+  chart._selectIndex = (index) => {
+    clearRange("control");
+    selectIndex(index, null, { commit: persistSelection, phase: "control" });
+  };
+  chart._selectLatest = () => {
+    clearRange("latest");
+    selectIndex(latestIndex, null, { commit: persistSelection, phase: "latest" });
+  };
+  chart._clearRange = () => {
+    clearRange("control");
+    selectIndex(chart._chartPinnedIndex, null, { phase: "range-clear" });
+  };
   if (valid.length && typeof geometry.onSelect === "function") geometry.onSelect(valid[initialIndex], initialIndex, { committed: true, phase: "initial" });
   const alignLatest = () => {
     if (chart.clientWidth <= 0 || chart.scrollWidth <= chart.clientWidth) return;
@@ -1438,42 +1548,91 @@ function historySeriesLabel(seriesId, pair) {
   }[seriesId] || "선택 그래프";
 }
 
+function historySnapshotSeriesLabel(seriesId, pair) {
+  return {
+    kospi: "KOSPI",
+    long_cash: "롱/현금",
+    long_inverse_cash: "롱/인버스",
+    buyhold: `${pair.longTicker} B&H`
+  }[seriesId] || historySeriesLabel(seriesId, pair);
+}
+
 function historySeriesValue(row, seriesId) {
-  if (seriesId === "kospi") return Number(row?.kospiClose ?? row?.kospi);
-  if (seriesId === "long_cash") return Number(row?.longCashReturn);
-  if (seriesId === "long_inverse_cash") return Number(row?.longShortReturn);
-  if (seriesId === "buyhold") return Number(row?.buyHoldReturn);
-  return Number.NaN;
+  const value = seriesId === "kospi" ? row?.kospiClose ?? row?.kospi
+    : seriesId === "long_cash" ? row?.longCashReturn
+      : seriesId === "long_inverse_cash" ? row?.longShortReturn
+        : seriesId === "buyhold" ? row?.buyHoldReturn
+          : null;
+  if (value == null) return Number.NaN;
+  return Number(value);
+}
+
+function historyIndexPointText(value) {
+  return value != null && Number.isFinite(Number(value))
+    ? `${new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value))}pt`
+    : "—";
 }
 
 function historySeriesValueText(row, seriesId) {
   const value = historySeriesValue(row, seriesId);
   if (!Number.isFinite(value)) return "—";
-  return seriesId === "kospi" ? `${Math.round(value).toLocaleString()}pt` : fmt.signedPct(value, 2);
+  return seriesId === "kospi" ? historyIndexPointText(value) : fmt.signedPct(value, 2);
 }
 
 function historySeriesContext(row, seriesId) {
   const state = labels[row?.trackState] || row?.trackState || "미확인";
   const percentile = Number.isFinite(Number(row?.trackPercentile)) ? `백분위 ${fmt.score(row.trackPercentile, 1)}` : "백분위 —";
-  if (seriesId === "kospi") return `${state} · ${percentile}`;
+  if (seriesId === "kospi") return `${state} · ${percentile} · 표시 시작 대비 B&H ${fmt.signedPct(row?.kospiBuyHoldReturn, 2)}`;
   if (seriesId === "long_cash") return `${positionWithTicker(row.longCashPosition)} · ${historyPolicyAction(row, "long_cash")} · 선택일까지 MDD ${fmt.pct(row.longCashMddToDate)}`;
   if (seriesId === "long_inverse_cash") return `${positionWithTicker(row.longShortPosition)} · ${historyPolicyAction(row, "long_inverse_cash")} · 선택일까지 MDD ${fmt.pct(row.longShortMddToDate)}`;
   return `선택일까지 MDD ${fmt.pct(row?.buyHoldMddToDate)} · 평가 시작일 0%`;
 }
 
-function renderHistorySelectedSnapshot(row, { periodEnd, showLongCash, showLongShort, pair, activeSeries }) {
+function renderHistorySelectedSnapshot(row, {
+  periodEnd,
+  showLongCash,
+  showLongShort,
+  pair,
+  activeSeries,
+  range = null
+}) {
   const root = $("#history-selected-snapshot");
   const container = $("#history-selected-content");
+  const clearButton = $("#history-range-clear");
   if (!root || !container) return;
   if (!row) {
     root.dataset.context = "empty";
+    delete root.dataset.rangeStart;
+    delete root.dataset.rangeEnd;
+    if (clearButton) clearButton.hidden = true;
     container.innerHTML = '<div class="history-selected-placeholder">선택 기간의 차트 스냅샷을 준비할 수 없습니다.</div>';
     return;
   }
-  const isPeriodEnd = row.date === periodEnd;
   const visibleSeries = ["kospi", ...(showLongCash ? ["long_cash"] : []), ...(showLongShort ? ["long_inverse_cash"] : []), "buyhold"];
-  const values = visibleSeries.map((seriesId) => `<span data-series-id="${seriesId}"${seriesId === activeSeries ? ' class="is-active"' : ""}><small>${esc(historySeriesLabel(seriesId, pair))}</small><strong>${esc(historySeriesValueText(row, seriesId))}</strong></span>`).join("");
+  if (range) {
+    const values = visibleSeries.map((seriesId) => {
+      const value = range.returns?.[seriesId];
+      const detail = seriesId === "kospi"
+        ? `${historyIndexPointText(range.kospiStart)} → ${historyIndexPointText(range.kospiEnd)}`
+        : value == null ? "선택 시작일 평가값 없음" : "구간 시작 평가액 기준";
+      return `<span data-series-id="${seriesId}"${seriesId === activeSeries ? ' class="is-active"' : ""}><small>${esc(historySnapshotSeriesLabel(seriesId, pair))}</small><strong>${esc(fmt.signedPct(value, 2))}</strong><i class="history-selected-detail">${esc(detail)}</i></span>`;
+    }).join("");
+    root.dataset.context = "range";
+    root.dataset.rangeStart = range.startDate;
+    root.dataset.rangeEnd = range.endDate;
+    if (clearButton) clearButton.hidden = false;
+    container.innerHTML = `<div class="history-selected-head"><div><span>드래그 구간 수익률</span><strong>${esc(range.startDate)} → ${esc(range.endDate)}</strong><em>${range.count.toLocaleString()}개 거래일</em></div><div class="history-selected-values">${values}</div></div>`;
+    return;
+  }
+  const isPeriodEnd = row.date === periodEnd;
+  const values = visibleSeries.map((seriesId) => {
+    const detail = seriesId === "kospi" ? `표시 시작 대비 B&H ${fmt.signedPct(row.kospiBuyHoldReturn, 2)}` : "표시 구간 누적";
+    return `<span data-series-id="${seriesId}"${seriesId === activeSeries ? ' class="is-active"' : ""}><small>${esc(historySnapshotSeriesLabel(seriesId, pair))}</small><strong>${esc(historySeriesValueText(row, seriesId))}</strong><i class="history-selected-detail">${esc(detail)}</i></span>`;
+  }).join("");
   root.dataset.context = isPeriodEnd ? "period-end" : "selected-date";
+  delete root.dataset.rangeStart;
+  delete root.dataset.rangeEnd;
+  if (clearButton) clearButton.hidden = true;
   container.innerHTML = `<div class="history-selected-head"><div><span>선택일 값</span><strong>${esc(row.date)}</strong><em>${isPeriodEnd ? "평가 종료일" : "기간 내 탐색"}</em></div><div class="history-selected-values">${values}</div></div>`;
 }
 
@@ -1504,6 +1663,8 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     $("#history-callout-series").textContent = "강조 그래프";
     $("#history-callout-value").textContent = "—";
     $("#history-callout-context").textContent = "유효 거래일을 8일 이상 선택해 주세요.";
+    $("#history-kospi-close").textContent = "—";
+    $("#history-kospi-buyhold").textContent = "—";
     $("#history-data-date").textContent = store.summary?.dataAsOf || "—";
     $("#history-evaluation-date").textContent = "—";
     const tableRows = rows.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[rowTrackValue(row, "state")] || rowTrackValue(row, "state"), "—", "—"]);
@@ -1550,7 +1711,9 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   });
 
   const runningMdd = { longCash: null, longShort: null, buyHold: null };
+  const displayedStartKospi = Number(plotRows[0]?.kospiClose ?? plotRows[0]?.kospi);
   plotRows.forEach((row) => {
+    row.kospiBuyHoldReturn = relativeReturn(displayedStartKospi, row.kospiClose ?? row.kospi);
     row.longCashReturn = equityReturn(row.longCashValue);
     row.longShortReturn = equityReturn(row.longShortValue);
     row.buyHoldReturn = equityReturn(row.buyHoldValue);
@@ -1672,10 +1835,11 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   const matchedPeriodEndIndex = plotRows.findIndex((row) => row.date === m.end);
   const periodEndIndex = matchedPeriodEndIndex >= 0 ? matchedPeriodEndIndex : plotRows.length - 1;
   const zeroReference = equityMin0 - equityPad <= 0 && equityMax0 + equityPad >= 0 ? `<line class="reference-line performance-zero" x1="${p.l}" y1="${equityY(0)}" x2="${plotRight}" y2="${equityY(0)}"/>` : "";
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="history-series line-price" data-history-series="kospi">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><g class="history-series history-series-end" data-history-series="kospi"><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text></g>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="history-series line-buyhold" data-history-series="buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<circle id="history-active-point" class="history-active-point" cx="0" cy="0" r="5"/><text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">첫 ETF 평가일 = 0%</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}<g id="history-range-brush" class="history-range-brush" aria-hidden="true" hidden><rect class="history-range-band" x="0" y="${p.priceTop}" width="0" height="${p.equityBottom - p.priceTop}"/><line class="history-range-boundary start" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/><line class="history-range-boundary end" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/></g>${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="history-series line-price" data-history-series="kospi">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><g class="history-series history-series-end" data-history-series="kospi"><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text></g>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="history-series line-buyhold" data-history-series="buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<circle id="history-active-point" class="history-active-point" cx="0" cy="0" r="5"/><text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">첫 ETF 평가일 = 0%</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
   container.setAttribute("aria-label", `${plotRows[0].date}부터 ${plotRows.at(-1).date}까지 ${compactModelName()} KOSPI 종가 신호, ${pairLabel(store.backtestProxy, true)} 다음 시가 체결, ${policyLabel()} 비용 후 누적수익률 통합 차트.`);
   let selectedHistoryRow = plotRows[periodEndIndex];
   let selectedHistoryIndex = periodEndIndex;
+  let selectedHistoryRange = null;
   const dateInput = $("#history-chart-date");
   dateInput.disabled = false;
   dateInput.min = plotRows[0].date;
@@ -1707,7 +1871,53 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     $("#history-callout-series").textContent = historySeriesLabel(shownSeries, pair);
     $("#history-callout-value").textContent = historySeriesValueText(selectedHistoryRow, shownSeries);
     $("#history-callout-context").textContent = `${selectedHistoryRow.date === m.end ? "평가 종료일" : "기간 내 탐색"} · ${historySeriesContext(selectedHistoryRow, shownSeries)}`;
-    renderHistorySelectedSnapshot(selectedHistoryRow, { periodEnd: m.end || plotRows.at(-1).date, showLongCash, showLongShort, pair, activeSeries: shownSeries });
+    $("#history-kospi-close").textContent = historyIndexPointText(selectedHistoryRow.kospiClose ?? selectedHistoryRow.kospi);
+    $("#history-kospi-buyhold").textContent = fmt.signedPct(selectedHistoryRow.kospiBuyHoldReturn, 2);
+    renderHistorySelectedSnapshot(selectedHistoryRow, { periodEnd: m.end || plotRows.at(-1).date, showLongCash, showLongShort, pair, activeSeries: shownSeries, range: selectedHistoryRange });
+  };
+
+  const clearHistoryRange = () => {
+    selectedHistoryRange = null;
+    container.removeAttribute("data-range-start");
+    container.removeAttribute("data-range-end");
+    const brush = container.querySelector("#history-range-brush");
+    brush?.setAttribute("hidden", "");
+    updateHistorySeriesView(historyChartState.activeSeries);
+  };
+
+  const updateHistoryRange = (startIndex, endIndex) => {
+    const snapshot = historyIntervalSnapshot(plotRows, startIndex, endIndex, { showLongCash, showLongShort });
+    if (!snapshot || snapshot.count < 2) {
+      clearHistoryRange();
+      return;
+    }
+    selectedHistoryRange = snapshot;
+    container.dataset.rangeStart = snapshot.startDate;
+    container.dataset.rangeEnd = snapshot.endDate;
+    const brush = container.querySelector("#history-range-brush");
+    const band = brush?.querySelector(".history-range-band");
+    const startLine = brush?.querySelector(".history-range-boundary.start");
+    const endLine = brush?.querySelector(".history-range-boundary.end");
+    const startX = x(snapshot.startIndex);
+    const endX = x(snapshot.endIndex);
+    const bandLeft = Math.max(p.l, startX - pointSpacing / 2);
+    const bandRight = Math.min(plotRight, endX + pointSpacing / 2);
+    brush?.removeAttribute("hidden");
+    band?.setAttribute("x", String(bandLeft));
+    band?.setAttribute("width", String(Math.max(2, bandRight - bandLeft)));
+    for (const [line, position] of [[startLine, startX], [endLine, endX]]) {
+      line?.setAttribute("x1", String(position));
+      line?.setAttribute("x2", String(position));
+    }
+    updateHistorySeriesView(historyChartState.activeSeries);
+    const parts = [
+      `${snapshot.startDate}부터 ${snapshot.endDate}까지 ${snapshot.count}개 거래일`,
+      `KOSPI ${fmt.signedPct(snapshot.returns.kospi, 2)}`
+    ];
+    if (showLongCash) parts.push(`롱 현금 ${fmt.signedPct(snapshot.returns.long_cash, 2)}`);
+    if (showLongShort) parts.push(`롱 인버스 현금 ${fmt.signedPct(snapshot.returns.long_inverse_cash, 2)}`);
+    parts.push(`${pair.longTicker} 매수 보유 ${fmt.signedPct(snapshot.returns.buyhold, 2)}`);
+    container.setAttribute("aria-valuetext", parts.join(", "));
   };
 
   $$("#history-series-controls [data-history-series]").forEach((button) => {
@@ -1721,7 +1931,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   });
   attachChartNavigation(container, plotRows, (row) => {
     const signal = row.signal ? `${labels[row.signal.state]} 상태 첫 관측 · 백분위 ${fmt.score(row.signal.percentile)}` : "신규 극단 신호 없음";
-    const lines = [`차트 선택일 ${row.date} · KOSPI ${Number(row.kospiClose ?? row.kospi).toLocaleString()}pt`, `종가 연구 상태  ${labels[row.trackState] || row.trackState} · ${signal}`, "선택일 누적성과"];
+    const lines = [`차트 선택일 ${row.date} · KOSPI ${historyIndexPointText(row.kospiClose ?? row.kospi)} · 표시 시작 대비 B&H ${fmt.signedPct(row.kospiBuyHoldReturn, 2)}`, `종가 연구 상태  ${labels[row.trackState] || row.trackState} · ${signal}`, "선택일 누적성과"];
     if (showLongCash) lines.push(`롱/현금  ${positionWithTicker(row.longCashPosition)} · ${historyPolicyAction(row, "long_cash")} · ${fmt.signedPct(row.longCashReturn, 1)}`);
     if (showLongShort) lines.push(`롱/인버스  ${positionWithTicker(row.longShortPosition)} · ${historyPolicyAction(row, "long_inverse_cash")} · ${fmt.signedPct(row.longShortReturn, 1)}`);
     lines.push(`${pair.longTicker} 매수·보유  ${fmt.signedPct(row.buyHoldReturn, 1)}`);
@@ -1733,13 +1943,20 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     initialIndex: periodEndIndex,
     latestIndex: periodEndIndex,
     persistSelection: true,
+    rangeSelection: true,
     showTooltip: false,
     onSelect: (row, index) => {
       selectedHistoryRow = row;
       selectedHistoryIndex = index;
       updateHistorySeriesView(historyChartState.activeSeries);
-    }
+    },
+    onRangeSelect: updateHistoryRange,
+    onRangeClear: clearHistoryRange
   });
+  $("#history-range-clear").onclick = () => {
+    container._clearRange?.();
+    container.focus({ preventScroll: true });
+  };
   dateInput.onchange = () => {
     const selectedTime = Date.parse(`${dateInput.value}T00:00:00`);
     if (!Number.isFinite(selectedTime)) {

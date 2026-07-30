@@ -80,12 +80,24 @@ function failNextInnerHtmlWrite(target) {
   return () => { delete target.innerHTML; };
 }
 
-function pointerEvent(window, type, { clientX, clientY, pointerType = "mouse" }) {
+function pointerEvent(window, type, {
+  clientX,
+  clientY,
+  pointerType = "mouse",
+  pointerId = 1,
+  button = 0,
+  buttons = type === "pointerup" ? 0 : 1,
+  isPrimary = true
+}) {
   const event = new window.Event(type, { bubbles: true, cancelable: true });
   Object.defineProperties(event, {
     clientX: { configurable: true, value: clientX },
     clientY: { configurable: true, value: clientY },
-    pointerType: { configurable: true, value: pointerType }
+    pointerType: { configurable: true, value: pointerType },
+    pointerId: { configurable: true, value: pointerId },
+    button: { configurable: true, value: button },
+    buttons: { configurable: true, value: buttons },
+    isPrimary: { configurable: true, value: isPrimary }
   });
   return event;
 }
@@ -493,6 +505,8 @@ test("integrated chart exploration changes only local chart context", { concurre
   assert.equal(evaluationDate, CONFIRMED_DATA_AS_OF);
   assert.equal(dataDate, CONFIRMED_DATA_AS_OF);
   assert.equal(initialDate, evaluationDate);
+  assert.match(document.querySelector("#history-kospi-close").textContent, /pt$/);
+  assert.match(document.querySelector("#history-kospi-buyhold").textContent, /^[+-]\d+\.\d{2}%$/);
   assert.deepEqual(
     [...document.querySelectorAll("[data-history-series]")].filter((button) => button.getAttribute("aria-pressed") === "true").map((button) => button.dataset.historySeries),
     ["long_inverse_cash"]
@@ -515,9 +529,62 @@ test("integrated chart exploration changes only local chart context", { concurre
   assert.equal(window.location.href, initialUrl);
   assert.equal(window.localStorage.getItem("fearngreed-controls-v8"), initialStorage);
 
+  const svg = chart.querySelector("svg");
+  const identity = affineMatrix({ scale: 1, left: 0, top: 0 });
+  svg.getScreenCTM = () => identity;
+  chart.getBoundingClientRect = () => ({
+    x: 0, y: 0, left: 0, top: 0, right: 1120, bottom: 700, width: 1120, height: 700, toJSON: () => ({})
+  });
+  chart.setPointerCapture = () => {};
+  chart.releasePointerCapture = () => {};
+  const startIndex = Math.floor((chart._chartItems.length - 1) * .25);
+  const endIndex = Math.floor((chart._chartItems.length - 1) * .75);
+  const xAt = (index) => 120 + (988 - 120) * index / (chart._chartItems.length - 1);
+  chart.dispatchEvent(pointerEvent(window, "pointerdown", { clientX: xAt(startIndex), clientY: 250, pointerId: 7 }));
+  chart.dispatchEvent(pointerEvent(window, "pointermove", { clientX: xAt(endIndex), clientY: 250, pointerId: 7 }));
+  chart.dispatchEvent(pointerEvent(window, "pointerup", { clientX: xAt(endIndex), clientY: 250, pointerId: 7 }));
+
+  const rangePanel = document.querySelector("#history-selected-snapshot");
+  const startRow = chart._chartItems[startIndex];
+  const endRow = chart._chartItems[endIndex];
+  const signedPct = (value) => `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
+  assert.equal(rangePanel.dataset.context, "range");
+  assert.equal(rangePanel.dataset.rangeStart, startRow.date);
+  assert.equal(rangePanel.dataset.rangeEnd, endRow.date);
+  assert.equal(
+    rangePanel.querySelector('[data-series-id="kospi"] strong').textContent,
+    signedPct(Number(endRow.kospiClose) / Number(startRow.kospiClose) - 1)
+  );
+  assert.equal(
+    rangePanel.querySelector('[data-series-id="long_cash"] strong').textContent,
+    signedPct(Number(endRow.longCashValue) / Number(startRow.longCashValue) - 1)
+  );
+  assert.equal(
+    rangePanel.querySelector('[data-series-id="long_inverse_cash"] strong').textContent,
+    signedPct(Number(endRow.longShortValue) / Number(startRow.longShortValue) - 1)
+  );
+  assert.equal(
+    rangePanel.querySelector('[data-series-id="buyhold"] strong').textContent,
+    signedPct(Number(endRow.buyHoldValue) / Number(startRow.buyHoldValue) - 1)
+  );
+  assert.match(chart.getAttribute("aria-valuetext"), new RegExp(`${startRow.date}.*${endRow.date}`));
+  assert.equal(chart.querySelector("#history-range-brush").hasAttribute("hidden"), false);
+  assert.equal(signature(document, fixedOutputs), initialOutputs);
+  assert.equal(window.location.href, initialUrl);
+  assert.equal(window.localStorage.getItem("fearngreed-controls-v8"), initialStorage);
+
+  click(window, "#history-range-clear");
+  assert.notEqual(rangePanel.dataset.context, "range");
+  assert.equal(chart.querySelector("#history-range-brush").hasAttribute("hidden"), true);
+  chart.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowLeft", shiftKey: true, bubbles: true, cancelable: true }));
+  assert.equal(rangePanel.dataset.context, "range");
+  chart.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  assert.notEqual(rangePanel.dataset.context, "range");
+
   dateInput.value = dateInput.min;
   dateInput.dispatchEvent(new window.Event("change", { bubbles: true }));
   assert.equal(dateInput.value, dateInput.min);
+  assert.equal(document.querySelector("#history-kospi-buyhold").textContent, "+0.00%");
   assert.equal(document.querySelector("#history-evaluation-date").textContent, evaluationDate);
   click(window, '[data-chart-latest="history-chart"]');
   assert.equal(dateInput.value, evaluationDate);
