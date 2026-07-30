@@ -8,7 +8,7 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const k="quant-research-theme",a=["quant-calm-theme","quant-dashboard-theme","dram-price-theme"],v=x=>x==="dark"||x==="light",q=new URLSearchParams(location.search).get("theme");let s=null,p=null;try{const c=localStorage.getItem(k);s=v(c)?c:a.map(x=>localStorage.getItem(x)).find(v);if(v(s)&&c!==s)localStorage.setItem(k,s);a.forEach(x=>localStorage.removeItem(x))}catch(_){}try{p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}catch(_){}document.documentElement.dataset.theme=v(q)?q:(s||p||"light")}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20260730-history-range-v2">
+  <link rel="stylesheet" href="assets/styles.css?v=20260730-history-range-v3">
   <link rel="stylesheet" href="assets/shared-nav.css?v=20260728-shared-nav">
 </head>
 <body id="top" class="has-quant-shared-nav">
@@ -84,7 +84,7 @@
             <button type="button" data-history-series="kospi" aria-pressed="false"><i class="legend-line price"></i>KOSPI</button>
             <button id="history-legend-long-cash" type="button" data-history-series="long_cash" aria-pressed="false"><i class="legend-line strategy"></i>롱 / 현금</button>
             <button id="history-legend-long-inverse" type="button" data-history-series="long_inverse_cash" aria-pressed="true"><i class="legend-line longshort"></i>롱 / 인버스</button>
-            <button id="history-legend-buyhold" type="button" data-history-series="buyhold" aria-pressed="false"><i class="legend-line buyhold"></i>롱 ETF 보유</button>
+            <button id="history-legend-buyhold" type="button" data-history-series="buyhold" aria-pressed="false"><i class="legend-line buyhold"></i>롱 ETF B&amp;H</button>
           </div>
           <div class="history-event-key" aria-label="신호와 체결 기호">
             <span><i class="legend-dot fear"></i>공포</span><span><i class="legend-dot greed"></i>탐욕</span><span id="history-legend-long-entry"><i class="legend-entry"></i>롱</span><span id="history-legend-inverse-entry"><i class="legend-entry inverse"></i>인버스</span><span id="history-legend-exit"><i class="legend-action exit"></i>청산</span><span id="history-legend-reversal"><i class="legend-action reversal"></i>교체</span>
@@ -96,7 +96,7 @@
           <aside id="history-chart-callout" class="history-chart-callout" aria-live="polite">
             <label for="history-chart-date">차트 선택일<input id="history-chart-date" type="date" aria-describedby="history-help"></label>
             <div><span id="history-callout-series">강조 그래프</span><strong id="history-callout-value">—</strong><small id="history-callout-context">값을 준비하는 중입니다.</small></div>
-            <dl><div><dt>선택일 KOSPI</dt><dd id="history-kospi-close">—</dd></div><div><dt>표시 시작 대비 B&amp;H</dt><dd id="history-kospi-buyhold">—</dd></div><div><dt>데이터 최신일</dt><dd id="history-data-date">—</dd></div><div><dt>평가 종료일</dt><dd id="history-evaluation-date">—</dd></div></dl>
+            <dl><div><dt>선택일 KOSPI 종가</dt><dd id="history-kospi-close">—</dd></div><div><dt>KOSPI 지수 B&amp;H · 표시 첫 종가 대비</dt><dd id="history-kospi-buyhold">—</dd></div></dl>
           </aside>
           <div id="history-chart" class="chart chart-large unified-strategy-chart" role="img" aria-roledescription="대화형 통합 시계열 차트" aria-label="KOSPI 가격, 종가 신호, 다음 시가 실행과 선택 전략 결과" aria-describedby="history-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End Shift+ArrowLeft Shift+ArrowRight Shift+Home Shift+End Escape" tabindex="0"></div>
         </div>
@@ -214,7 +214,7 @@
     <section id="strategy" class="section-block" aria-labelledby="strategy-title">
       <div class="section-head"><div><p class="eyebrow">ACTUAL LISTED ETF EXECUTION</p><div class="title-with-scope"><h2 id="strategy-title">롱 / 현금 · 롱 / 인버스 과거검증</h2><span id="strategy-model-scope" class="scope-badge fixed">실전 신호</span></div></div><p class="source-line">실제 ETF 익일 시가 · 사용자 최대 보유일 · 현금 수익률 0%</p></div>
       <div class="strategy-grid">
-        <article class="card secondary-detail-card"><div class="card-head"><div><span class="detail-kicker">PERFORMANCE DETAIL</span><h3 id="equity-title">선택 모형 누적수익률과 낙폭</h3><p id="equity-subtitle">수익률 · 낙폭</p></div><button class="latest-button" type="button" data-chart-latest="equity-chart">기간 끝으로</button></div><div class="legend"><span id="equity-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="equity-legend-long-inverse"><i class="legend-line longshort"></i>롱 / 인버스 / 현금</span><span><i class="legend-line buyhold"></i>롱 ETF 매수·보유</span></div><div id="equity-chart" class="chart chart-stack" role="img" aria-roledescription="대화형 보조 성과 차트" aria-label="선택 실제 ETF 페어의 롱 현금, 롱 인버스 현금, 매수 보유 누적수익률 및 낙폭 상세" aria-describedby="equity-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div><p id="equity-help" class="sr-only">화살표 키로 날짜를 이동합니다.</p><details class="data-alternative"><summary>차트 끝값 표로 보기</summary><div class="table-scroll" id="equity-data-table"></div></details></article>
+        <article class="card secondary-detail-card"><div class="card-head"><div><span class="detail-kicker">PERFORMANCE DETAIL</span><h3 id="equity-title">선택 모형 누적수익률과 낙폭</h3><p id="equity-subtitle">수익률 · 낙폭</p></div><button class="latest-button" type="button" data-chart-latest="equity-chart">기간 끝으로</button></div><div class="legend"><span id="equity-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="equity-legend-long-inverse"><i class="legend-line longshort"></i>롱 / 인버스 / 현금</span><span><i class="legend-line buyhold"></i>롱 ETF B&amp;H</span></div><div id="equity-chart" class="chart chart-stack" role="img" aria-roledescription="대화형 보조 성과 차트" aria-label="선택 실제 ETF 페어의 롱 현금, 롱 인버스 현금, ETF 매수·보유 누적수익률 및 낙폭 상세" aria-describedby="equity-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div><p id="equity-help" class="sr-only">화살표 키로 날짜를 이동합니다.</p><details class="data-alternative"><summary>차트 끝값 표로 보기</summary><div class="table-scroll" id="equity-data-table"></div></details></article>
         <article class="card"><div class="card-head"><div><h3>평가 종료일 성과</h3><p id="backtest-card-subtitle">평가 종료일과 적용 조건을 불러오는 중입니다.</p></div></div><div id="backtest-cards" class="backtest-cards" aria-live="polite"></div></article>
       </div>
       <article id="open-trade-card" class="card open-trade-card" aria-labelledby="open-trade-title">
@@ -283,6 +283,6 @@
   <nav class="page-jump-nav" aria-label="페이지 빠른 이동"><a href="#top" aria-label="맨 위로 이동"><span aria-hidden="true">↑</span><span class="sr-only">맨 위</span></a><a href="#page-bottom" aria-label="맨 아래로 이동"><span aria-hidden="true">↓</span><span class="sr-only">맨 아래</span></a></nav>
   <div id="page-bottom" tabindex="-1" aria-hidden="true"></div>
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="assets/app.js?v=20260730-history-range-v2"></script>
+  <script type="module" src="assets/app.js?v=20260730-history-range-v3"></script>
 </body>
 </html>

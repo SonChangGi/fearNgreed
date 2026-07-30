@@ -459,7 +459,10 @@ test('integrated history uses readable axes, explicit policy lanes, and only vis
 
 test('chart selection snapshot is dynamic while period-end cards and tables stay fixed',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
-  for(const id of ['history-selected-snapshot','history-selected-title','history-selected-content','history-range-clear','history-chart-callout','history-chart-date','history-callout-series','history-callout-value','history-kospi-close','history-kospi-buyhold','history-data-date','history-evaluation-date']) assert.match(html,new RegExp(`id="${id}"`));
+  for(const id of ['history-selected-snapshot','history-selected-title','history-selected-content','history-range-clear','history-chart-callout','history-chart-date','history-callout-series','history-callout-value','history-kospi-close','history-kospi-buyhold']) assert.match(html,new RegExp(`id="${id}"`));
+  assert.doesNotMatch(html,/id="history-(?:data-date|evaluation-date)"/);
+  assert.match(html,/<dt>KOSPI 지수 B&amp;H · 표시 첫 종가 대비<\/dt><dd id="history-kospi-buyhold">/);
+  assert.match(app,/\$\{pair\.longTicker\} ETF B&H/);
   assert.match(html,/id="history-selected-snapshot"[^>]*aria-live="polite"/);
   assert.match(html,/id="history-chart"[^>]*aria-describedby="history-help"[^>]*aria-keyshortcuts="[^"]*Shift\+ArrowLeft[^"]*Escape"[^>]*tabindex="0"/);
   assert.match(html,/id="history-help" class="chart-note history-interaction-help"/);

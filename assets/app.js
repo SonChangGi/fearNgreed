@@ -1544,16 +1544,16 @@ function historySeriesLabel(seriesId, pair) {
     kospi: "KOSPI 종가",
     long_cash: "롱 / 현금",
     long_inverse_cash: "롱 / 인버스 / 현금",
-    buyhold: `${pair.longTicker} 매수·보유`
+    buyhold: `${pair.longTicker} ETF 매수·보유`
   }[seriesId] || "선택 그래프";
 }
 
 function historySnapshotSeriesLabel(seriesId, pair) {
   return {
-    kospi: "KOSPI",
+    kospi: "KOSPI 종가",
     long_cash: "롱/현금",
     long_inverse_cash: "롱/인버스",
-    buyhold: `${pair.longTicker} B&H`
+    buyhold: `${pair.longTicker} ETF B&H`
   }[seriesId] || historySeriesLabel(seriesId, pair);
 }
 
@@ -1582,10 +1582,10 @@ function historySeriesValueText(row, seriesId) {
 function historySeriesContext(row, seriesId) {
   const state = labels[row?.trackState] || row?.trackState || "미확인";
   const percentile = Number.isFinite(Number(row?.trackPercentile)) ? `백분위 ${fmt.score(row.trackPercentile, 1)}` : "백분위 —";
-  if (seriesId === "kospi") return `${state} · ${percentile} · 표시 시작 대비 B&H ${fmt.signedPct(row?.kospiBuyHoldReturn, 2)}`;
+  if (seriesId === "kospi") return `${state} · ${percentile} · KOSPI 지수 B&H(표시 첫 종가 대비) ${fmt.signedPct(row?.kospiBuyHoldReturn, 2)}`;
   if (seriesId === "long_cash") return `${positionWithTicker(row.longCashPosition)} · ${historyPolicyAction(row, "long_cash")} · 선택일까지 MDD ${fmt.pct(row.longCashMddToDate)}`;
   if (seriesId === "long_inverse_cash") return `${positionWithTicker(row.longShortPosition)} · ${historyPolicyAction(row, "long_inverse_cash")} · 선택일까지 MDD ${fmt.pct(row.longShortMddToDate)}`;
-  return `선택일까지 MDD ${fmt.pct(row?.buyHoldMddToDate)} · 평가 시작일 0%`;
+  return `선택일까지 MDD ${fmt.pct(row?.buyHoldMddToDate)} · ${row?.buyHoldBasisText || "ETF 평가 시작 기준"}`;
 }
 
 function renderHistorySelectedSnapshot(row, {
@@ -1614,7 +1614,8 @@ function renderHistorySelectedSnapshot(row, {
       const value = range.returns?.[seriesId];
       const detail = seriesId === "kospi"
         ? `${historyIndexPointText(range.kospiStart)} → ${historyIndexPointText(range.kospiEnd)}`
-        : value == null ? "선택 시작일 평가값 없음" : "구간 시작 평가액 기준";
+        : value == null ? "선택 시작일 평가값 없음"
+          : seriesId === "buyhold" ? "구간 시작 ETF 평가액 기준" : "구간 시작 전략 평가액 기준";
       return `<span data-series-id="${seriesId}"${seriesId === activeSeries ? ' class="is-active"' : ""}><small>${esc(historySnapshotSeriesLabel(seriesId, pair))}</small><strong>${esc(fmt.signedPct(value, 2))}</strong><i class="history-selected-detail">${esc(detail)}</i></span>`;
     }).join("");
     root.dataset.context = "range";
@@ -1626,7 +1627,9 @@ function renderHistorySelectedSnapshot(row, {
   }
   const isPeriodEnd = row.date === periodEnd;
   const values = visibleSeries.map((seriesId) => {
-    const detail = seriesId === "kospi" ? `표시 시작 대비 B&H ${fmt.signedPct(row.kospiBuyHoldReturn, 2)}` : "표시 구간 누적";
+    const detail = seriesId === "kospi"
+      ? `KOSPI 지수 B&H · 표시 첫 종가 대비 ${fmt.signedPct(row.kospiBuyHoldReturn, 2)}`
+      : seriesId === "buyhold" ? `조정가격 · ${row.buyHoldBasisText || "ETF 평가 시작 기준"}` : "표시 구간 누적";
     return `<span data-series-id="${seriesId}"${seriesId === activeSeries ? ' class="is-active"' : ""}><small>${esc(historySnapshotSeriesLabel(seriesId, pair))}</small><strong>${esc(historySeriesValueText(row, seriesId))}</strong><i class="history-selected-detail">${esc(detail)}</i></span>`;
   }).join("");
   root.dataset.context = isPeriodEnd ? "period-end" : "selected-date";
@@ -1650,7 +1653,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   $("#history-legend-inverse-entry").hidden = !showLongShort;
   $("#history-legend-reversal").hidden = !showLongShort;
   const pair = pairMeta();
-  $("#history-legend-buyhold").innerHTML = `<i class="legend-line buyhold"></i>${esc(pair.longTicker)} ${esc(pair.longName)} 매수·보유`;
+  $("#history-legend-buyhold").innerHTML = `<i class="legend-line buyhold"></i>${esc(pair.longTicker)} ${esc(pair.longName)} ETF B&amp;H`;
   syncHistoryRangeControls(rows);
   const container = $("#history-chart");
   const { longCash, longShort, primary } = scenarioBundle;
@@ -1665,8 +1668,6 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     $("#history-callout-context").textContent = "유효 거래일을 8일 이상 선택해 주세요.";
     $("#history-kospi-close").textContent = "—";
     $("#history-kospi-buyhold").textContent = "—";
-    $("#history-data-date").textContent = store.summary?.dataAsOf || "—";
-    $("#history-evaluation-date").textContent = "—";
     const tableRows = rows.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[rowTrackValue(row, "state")] || rowTrackValue(row, "state"), "—", "—"]);
     $("#history-data-table").innerHTML = dataTable(["날짜", "KOSPI", "선택 트랙 상태", "포지션", "체결"], tableRows, `선택 기간 ${tableRows.length}개 관측값`);
     return showEmpty(container, "통합 분석을 표시하려면 유효 기간을 넓혀 주세요.");
@@ -1712,7 +1713,12 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
 
   const runningMdd = { longCash: null, longShort: null, buyHold: null };
   const displayedStartKospi = Number(plotRows[0]?.kospiClose ?? plotRows[0]?.kospi);
+  const firstEtfEvaluation = plotRows.find((row) => Number.isFinite(Number(row.buyHoldValue)));
+  const buyHoldBasisText = firstEtfEvaluation
+    ? `ETF 평가 시작 ${firstEtfEvaluation.date} ${Math.abs(Number(firstEtfEvaluation.buyHoldValue) - 1) < 1e-10 ? "종가" : "시가"} 기준`
+    : "ETF 평가 시작 기준 없음";
   plotRows.forEach((row) => {
+    row.buyHoldBasisText = buyHoldBasisText;
     row.kospiBuyHoldReturn = relativeReturn(displayedStartKospi, row.kospiClose ?? row.kospi);
     row.longCashReturn = equityReturn(row.longCashValue);
     row.longShortReturn = equityReturn(row.longShortValue);
@@ -1823,7 +1829,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   const endSeries = [
     ...(showLongCash ? [{ id: "long_cash", label: "롱/현금", field: "longCashReturn", cls: "strategy" }] : []),
     ...(showLongShort ? [{ id: "long_inverse_cash", label: "롱/인버스", field: "longShortReturn", cls: "longshort" }] : []),
-    { id: "buyhold", label: `${pair.longTicker} BH`, field: "buyHoldReturn", cls: "buyhold" }
+    { id: "buyhold", label: `${pair.longTicker} ETF B&H`, field: "buyHoldReturn", cls: "buyhold" }
   ].map((series) => ({ ...series, value: Number(lastRow[series.field]) })).filter((series) => Number.isFinite(series.value)).sort((a, b) => equityY(a.value) - equityY(b.value));
   const labelGap = 18, minLabelY = p.equityTop + 8, maxLabelY = p.equityBottom - 4;
   endSeries.forEach((series, index) => { series.labelY = Math.max(equityY(series.value), index ? endSeries[index - 1].labelY + labelGap : minLabelY); });
@@ -1835,7 +1841,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   const matchedPeriodEndIndex = plotRows.findIndex((row) => row.date === m.end);
   const periodEndIndex = matchedPeriodEndIndex >= 0 ? matchedPeriodEndIndex : plotRows.length - 1;
   const zeroReference = equityMin0 - equityPad <= 0 && equityMax0 + equityPad >= 0 ? `<line class="reference-line performance-zero" x1="${p.l}" y1="${equityY(0)}" x2="${plotRight}" y2="${equityY(0)}"/>` : "";
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}<g id="history-range-brush" class="history-range-brush" aria-hidden="true" hidden><rect class="history-range-band" x="0" y="${p.priceTop}" width="0" height="${p.equityBottom - p.priceTop}"/><line class="history-range-boundary start" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/><line class="history-range-boundary end" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/></g>${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="history-series line-price" data-history-series="kospi">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><g class="history-series history-series-end" data-history-series="kospi"><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text></g>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="history-series line-buyhold" data-history-series="buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<circle id="history-active-point" class="history-active-point" cx="0" cy="0" r="5"/><text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">첫 ETF 평가일 = 0%</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}<g id="history-range-brush" class="history-range-brush" aria-hidden="true" hidden><rect class="history-range-band" x="0" y="${p.priceTop}" width="0" height="${p.equityBottom - p.priceTop}"/><line class="history-range-boundary start" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/><line class="history-range-boundary end" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/></g>${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="history-series line-price" data-history-series="kospi">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><g class="history-series history-series-end" data-history-series="kospi"><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text></g>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="history-series line-buyhold" data-history-series="buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<circle id="history-active-point" class="history-active-point" cx="0" cy="0" r="5"/><text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">${esc(Math.abs(Number(firstEtfEvaluation?.buyHoldValue) - 1) < 1e-10 ? "ETF 평가 첫 종가 = 0%" : "ETF 평가 첫 시가 = 0%")}</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
   container.setAttribute("aria-label", `${plotRows[0].date}부터 ${plotRows.at(-1).date}까지 ${compactModelName()} KOSPI 종가 신호, ${pairLabel(store.backtestProxy, true)} 다음 시가 체결, ${policyLabel()} 비용 후 누적수익률 통합 차트.`);
   let selectedHistoryRow = plotRows[periodEndIndex];
   let selectedHistoryIndex = periodEndIndex;
@@ -1844,8 +1850,6 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   dateInput.disabled = false;
   dateInput.min = plotRows[0].date;
   dateInput.max = plotRows.at(-1).date;
-  $("#history-data-date").textContent = store.summary?.dataAsOf || "—";
-  $("#history-evaluation-date").textContent = m.end || plotRows.at(-1).date;
 
   const updateHistorySeriesView = (seriesId, { preview = false } = {}) => {
     const shownSeries = preview ? historyChartState.preview(seriesId, visibleSeriesIds) : historyChartState.activate(seriesId, visibleSeriesIds);
@@ -1916,7 +1920,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     ];
     if (showLongCash) parts.push(`롱 현금 ${fmt.signedPct(snapshot.returns.long_cash, 2)}`);
     if (showLongShort) parts.push(`롱 인버스 현금 ${fmt.signedPct(snapshot.returns.long_inverse_cash, 2)}`);
-    parts.push(`${pair.longTicker} 매수 보유 ${fmt.signedPct(snapshot.returns.buyhold, 2)}`);
+    parts.push(`${pair.longTicker} ETF B&H ${fmt.signedPct(snapshot.returns.buyhold, 2)}`);
     container.setAttribute("aria-valuetext", parts.join(", "));
   };
 
@@ -1931,10 +1935,10 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   });
   attachChartNavigation(container, plotRows, (row) => {
     const signal = row.signal ? `${labels[row.signal.state]} 상태 첫 관측 · 백분위 ${fmt.score(row.signal.percentile)}` : "신규 극단 신호 없음";
-    const lines = [`차트 선택일 ${row.date} · KOSPI ${historyIndexPointText(row.kospiClose ?? row.kospi)} · 표시 시작 대비 B&H ${fmt.signedPct(row.kospiBuyHoldReturn, 2)}`, `종가 연구 상태  ${labels[row.trackState] || row.trackState} · ${signal}`, "선택일 누적성과"];
+    const lines = [`차트 선택일 ${row.date} · KOSPI 종가 ${historyIndexPointText(row.kospiClose ?? row.kospi)} · KOSPI 지수 B&H(표시 첫 종가 대비) ${fmt.signedPct(row.kospiBuyHoldReturn, 2)}`, `종가 연구 상태  ${labels[row.trackState] || row.trackState} · ${signal}`, "선택일 누적성과"];
     if (showLongCash) lines.push(`롱/현금  ${positionWithTicker(row.longCashPosition)} · ${historyPolicyAction(row, "long_cash")} · ${fmt.signedPct(row.longCashReturn, 1)}`);
     if (showLongShort) lines.push(`롱/인버스  ${positionWithTicker(row.longShortPosition)} · ${historyPolicyAction(row, "long_inverse_cash")} · ${fmt.signedPct(row.longShortReturn, 1)}`);
-    lines.push(`${pair.longTicker} 매수·보유  ${fmt.signedPct(row.buyHoldReturn, 1)}`);
+    lines.push(`${pair.longTicker} ETF B&H  ${fmt.signedPct(row.buyHoldReturn, 1)} · ${row.buyHoldBasisText}`);
     return lines.join("\n");
   }, {
     viewBoxWidth: w,
@@ -2762,18 +2766,19 @@ function renderEquity(result, selectionLabel, comparisonResult = null, primaryPo
   const primaryLineClass = primaryPolicy === "long_inverse_cash" ? "line-longshort" : "line-strategy";
   const primaryLabel = policyLabel(primaryPolicy);
   const pair = pairMeta();
+  const equityBuyHoldBasis = Math.abs(Number(rows[0]?.buyHoldValue) - 1) < 1e-10 ? "ETF 평가 첫 종가 = 0%" : "ETF 평가 첫 시가 = 0%";
   const valueDateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 20, maxTicks: 6 });
   const zeroLine = min <= 0 && max >= 0 ? `<line class="reference-line performance-zero" x1="${p.l}" y1="${y(0)}" x2="${w - p.r}" y2="${y(0)}"/>` : "";
   const endSeries = [
     { label: primaryLabel.replaceAll(" / ", "/"), field: "strategyReturn", cls: primaryPolicy === "long_inverse_cash" ? "longshort" : "strategy" },
     ...(comparable ? [{ label: "롱/인버스", field: "longShortReturn", cls: "longshort" }] : []),
-    { label: `${pair.longTicker} BH`, field: "buyHoldReturn", cls: "buyhold" }
+    { label: `${pair.longTicker} ETF B&H`, field: "buyHoldReturn", cls: "buyhold" }
   ].map((series) => ({ ...series, value: Number(rows.at(-1)[series.field]) })).filter((series) => Number.isFinite(series.value)).sort((a, b) => y(a.value) - y(b.value));
   endSeries.forEach((series, index) => { series.labelY = Math.max(y(series.value), index ? endSeries[index - 1].labelY + 17 : p.t + 7); });
   const labelOverflow = endSeries.length ? Math.max(0, endSeries.at(-1).labelY - (h - p.b - 4)) : 0;
   if (labelOverflow) endSeries.forEach((series) => { series.labelY -= labelOverflow; });
   const valueEndLabels = endSeries.map((series) => `<circle class="line-end-dot ${series.cls}" cx="${w - p.r}" cy="${y(series.value)}" r="3"/><path class="line-end-connector ${series.cls}" d="M ${w - p.r + 3} ${y(series.value)} L ${w - p.r + 11} ${series.labelY}"/><text class="line-end-label ${series.cls}" x="${w - p.r + 15}" y="${series.labelY + 4}">${esc(series.label)} ${esc(fmt.signedPct(series.value, 1))}</text>`).join("");
-  const valueSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${valueDateAxis}${yTicks}${zeroLine}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="${primaryLineClass}">${pathSegments(rows, "strategyReturn", x, y)}</g>${comparable ? `<g class="line-longshort">${pathSegments(rows, "longShortReturn", x, y)}</g>` : ""}<g class="line-buyhold">${pathSegments(rows, "buyHoldReturn", x, y)}</g>${valueEndLabels}<text class="panel-title" x="${p.l}" y="20">비용 후 누적수익률</text><text class="axis-unit" x="${w - p.r}" y="20" text-anchor="end">첫 ETF 평가일 = 0%</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
+  const valueSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${valueDateAxis}${yTicks}${zeroLine}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="${primaryLineClass}">${pathSegments(rows, "strategyReturn", x, y)}</g>${comparable ? `<g class="line-longshort">${pathSegments(rows, "longShortReturn", x, y)}</g>` : ""}<g class="line-buyhold">${pathSegments(rows, "buyHoldReturn", x, y)}</g>${valueEndLabels}<text class="panel-title" x="${p.l}" y="20">비용 후 누적수익률</text><text class="axis-unit" x="${w - p.r}" y="20" text-anchor="end">${esc(equityBuyHoldBasis)}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   const drawdowns = rows.flatMap((row) => [Number(row.drawdown), Number(row.longShortDrawdown), Number(row.buyHoldDrawdown)]).filter(Number.isFinite);
   const ddMin = Math.min(...drawdowns, -.01), ddMax = 0;
   const ddY = scale(ddMin, ddMax, h - p.b, p.t);
@@ -2782,9 +2787,9 @@ function renderEquity(result, selectionLabel, comparisonResult = null, primaryPo
   const ddSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${ddDateAxis}${ddTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="${primaryLineClass}">${pathSegments(rows, "drawdown", x, ddY)}</g>${comparable ? `<g class="line-longshort">${pathSegments(rows, "longShortDrawdown", x, ddY)}</g>` : ""}<g class="line-buyhold">${pathSegments(rows, "buyHoldDrawdown", x, ddY)}</g><text class="panel-title" x="${p.l}" y="20">고점 대비 낙폭</text><text class="axis-unit" x="${w - p.r}" y="20" text-anchor="end">0% = 직전 최고점</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   container.innerHTML = valueSvg + ddSvg;
   const last = rows.at(-1);
-  container.setAttribute("aria-label", `${selectionLabel}. ${rows[0].date}부터 ${last.date}. 최종 ${primaryLabel} ${fmt.score(last.value, 3)}${comparable ? `, 롱 인버스 현금 ${fmt.score(last.longShortValue, 3)}` : ""}, 롱 ETF 매수·보유 ${fmt.score(last.buyHoldValue, 3)}.`);
-  attachChartNavigation(container, rows, (row) => `${row.date}, ${primaryLabel} ${fmt.score(row.value, 3)}${comparable ? `, 롱 인버스 현금 ${fmt.score(row.longShortValue, 3)}` : ""}, 롱 ETF 매수·보유 ${fmt.score(row.buyHoldValue, 3)}, ${primaryLabel} 낙폭 ${fmt.pct(row.drawdown)}${comparable ? `, 롱 인버스 현금 낙폭 ${fmt.pct(row.longShortDrawdown)}` : ""}, 매수·보유 낙폭 ${fmt.pct(row.buyHoldDrawdown)}`, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
-  $("#equity-data-table").innerHTML = dataTable(["시점", "날짜", primaryLabel, "비교 롱/인버스/현금", "롱 ETF 매수·보유", `${primaryLabel} 낙폭`, "비교 롱/인버스 낙폭", "BH 낙폭"], [["시작", rows[0].date, fmt.score(rows[0].value, 3), comparable ? fmt.score(rows[0].longShortValue, 3) : "—", fmt.score(rows[0].buyHoldValue, 3), fmt.pct(rows[0].drawdown), comparable ? fmt.pct(rows[0].longShortDrawdown) : "—", fmt.pct(rows[0].buyHoldDrawdown)], ["평가 종료", last.date, fmt.score(last.value, 3), comparable ? fmt.score(last.longShortValue, 3) : "—", fmt.score(last.buyHoldValue, 3), fmt.pct(last.drawdown), comparable ? fmt.pct(last.longShortDrawdown) : "—", fmt.pct(last.buyHoldDrawdown)]], `${selectionLabel} 시작·평가 종료 값`);
+  container.setAttribute("aria-label", `${selectionLabel}. ${rows[0].date}부터 ${last.date}. 최종 ${primaryLabel} ${fmt.score(last.value, 3)}${comparable ? `, 롱 인버스 현금 ${fmt.score(last.longShortValue, 3)}` : ""}, ${pair.longTicker} ETF B&H ${fmt.score(last.buyHoldValue, 3)}.`);
+  attachChartNavigation(container, rows, (row) => `${row.date}, ${primaryLabel} ${fmt.score(row.value, 3)}${comparable ? `, 롱 인버스 현금 ${fmt.score(row.longShortValue, 3)}` : ""}, ${pair.longTicker} ETF B&H ${fmt.score(row.buyHoldValue, 3)}, ${primaryLabel} 낙폭 ${fmt.pct(row.drawdown)}${comparable ? `, 롱 인버스 현금 낙폭 ${fmt.pct(row.longShortDrawdown)}` : ""}, ETF B&H 낙폭 ${fmt.pct(row.buyHoldDrawdown)}`, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
+  $("#equity-data-table").innerHTML = dataTable(["시점", "날짜", primaryLabel, "비교 롱/인버스/현금", `${pair.longTicker} ETF B&H`, `${primaryLabel} 낙폭`, "비교 롱/인버스 낙폭", "ETF B&H 낙폭"], [["시작", rows[0].date, fmt.score(rows[0].value, 3), comparable ? fmt.score(rows[0].longShortValue, 3) : "—", fmt.score(rows[0].buyHoldValue, 3), fmt.pct(rows[0].drawdown), comparable ? fmt.pct(rows[0].longShortDrawdown) : "—", fmt.pct(rows[0].buyHoldDrawdown)], ["평가 종료", last.date, fmt.score(last.value, 3), comparable ? fmt.score(last.longShortValue, 3) : "—", fmt.score(last.buyHoldValue, 3), fmt.pct(last.drawdown), comparable ? fmt.pct(last.longShortDrawdown) : "—", fmt.pct(last.buyHoldDrawdown)]], `${selectionLabel} 시작·평가 종료 값`);
 }
 
 function renderConclusion(scenarioBundle = selectedScenarioBundle()) {

@@ -863,7 +863,9 @@ summary { cursor: pointer; font-weight: 650; }
   .chart-meta-strip span:last-child { grid-column: 1 / -1; }
   .history-selected-head { align-items: flex-start; }
   .history-selected-values { display: grid; width: 100%; grid-template-columns: 1fr 1fr; justify-content: stretch; }
-  .history-selected-values > span { min-width: 0; justify-content: space-between; }
+  .history-selected-values > span { min-width: 0; grid-template-columns: 1fr; align-items: start; justify-content: initial; }
+  .history-selected-values small { white-space: normal; }
+  .history-selected-detail { grid-column: 1; }
   .history-selected-snapshot { display: block; }
   .history-selected-snapshot[data-context="range"] .history-selected-head { padding-right: 11px; }
   .history-range-clear { position: static; width: calc(100% - 20px); margin: 0 10px 10px; }

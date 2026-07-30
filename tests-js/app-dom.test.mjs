@@ -496,17 +496,30 @@ test("integrated chart exploration changes only local chart context", { concurre
   const initialOutputs = signature(document, fixedOutputs);
   const initialUrl = window.location.href;
   const initialStorage = window.localStorage.getItem("fearngreed-controls-v8");
-  const evaluationDate = document.querySelector("#history-evaluation-date").textContent;
-  const dataDate = document.querySelector("#history-data-date").textContent;
+  const evaluationDate = dateInput.max;
+  const asOfText = document.querySelector("#asof").textContent;
+  const backtestSubtitle = document.querySelector("#backtest-card-subtitle").textContent;
   const initialDate = dateInput.value;
+  const signedPct = (value) => `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
+  const initialRow = chart._chartItems.find((row) => row.date === initialDate);
+  const displayedStartRow = chart._chartItems[0];
 
   assert.equal(document.querySelector("#analysis-settings").open, false);
   assert.equal(document.querySelector(".signal-bridge-card").open, false);
   assert.equal(evaluationDate, CONFIRMED_DATA_AS_OF);
-  assert.equal(dataDate, CONFIRMED_DATA_AS_OF);
+  assert.match(asOfText, new RegExp(`평가 ${CONFIRMED_DATA_AS_OF} · 데이터 ${CONFIRMED_DATA_AS_OF}`));
   assert.equal(initialDate, evaluationDate);
-  assert.match(document.querySelector("#history-kospi-close").textContent, /pt$/);
-  assert.match(document.querySelector("#history-kospi-buyhold").textContent, /^[+-]\d+\.\d{2}%$/);
+  assert.equal(
+    document.querySelector("#history-kospi-close").textContent,
+    `${new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(initialRow.kospiClose)}pt`
+  );
+  assert.equal(
+    document.querySelector("#history-kospi-buyhold").textContent,
+    signedPct(Number(initialRow.kospiClose) / Number(displayedStartRow.kospiClose) - 1)
+  );
+  assert.equal(document.querySelector("#history-data-date"), null);
+  assert.equal(document.querySelector("#history-evaluation-date"), null);
+  assert.match(document.querySelector('[data-series-id="buyhold"] small').textContent, /069500 ETF B&H/);
   assert.deepEqual(
     [...document.querySelectorAll("[data-history-series]")].filter((button) => button.getAttribute("aria-pressed") === "true").map((button) => button.dataset.historySeries),
     ["long_inverse_cash"]
@@ -516,8 +529,9 @@ test("integrated chart exploration changes only local chart context", { concurre
   chart.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
   assert.notEqual(dateInput.value, initialDate);
   assert.match(document.querySelector("#history-selected-content").textContent, new RegExp(dateInput.value));
-  assert.equal(document.querySelector("#history-evaluation-date").textContent, evaluationDate);
-  assert.equal(document.querySelector("#history-data-date").textContent, dataDate);
+  assert.equal(document.querySelector("#asof").textContent, asOfText);
+  assert.equal(document.querySelector("#backtest-card-subtitle").textContent, backtestSubtitle);
+  assert.equal(dateInput.max, evaluationDate);
   assert.equal(signature(document, fixedOutputs), initialOutputs);
   assert.equal(window.location.href, initialUrl);
   assert.equal(window.localStorage.getItem("fearngreed-controls-v8"), initialStorage);
@@ -547,7 +561,6 @@ test("integrated chart exploration changes only local chart context", { concurre
   const rangePanel = document.querySelector("#history-selected-snapshot");
   const startRow = chart._chartItems[startIndex];
   const endRow = chart._chartItems[endIndex];
-  const signedPct = (value) => `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
   assert.equal(rangePanel.dataset.context, "range");
   assert.equal(rangePanel.dataset.rangeStart, startRow.date);
   assert.equal(rangePanel.dataset.rangeEnd, endRow.date);
@@ -567,6 +580,7 @@ test("integrated chart exploration changes only local chart context", { concurre
     rangePanel.querySelector('[data-series-id="buyhold"] strong').textContent,
     signedPct(Number(endRow.buyHoldValue) / Number(startRow.buyHoldValue) - 1)
   );
+  assert.match(rangePanel.querySelector('[data-series-id="buyhold"] small').textContent, /069500 ETF B&H/);
   assert.match(chart.getAttribute("aria-valuetext"), new RegExp(`${startRow.date}.*${endRow.date}`));
   assert.equal(chart.querySelector("#history-range-brush").hasAttribute("hidden"), false);
   assert.equal(signature(document, fixedOutputs), initialOutputs);
@@ -585,9 +599,9 @@ test("integrated chart exploration changes only local chart context", { concurre
   dateInput.dispatchEvent(new window.Event("change", { bubbles: true }));
   assert.equal(dateInput.value, dateInput.min);
   assert.equal(document.querySelector("#history-kospi-buyhold").textContent, "+0.00%");
-  assert.equal(document.querySelector("#history-evaluation-date").textContent, evaluationDate);
+  assert.equal(dateInput.max, evaluationDate);
   click(window, '[data-chart-latest="history-chart"]');
-  assert.equal(dateInput.value, evaluationDate);
+  assert.equal(dateInput.value, dateInput.max);
 
   click(window, '[data-history-series="long_inverse_cash"]');
   click(window, '[data-backtest-policy="long_cash"]');
