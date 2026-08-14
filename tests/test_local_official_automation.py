@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import plistlib
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,8 +49,11 @@ def test_official_refresh_wrapper_is_isolated_bounded_and_secret_safe() -> None:
 
 
 def test_official_refresh_wrapper_is_valid_zsh() -> None:
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh syntax validation runs on macOS where the LaunchAgent is installed")
     completed = subprocess.run(
-        ["/bin/zsh", "-n", str(ROOT / "scripts" / "run-official-refresh")],
+        [zsh, "-n", str(ROOT / "scripts" / "run-official-refresh")],
         check=False,
         capture_output=True,
         text=True,
