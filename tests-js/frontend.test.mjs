@@ -177,7 +177,7 @@ test('shared shell uses the canonical project order and common theme storage con
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   const nav=html.match(/<div class="quant-shared-nav__links"[\s\S]*?<\/div>/)?.[0]||'';
   const labels=[...nav.matchAll(/class="quant-shared-nav__link(?: is-active)?"[^>]*>([^<]+)<\/a>/g)].map((match)=>match[1]);
-  assert.deepEqual(labels,['Fear &amp; Greed','Momentum','DRAM','Best Factor','ETF','SOX','Port','Regime']);
+  assert.deepEqual(labels,['Fear &amp; Greed','Momentum','DRAM','Best Factor','ETF','SOX','Regime']);
   assert.match(html,/class="quant-shared-nav__brand"[^>]+https:\/\/sonchanggi\.github\.io\/quant-dashboard\//);
   assert.match(nav,/class="quant-shared-nav__link is-active" href="https:\/\/sonchanggi\.github\.io\/fearNgreed\/" aria-current="page"/);
   for(const key of ['quant-research-theme','quant-calm-theme','quant-dashboard-theme','dram-price-theme']) {
