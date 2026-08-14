@@ -51,19 +51,19 @@ python3 -m http.server 8000
 
 Actions의 수동 실행에서 `official_data_date`에 오늘보다 이전인 완료 거래일을 지정하면 18:15 시각 제한 없이 그 날짜를 정확히 재수집하고, 이미 최신인 날짜라도 증분 수집·분석·검증·배포 경로를 다시 실행한다. 이 입력은 provider probe와 함께 사용할 수 없지만, 출력 이력 자체를 지정 날짜부터 다시 만들 때는 충분한 학습 이력을 포함한 `backfill_start_date`와 함께 사용할 수 있다. KRX가 지정 종료일을 실제 완료 세션으로 확인하지 않으면 발행하지 않는다.
 
-GitHub Secrets가 아직 비어 있어도 이 Mac에서는 같은 확정 시각에 로컬 Keychain 경로가 동작한다. 로컬 확정 작업은 사용자 작업 폴더를 수정하지 않고 매 실행마다 격리된 임시 clone을 만든 뒤, 전체 테스트·계약·비밀정보 검사를 통과한 `data/` 변경만 원격 `main`에 푸시한다. 원격 HEAD가 계산 중 바뀌면 rebase나 force-push 없이 중단한다.
+GitHub Secrets가 아직 비어 있어도 이 Mac에서는 같은 확정 시각에 로컬 Keychain 경로가 동작한다. 로컬 확정 작업은 사용자 작업 폴더를 수정하지 않고 매 실행마다 격리된 임시 clone을 만든 뒤, 전체 테스트·계약·비밀정보 검사를 통과한 `data/` 변경만 원격 `main`에 푸시한다. clone·fetch·push는 각각 120초 제한으로 최대 세 번만 재시도하며 원격 HEAD가 계산 중 바뀌면 rebase나 force-push 없이 중단한다. 실행 단계와 최종 상태는 자격 증명이나 공급자 예외 원문 없이 `~/Library/Logs/fearNgreed/official-refresh.log`의 JSON line과 `official-refresh-status.json` 원자적 스냅샷에 함께 기록한다.
 
 ```bash
 scripts/install-official-refresh-launch-agent
 ```
 
-15:47 KST 잠정 신호는 시간외 종가매매 창 안에서 빠르게 확인할 수 있도록 로그인된 Mac의 `launchd`에서 별도로 계산한다. 공식 JSON이나 Git 이력은 건드리지 않고 `var/live-signal-local.json`만 갱신하며, 공급자 데이터가 늦으면 15:50·15:53·15:56까지 제한적으로 재시도한다. 로컬 페이지는 이 파일과 공개 `data/live-signal.json` 중 더 최신인 관측을 읽는다. GitHub의 `live-signal.yml`도 평일 15:47 KST에 같은 창 내부 재시도 계약으로 best-effort 수집·검증·배포한다. 최종 입력 미준비는 KRX 휴일과 공급자 지연을 섣불리 혼동하지 않고 Actions warning/summary에 남긴다. 예약 시작과 Pages 반영 시각은 보장되지 않으므로 시간 민감 알림은 로컬 경로를 사용한다.
+15:47 KST 잠정 신호는 시간외 종가매매 창 안에서 빠르게 확인할 수 있도록 로그인된 Mac의 `launchd`에서 별도로 계산한다. 공식 JSON이나 Git 이력은 건드리지 않고 `var/live-signal-local.json`만 갱신하며, 공급자 데이터가 늦으면 15:50·15:53·15:56까지 제한적으로 재시도한다. 로컬 페이지는 이 파일과 공개 `data/live-signal.json` 중 더 최신인 관측을 읽는다. 이 13분 구간의 자동 실행 주체는 로컬 LaunchAgent 하나뿐이다. GitHub-hosted cron은 예약 시각을 보장하지 못하므로 제거했고 `live-signal.yml`은 사용자가 15:47~16:00 KST 안에 명시적으로 실행하는 검증·공개 경로로만 남긴다.
 
 ```bash
 scripts/install-live-signal-launch-agent
 ```
 
-Mac이 잠들어 있거나 로그아웃된 경우 15:47 잠정 신호와 로컬 확정 fallback은 보장되지 않는다. 16:00 이후 깨어난 잠정 실행은 만료된 신호를 만들지 않고 종료한다. GitHub Secrets를 직접 등록하면 동일한 공식 18:15·18:45·20:30 워크플로가 GitHub-hosted runner에서도 독립적으로 동작한다. `data/live-signal.json`은 당일 입력과 기본 3개 모형만 담으며 확정 `history.json`, 사건 연구, 차트 성과, 백테스트에는 들어가지 않는다.
+Mac이 잠들어 있거나 로그아웃된 경우 15:47 잠정 신호와 로컬 확정 fallback은 보장되지 않는다. 16:00 이후 깨어난 잠정 실행은 만료된 신호를 만들지 않고 종료한다. GitHub Secrets를 직접 등록하면 동일한 공식 18:15·18:45·20:30 워크플로가 GitHub-hosted runner에서도 독립적으로 동작한다. 잠정 신호의 수동 Actions 검증도 세 secret이 필요하며 캡처 창 밖에서는 성공적인 no-op으로 끝난다. `data/live-signal.json`은 당일 입력과 기본 3개 모형만 담으며 확정 `history.json`, 사건 연구, 차트 성과, 백테스트에는 들어가지 않는다.
 
 ```bash
 with-krx-keychain uv run --frozen python -m fearngreed.refresh --backfill-start-date 2010-01-04

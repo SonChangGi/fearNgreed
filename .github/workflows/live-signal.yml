@@ -1,10 +1,9 @@
-name: Capture same-day fast signal
+name: Validate same-day fast signal manually
 
 on:
-  schedule:
-    # GitHub cron is best-effort. The capture step itself retries at
-    # 15:50/15:53/15:56 KST; the local LaunchAgent remains time-sensitive.
-    - cron: "47 6 * * 1-5"
+  # GitHub-hosted schedules cannot guarantee the 15:47-16:00 KST capture
+  # window. The local LaunchAgent is the only automatic time-sensitive path;
+  # this workflow remains an explicit in-window validation/publication tool.
   workflow_dispatch:
 
 permissions:
@@ -24,13 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           enable-cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -202,15 +201,15 @@ jobs:
           [[ "$remote_head" == "$(git rev-parse HEAD^)" ]]
           git push origin HEAD:main
       - if: steps.capture.outputs.changed == 'true'
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
       - if: steps.capture.outputs.changed == 'true'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: dist
       - name: Deploy validated fast signal
         if: steps.capture.outputs.changed == 'true'
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
       - name: Verify live public hashes
         if: steps.capture.outputs.changed == 'true'
         shell: bash
@@ -222,22 +221,3 @@ jobs:
             [[ $attempt -lt 12 ]] || exit 1
             sleep 5
           done
-      - name: Report missed scheduled capture window
-        if: >-
-          always() &&
-          github.event_name == 'schedule' &&
-          (steps.capture.outputs.outcome == 'skipped_outside_window' ||
-          steps.capture.outputs.outcome == 'skipped_cutoff')
-        run: |
-          echo "::error title=Fast signal capture window missed::The scheduled runner did not complete inside the 15:47-16:00 KST capture window."
-          echo "capture_outcome=${{ steps.capture.outputs.outcome }}"
-          exit 1
-      - name: Report scheduled signal inputs not ready
-        if: >-
-          always() &&
-          github.event_name == 'schedule' &&
-          steps.capture.outputs.outcome == 'skipped_not_ready'
-        run: |
-          echo "::warning title=Fast signal inputs not ready::The bounded 15:47/15:50/15:53/15:56 KST attempts did not receive same-day KRX inputs before cutoff. A confirmed holiday and a delayed provider response are intentionally not conflated."
-          echo "### Same-day fast signal not published" >> "$GITHUB_STEP_SUMMARY"
-          echo "The scheduled run stayed non-blocking because KRX holiday and provider-not-ready responses are indistinguishable before official confirmation. The later official refresh remains authoritative." >> "$GITHUB_STEP_SUMMARY"
