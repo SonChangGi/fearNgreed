@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 SAFE_TOKEN = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
@@ -28,7 +28,9 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
         "contract": "fearngreed-local-automation-status",
         "component": "official-refresh",
         "source": "local-launch-agent",
-        "observedAt": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "observedAt": datetime.now(timezone.utc)  # noqa: UP017 - macOS system Python 3.9
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
         "targetDate": target_date,
         "runMode": _safe_token(args.run_mode, field="run-mode"),
         "stage": _safe_token(args.stage, field="stage"),
