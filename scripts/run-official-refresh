@@ -6,8 +6,8 @@ SCRIPT_DIR="${0:A:h}"
 TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout"
 STATUS_WRITER="$SCRIPT_DIR/write-local-automation-status.py"
 NETWORK_TIMEOUT_SECONDS=120
-NETWORK_ATTEMPTS=3
-NETWORK_RETRY_DELAYS=(5 15)
+NETWORK_ATTEMPTS=4
+NETWORK_RETRY_DELAYS=(15 60 120)
 REFRESH_TIMEOUT_SECONDS=2100
 VALIDATION_TIMEOUT_SECONDS=900
 SEOUL_DATE="$(TZ=Asia/Seoul date +%F)"
@@ -67,6 +67,10 @@ network_reason() {
     "$error_file"; then
     echo "dns_error"
   elif LC_ALL=C grep -Eiq \
+    'authentication failed|could not read username|terminal prompts disabled|permission denied' \
+    "$error_file"; then
+    echo "authentication_error"
+  elif LC_ALL=C grep -Eiq \
     'non-fast-forward|fetch first|failed to push some refs|rejected' \
     "$error_file"; then
     echo "remote_rejected"
@@ -120,6 +124,10 @@ run_network_command() {
       command_status=$?
     fi
     LAST_NETWORK_REASON="$(network_reason "$command_status" "$network_error_file")"
+    if [[ "$LAST_NETWORK_REASON" == "remote_rejected" \
+      || "$LAST_NETWORK_REASON" == "authentication_error" ]]; then
+      return "$command_status"
+    fi
     if (( attempt < NETWORK_ATTEMPTS )); then
       write_status "$stage" retrying "$LAST_NETWORK_REASON" "$attempt"
       delay="${NETWORK_RETRY_DELAYS[$attempt]}"

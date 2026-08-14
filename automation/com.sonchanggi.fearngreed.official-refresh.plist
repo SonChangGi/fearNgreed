@@ -6,6 +6,8 @@
   <string>com.sonchanggi.fearngreed.official-refresh</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
     <string>/bin/zsh</string>
     <string>__REPOSITORY_ROOT__/scripts/run-official-refresh</string>
   </array>
