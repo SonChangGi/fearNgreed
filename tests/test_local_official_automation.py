@@ -106,6 +106,43 @@ def test_write_status_runs_under_zsh_without_reserved_variable_collision(
     assert payload["reason"] == "outside_window"
 
 
+def test_changed_file_scan_preserves_zsh_path() -> None:
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh runtime validation runs on macOS where the LaunchAgent is installed")
+
+    script = (ROOT / "scripts" / "run-official-refresh").read_text(encoding="utf-8")
+    scan_match = re.search(
+        r"unexpected=0\nwhile IFS= read -r changed_path; do\n.*?"
+        r"done < <\(git -C \"\$CHECKOUT\" diff --name-only\)",
+        script,
+        re.DOTALL,
+    )
+    assert scan_match is not None
+
+    completed = subprocess.run(
+        [
+            zsh,
+            "-c",
+            f"""
+set -eu
+CHECKOUT=unused
+PATH=/usr/bin:/bin
+original_path="$PATH"
+git() {{ print data/summary.json; }}
+{scan_match.group(0)}
+command -v python3 >/dev/null
+[[ "$PATH" == "$original_path" ]]
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_clone_network_retry_reaches_fourth_attempt_after_bounded_backoff(
     tmp_path: Path,
 ) -> None:
