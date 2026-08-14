@@ -28,8 +28,8 @@ def test_official_refresh_wrapper_is_isolated_bounded_and_secret_safe() -> None:
     assert 'git -C "$CHECKOUT" rev-parse origin/main' in script
     assert 'git -C "$CHECKOUT" push --quiet origin HEAD:main' in script
     assert "NETWORK_TIMEOUT_SECONDS=120" in script
-    assert "NETWORK_ATTEMPTS=3" in script
-    assert "NETWORK_RETRY_DELAYS=(5 15)" in script
+    assert "NETWORK_ATTEMPTS=4" in script
+    assert "NETWORK_RETRY_DELAYS=(15 60 120)" in script
     assert "clone_repository()" in script
     assert "run_network_command()" in script
     assert "run_network_command fetch" in script
@@ -106,12 +106,138 @@ def test_write_status_runs_under_zsh_without_reserved_variable_collision(
     assert payload["reason"] == "outside_window"
 
 
+def test_clone_network_retry_reaches_fourth_attempt_after_bounded_backoff(
+    tmp_path: Path,
+) -> None:
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh runtime validation runs on macOS where the LaunchAgent is installed")
+
+    script = (ROOT / "scripts" / "run-official-refresh").read_text(encoding="utf-8")
+    function_match = re.search(r"clone_repository\(\) \{\n.*?\n\}", script, re.DOTALL)
+    assert function_match is not None
+
+    completed = subprocess.run(
+        [
+            zsh,
+            "-c",
+            f"""
+set -u
+NETWORK_ATTEMPTS=4
+NETWORK_RETRY_DELAYS=(15 60 120)
+NETWORK_TIMEOUT_SECONDS=120
+TIMEOUT_RUNNER=unused
+REPOSITORY_URL=unused
+WORK_ROOT={tmp_path!s}
+CURRENT_STAGE=bootstrap
+CURRENT_ATTEMPT=0
+LAST_NETWORK_REASON=network_error
+CHECKOUT=''
+typeset -i calls=0
+typeset -a delays=()
+write_status() {{ :; }}
+network_reason() {{ print dns_error; }}
+sleep() {{ delays+=("$1"); }}
+python3() {{ calls=$(( calls + 1 )); (( calls == 4 )); }}
+{function_match.group(0)}
+clone_repository
+print "$calls|${{(j:,:)delays}}|${{CHECKOUT:t}}"
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "4|15,60,120|repository-4"
+
+
+def test_network_reason_classifies_authentication_failure(tmp_path: Path) -> None:
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh runtime validation runs on macOS where the LaunchAgent is installed")
+
+    script = (ROOT / "scripts" / "run-official-refresh").read_text(encoding="utf-8")
+    function_match = re.search(r"network_reason\(\) \{\n.*?\n\}", script, re.DOTALL)
+    assert function_match is not None
+
+    error_file = tmp_path / "push.stderr"
+    error_file.write_text(
+        "fatal: could not read Username: terminal prompts disabled\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            zsh,
+            "-c",
+            f"{function_match.group(0)}\nnetwork_reason 128 {error_file!s}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "authentication_error"
+
+
+@pytest.mark.parametrize("reason", ["remote_rejected", "authentication_error"])
+def test_non_retryable_network_write_fails_immediately(
+    tmp_path: Path,
+    reason: str,
+) -> None:
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh runtime validation runs on macOS where the LaunchAgent is installed")
+
+    script = (ROOT / "scripts" / "run-official-refresh").read_text(encoding="utf-8")
+    function_match = re.search(r"run_network_command\(\) \{\n.*?\n\}", script, re.DOTALL)
+    assert function_match is not None
+
+    completed = subprocess.run(
+        [
+            zsh,
+            "-c",
+            f"""
+set -u
+NETWORK_ATTEMPTS=4
+NETWORK_RETRY_DELAYS=(15 60 120)
+NETWORK_TIMEOUT_SECONDS=120
+TIMEOUT_RUNNER=unused
+WORK_ROOT={tmp_path!s}
+CURRENT_STAGE=bootstrap
+CURRENT_ATTEMPT=0
+LAST_NETWORK_REASON=network_error
+typeset -i calls=0
+typeset -a delays=()
+write_status() {{ :; }}
+network_reason() {{ print {reason}; }}
+sleep() {{ delays+=("$1"); }}
+python3() {{ calls=$(( calls + 1 )); return 1; }}
+{function_match.group(0)}
+run_network_command push git push
+result=$?
+print "$calls|${{#delays}}|$result|$LAST_NETWORK_REASON"
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == f"1|0|1|{reason}"
+
+
 def test_official_refresh_launch_agent_has_three_weekday_schedules() -> None:
     path = ROOT / "automation" / "com.sonchanggi.fearngreed.official-refresh.plist"
     payload = plistlib.loads(path.read_bytes())
 
     assert payload["Label"] == "com.sonchanggi.fearngreed.official-refresh"
     assert payload["ProgramArguments"] == [
+        "/usr/bin/caffeinate",
+        "-i",
         "/bin/zsh",
         "__REPOSITORY_ROOT__/scripts/run-official-refresh",
     ]
