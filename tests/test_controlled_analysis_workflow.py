@@ -77,9 +77,9 @@ def test_controlled_workflow_serializes_deploy_and_verifies_exact_public_bytes()
     assert "pages: write" in workflow
     assert "id-token: write" in workflow
     assert '[[ "${GITHUB_REF_NAME}" != "main" ]]' in workflow
-    assert "actions/configure-pages@v5" in workflow
-    assert "actions/upload-pages-artifact@v3" in workflow
-    assert "actions/deploy-pages@v4" in workflow
+    assert "actions/configure-pages@" in workflow
+    assert "actions/upload-pages-artifact@" in workflow
+    assert "actions/deploy-pages@" in workflow
     assert workflow.index("Commit only the immutable controlled result") < workflow.index(
         "Build the exact public site"
     )

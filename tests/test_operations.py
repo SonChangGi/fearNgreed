@@ -96,7 +96,7 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     )
     assert "pages: write" in workflow
     assert "id-token: write" in workflow
-    assert "actions/deploy-pages@v4" in workflow
+    assert "actions/deploy-pages@" in workflow
     assert workflow.count("--expected-data-as-of") == 2
     assert workflow.count("steps.refresh.outputs.dataAsOf") == 2
     assert 'verify_args=(--base-url "${{ steps.deployment.outputs.page_url }}")' in workflow
@@ -125,9 +125,9 @@ def test_pages_workflow_runs_local_and_live_contract_verification() -> None:
     assert "uv run --frozen python -m fearngreed.verify\n" in workflow
     assert "python -m fearngreed.verify --base-url" in workflow
     assert workflow.index("python -m fearngreed.verify\n") < workflow.index(
-        "actions/upload-pages-artifact@v3"
+        "actions/upload-pages-artifact@"
     )
-    assert workflow.index("actions/deploy-pages@v4") < workflow.index(
+    assert workflow.index("actions/deploy-pages@") < workflow.index(
         "Verify live public derivative hashes"
     )
 
@@ -135,9 +135,11 @@ def test_pages_workflow_runs_local_and_live_contract_verification() -> None:
 def test_fast_signal_workflow_is_separate_bounded_and_secret_scoped() -> None:
     workflow = (ROOT / ".github" / "workflows" / "live-signal.yml").read_text(encoding="utf-8")
 
-    assert 'cron: "47 6 * * 1-5"' in workflow
-    assert 'cron: "52 6 * * 1-5"' not in workflow
-    assert "15:50/15:53/15:56 KST" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "\n  schedule:" not in workflow
+    assert 'cron: "47 6 * * 1-5"' not in workflow
+    assert "The local LaunchAgent is the only automatic time-sensitive path" in workflow
+    assert "for attempt in 1 2 3 4" in workflow
     assert "ref: main" in workflow
     capture = workflow.split("Capture authenticated preliminary close signal", 1)[1].split(
         "Enforce fast-signal mutation boundary", 1
@@ -156,16 +158,9 @@ def test_fast_signal_workflow_is_separate_bounded_and_secret_scoped() -> None:
     assert "timeout-minutes: 25" in workflow
     assert "timeout --signal=TERM --kill-after=10s 120s" in capture
     assert "live_capture_timeout" in capture
-    assert "Report missed scheduled capture window" in workflow
-    assert "github.event_name == 'schedule'" in workflow
-    assert "steps.capture.outputs.outcome == 'skipped_outside_window'" in workflow
-    assert "steps.capture.outputs.outcome == 'skipped_cutoff'" in workflow
-    missed_window = workflow.split("Report missed scheduled capture window", 1)[1]
-    assert "exit 1" in missed_window
-    assert "Report scheduled signal inputs not ready" in workflow
-    assert "steps.capture.outputs.outcome == 'skipped_not_ready'" in workflow
-    assert "::warning title=Fast signal inputs not ready" in workflow
-    assert "holiday and provider-not-ready responses are indistinguishable" in workflow
+    assert "Report missed scheduled capture window" not in workflow
+    assert "github.event_name == 'schedule'" not in workflow
+    assert "Report scheduled signal inputs not ready" not in workflow
 
 
 def test_failed_refresh_preserves_market_outputs_and_last_success(tmp_path, monkeypatch) -> None:

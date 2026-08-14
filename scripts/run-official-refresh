@@ -2,43 +2,170 @@
 set -euo pipefail
 
 REPOSITORY_URL="https://github.com/SonChangGi/fearNgreed.git"
-TIMEOUT_RUNNER="${0:A:h}/run-with-timeout"
-NETWORK_TIMEOUT_SECONDS=300
+SCRIPT_DIR="${0:A:h}"
+TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout"
+STATUS_WRITER="$SCRIPT_DIR/write-local-automation-status.py"
+NETWORK_TIMEOUT_SECONDS=120
+NETWORK_ATTEMPTS=3
+NETWORK_RETRY_DELAYS=(5 15)
 REFRESH_TIMEOUT_SECONDS=2100
 VALIDATION_TIMEOUT_SECONDS=900
 SEOUL_DATE="$(TZ=Asia/Seoul date +%F)"
 SEOUL_WEEKDAY="$(TZ=Asia/Seoul date +%u)"
 SEOUL_TIME="$(TZ=Asia/Seoul date +%H%M)"
-
-if (( SEOUL_WEEKDAY > 5 )); then
-  echo "official-refresh skipped: weekend"
-  exit 0
-fi
+STATUS_PATH="${FEARNGREED_OFFICIAL_STATUS_PATH:-$HOME/Library/Logs/fearNgreed/official-refresh-status.json}"
 
 terminal_run=false
-if (( 10#$SEOUL_TIME >= 1815 && 10#$SEOUL_TIME < 2000 )); then
-  terminal_run=false
-elif (( 10#$SEOUL_TIME >= 2030 && 10#$SEOUL_TIME < 2300 )); then
-  terminal_run=true
-else
-  echo "official-refresh skipped: outside 18:15-20:00 or 20:30-23:00 KST"
+run_mode="early"
+WORK_ROOT=""
+CHECKOUT=""
+CURRENT_STAGE="bootstrap"
+CURRENT_ATTEMPT=0
+LAST_NETWORK_REASON="network_error"
+FINALIZED=false
+
+write_status() {
+  local stage="$1"
+  local status="$2"
+  local reason="$3"
+  local attempt="$4"
+  python3 "$STATUS_WRITER" \
+    --output "$STATUS_PATH" \
+    --target-date "$SEOUL_DATE" \
+    --run-mode "$run_mode" \
+    --stage "$stage" \
+    --status "$status" \
+    --reason "$reason" \
+    --attempt "$attempt"
+}
+
+finish_status() {
+  write_status "$@"
+  FINALIZED=true
+}
+
+cleanup() {
+  local exit_status=$?
+  set +e
+  if (( exit_status != 0 )) && [[ "$FINALIZED" != "true" ]]; then
+    write_status "$CURRENT_STAGE" failed unexpected_exit "$CURRENT_ATTEMPT" >/dev/null 2>&1
+  fi
+  if [[ -n "$WORK_ROOT" && -d "$WORK_ROOT" ]]; then
+    /bin/rm -rf -- "$WORK_ROOT"
+  fi
+  return "$exit_status"
+}
+trap cleanup EXIT
+
+network_reason() {
+  local command_status="$1"
+  local error_file="$2"
+  if (( command_status == 124 )); then
+    echo "network_timeout"
+  elif LC_ALL=C grep -Eiq \
+    'could not resolve|name or service not known|nodename nor servname|temporary failure in name resolution' \
+    "$error_file"; then
+    echo "dns_error"
+  elif LC_ALL=C grep -Eiq \
+    'non-fast-forward|fetch first|failed to push some refs|rejected' \
+    "$error_file"; then
+    echo "remote_rejected"
+  else
+    echo "network_error"
+  fi
+}
+
+clone_repository() {
+  local attempt command_status attempt_checkout delay network_error_file
+  for (( attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++ )); do
+    CURRENT_STAGE="clone"
+    CURRENT_ATTEMPT="$attempt"
+    attempt_checkout="$WORK_ROOT/repository-$attempt"
+    network_error_file="$WORK_ROOT/clone-$attempt.stderr"
+    write_status clone running attempt_started "$attempt"
+    if python3 "$TIMEOUT_RUNNER" "$NETWORK_TIMEOUT_SECONDS" \
+      git clone --quiet --depth 1 --branch main "$REPOSITORY_URL" "$attempt_checkout" \
+      2>"$network_error_file"; then
+      CHECKOUT="$attempt_checkout"
+      write_status clone success completed "$attempt"
+      return 0
+    else
+      command_status=$?
+    fi
+    LAST_NETWORK_REASON="$(network_reason "$command_status" "$network_error_file")"
+    if (( attempt < NETWORK_ATTEMPTS )); then
+      write_status clone retrying "$LAST_NETWORK_REASON" "$attempt"
+      delay="${NETWORK_RETRY_DELAYS[$attempt]}"
+      sleep "$delay"
+    else
+      return "$command_status"
+    fi
+  done
+}
+
+run_network_command() {
+  local stage="$1"
+  shift
+  local attempt command_status delay network_error_file
+  for (( attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++ )); do
+    CURRENT_STAGE="$stage"
+    CURRENT_ATTEMPT="$attempt"
+    network_error_file="$WORK_ROOT/$stage-$attempt.stderr"
+    write_status "$stage" running attempt_started "$attempt"
+    if python3 "$TIMEOUT_RUNNER" "$NETWORK_TIMEOUT_SECONDS" "$@" \
+      2>"$network_error_file"; then
+      write_status "$stage" success completed "$attempt"
+      return 0
+    else
+      command_status=$?
+    fi
+    LAST_NETWORK_REASON="$(network_reason "$command_status" "$network_error_file")"
+    if (( attempt < NETWORK_ATTEMPTS )); then
+      write_status "$stage" retrying "$LAST_NETWORK_REASON" "$attempt"
+      delay="${NETWORK_RETRY_DELAYS[$attempt]}"
+      sleep "$delay"
+    else
+      return "$command_status"
+    fi
+  done
+}
+
+if (( SEOUL_WEEKDAY > 5 )); then
+  run_mode="unscheduled"
+  finish_status schedule skipped weekend 0
   exit 0
 fi
 
+if (( 10#$SEOUL_TIME >= 1815 && 10#$SEOUL_TIME < 2000 )); then
+  terminal_run=false
+  run_mode="early"
+elif (( 10#$SEOUL_TIME >= 2030 && 10#$SEOUL_TIME < 2300 )); then
+  terminal_run=true
+  run_mode="terminal"
+else
+  run_mode="unscheduled"
+  finish_status schedule skipped outside_window 0
+  exit 0
+fi
+
+write_status bootstrap running started 0
 if ! command -v with-krx-keychain >/dev/null 2>&1; then
-  echo "official-refresh unavailable: Keychain bridge not found"
+  finish_status bootstrap failed keychain_bridge_missing 0
   exit 1
 fi
 
 umask 077
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fearngreed-official-refresh.XXXXXX")"
-CHECKOUT="$WORK_ROOT/repository"
 RECEIPT="$WORK_ROOT/refresh-receipt.json"
-trap '/bin/rm -rf -- "$WORK_ROOT"' EXIT
 
 export GIT_TERMINAL_PROMPT=0
-python3 "$TIMEOUT_RUNNER" "$NETWORK_TIMEOUT_SECONDS" \
-  git clone --quiet --depth 1 --branch main "$REPOSITORY_URL" "$CHECKOUT"
+if clone_repository; then
+  :
+else
+  clone_status=$?
+  finish_status clone failed "$LAST_NETWORK_REASON" "$CURRENT_ATTEMPT"
+  exit "$clone_status"
+fi
 BASE_HEAD="$(git -C "$CHECKOUT" rev-parse HEAD)"
 
 refresh_args=(--date "$SEOUL_DATE" --skip-if-current)
@@ -48,6 +175,9 @@ else
   refresh_args+=(--failure-policy preserve --require-end-session)
 fi
 
+CURRENT_STAGE="refresh"
+CURRENT_ATTEMPT=1
+write_status refresh running collection_started 1
 set +e
 (
   cd "$CHECKOUT"
@@ -68,7 +198,7 @@ fi
 
 if (( refresh_status != 0 )) && [[ "$terminal_run" != "true" ]]; then
   git -C "$CHECKOUT" diff --quiet -- data
-  echo "official-refresh retry pending: $SEOUL_DATE"
+  finish_status refresh skipped retry_pending 1
   exit 0
 fi
 
@@ -78,13 +208,13 @@ if (( refresh_status == 0 )); then
     "$RECEIPT")"
   if [[ "$skipped" == "true" ]]; then
     git -C "$CHECKOUT" diff --quiet -- data
-    echo "official-refresh no-op: $SEOUL_DATE"
+    finish_status refresh skipped already_current 1
     exit 0
   fi
 fi
 
 if git -C "$CHECKOUT" diff --quiet -- data; then
-  echo "official-refresh unavailable: provider failed without a publishable status"
+  finish_status refresh failed provider_unavailable 1
   exit 1
 fi
 
@@ -98,13 +228,22 @@ while IFS= read -r path; do
       ;;
   esac
 done < <(git -C "$CHECKOUT" diff --name-only)
-(( unexpected == 0 ))
+if (( unexpected != 0 )); then
+  finish_status validation failed unexpected_mutation 1
+  exit 1
+fi
 
 if (( refresh_status != 0 )); then
   changed_data="$(git -C "$CHECKOUT" diff --name-only -- data | LC_ALL=C sort)"
-  [[ "$changed_data" == $'data/automation-status.json\ndata/summary.json' ]]
+  if [[ "$changed_data" != $'data/automation-status.json\ndata/summary.json' ]]; then
+    finish_status validation failed degraded_boundary 1
+    exit 1
+  fi
 fi
 
+CURRENT_STAGE="validation"
+CURRENT_ATTEMPT=1
+write_status validation running checks_started 1
 (
   cd "$CHECKOUT"
   python3 "$TIMEOUT_RUNNER" "$VALIDATION_TIMEOUT_SECONDS" uv run --frozen pytest
@@ -117,7 +256,11 @@ fi
   python3 "$TIMEOUT_RUNNER" 300 with-krx-keychain uv run --frozen python -c \
     "from pathlib import Path; from fearngreed.security import scan_public_files; assert not scan_public_files(Path('.'))"
 )
+write_status validation success checks_passed 1
 
+CURRENT_STAGE="publish"
+CURRENT_ATTEMPT=1
+write_status publish running preparing_commit 1
 git -C "$CHECKOUT" config user.name "fearngreed-local-automation"
 git -C "$CHECKOUT" config user.email "actions@users.noreply.github.com"
 git -C "$CHECKOUT" config commit.gpgsign false
@@ -129,15 +272,29 @@ else
   commit_message="data: publish degraded refresh status"
 fi
 git -C "$CHECKOUT" diff --cached --check
-python3 "$TIMEOUT_RUNNER" "$NETWORK_TIMEOUT_SECONDS" git -C "$CHECKOUT" fetch --quiet origin main
-[[ "$(git -C "$CHECKOUT" rev-parse origin/main)" == "$BASE_HEAD" ]]
+if run_network_command fetch git -C "$CHECKOUT" fetch --quiet origin main; then
+  :
+else
+  fetch_status=$?
+  finish_status fetch failed "$LAST_NETWORK_REASON" "$CURRENT_ATTEMPT"
+  exit "$fetch_status"
+fi
+if [[ "$(git -C "$CHECKOUT" rev-parse origin/main)" != "$BASE_HEAD" ]]; then
+  finish_status publish failed remote_head_changed 1
+  exit 1
+fi
 git -C "$CHECKOUT" commit --quiet -m "$commit_message"
-python3 "$TIMEOUT_RUNNER" "$NETWORK_TIMEOUT_SECONDS" \
-  git -C "$CHECKOUT" push --quiet origin HEAD:main
+if run_network_command push git -C "$CHECKOUT" push --quiet origin HEAD:main; then
+  :
+else
+  push_status=$?
+  finish_status push failed "$LAST_NETWORK_REASON" "$CURRENT_ATTEMPT"
+  exit "$push_status"
+fi
 
 if (( refresh_status == 0 )); then
-  echo "official-refresh published: $SEOUL_DATE"
+  finish_status publish published refresh_complete 1
 else
-  echo "official-refresh published degraded status: $SEOUL_DATE"
+  finish_status publish degraded provider_failure_published 1
   exit 1
 fi

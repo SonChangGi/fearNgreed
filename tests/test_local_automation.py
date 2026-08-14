@@ -6,6 +6,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_fast_signal_actions_is_manual_only_and_local_agent_is_authoritative() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "live-signal.yml").read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in workflow
+    assert "\n  schedule:" not in workflow
+    assert 'cron: "47 6 * * 1-5"' not in workflow
+    assert "The local LaunchAgent is the only automatic time-sensitive path" in workflow
+    assert "Report missed scheduled capture window" not in workflow
+
+
 def test_live_signal_wrapper_is_bounded_and_never_mutates_git() -> None:
     script = (ROOT / "scripts" / "run-live-signal").read_text(encoding="utf-8")
 
