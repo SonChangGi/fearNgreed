@@ -58,6 +58,39 @@ def test_status_writer_emits_and_atomically_persists_secret_safe_snapshot(
     assert not list(output.parent.glob(".official-refresh-status.json.*.tmp"))
 
 
+def test_status_writer_runs_with_launch_agent_system_python(tmp_path: Path) -> None:
+    system_python = Path("/usr/bin/python3")
+    assert system_python.exists()
+    output = tmp_path / "system-python-status.json"
+
+    completed = subprocess.run(
+        [
+            str(system_python),
+            str(WRITER),
+            "--output",
+            str(output),
+            "--target-date",
+            "2026-08-14",
+            "--run-mode",
+            "unscheduled",
+            "--stage",
+            "schedule",
+            "--status",
+            "skipped",
+            "--reason",
+            "outside_window",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["status"] == "skipped"
+    assert payload["observedAt"].endswith("Z")
+
+
 def test_status_writer_rejects_unstructured_reason_without_echoing_it(tmp_path: Path) -> None:
     output = tmp_path / "status.json"
     fake_secret = "fake-secret=value"
