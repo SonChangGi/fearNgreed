@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 import plistlib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -38,6 +41,8 @@ def test_official_refresh_wrapper_is_isolated_bounded_and_secret_safe() -> None:
     assert "official-refresh-status.json" in script
     assert "write_status refresh running collection_started 1" in script
     assert "finish_status publish published refresh_complete 1" in script
+    assert 'local run_status="$2"' in script
+    assert 'local status="$2"' not in script
     assert "git reset" not in script
     assert "git rebase" not in script
     assert "--force" not in script
@@ -60,6 +65,45 @@ def test_official_refresh_wrapper_is_valid_zsh() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_write_status_runs_under_zsh_without_reserved_variable_collision(
+    tmp_path: Path,
+) -> None:
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh runtime validation runs on macOS where the LaunchAgent is installed")
+
+    script = (ROOT / "scripts" / "run-official-refresh").read_text(encoding="utf-8")
+    function_match = re.search(r"write_status\(\) \{\n.*?\n\}", script, re.DOTALL)
+    assert function_match is not None
+
+    status_path = tmp_path / "official-refresh-status.json"
+    environment = {
+        **os.environ,
+        "STATUS_WRITER": str(ROOT / "scripts" / "write-local-automation-status.py"),
+        "STATUS_PATH": str(status_path),
+        "SEOUL_DATE": "2026-08-14",
+        "run_mode": "unscheduled",
+    }
+    completed = subprocess.run(
+        [
+            zsh,
+            "-c",
+            f"set -euo pipefail\n{function_match.group(0)}\n"
+            "write_status schedule skipped outside_window 0",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(status_path.read_text(encoding="utf-8"))
+    assert payload["stage"] == "schedule"
+    assert payload["status"] == "skipped"
+    assert payload["reason"] == "outside_window"
 
 
 def test_official_refresh_launch_agent_has_three_weekday_schedules() -> None:

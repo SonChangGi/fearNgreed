@@ -26,7 +26,7 @@ FINALIZED=false
 
 write_status() {
   local stage="$1"
-  local status="$2"
+  local run_status="$2"
   local reason="$3"
   local attempt="$4"
   python3 "$STATUS_WRITER" \
@@ -34,7 +34,7 @@ write_status() {
     --target-date "$SEOUL_DATE" \
     --run-mode "$run_mode" \
     --stage "$stage" \
-    --status "$status" \
+    --status "$run_status" \
     --reason "$reason" \
     --attempt "$attempt"
 }
