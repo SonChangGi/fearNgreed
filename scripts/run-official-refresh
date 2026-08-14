@@ -227,11 +227,11 @@ if git -C "$CHECKOUT" diff --quiet -- data; then
 fi
 
 unexpected=0
-while IFS= read -r path; do
-  case "$path" in
+while IFS= read -r changed_path; do
+  case "$changed_path" in
     data/*) ;;
     *)
-      echo "official-refresh blocked unexpected path: $path"
+      echo "official-refresh blocked unexpected path: $changed_path"
       unexpected=1
       ;;
   esac
