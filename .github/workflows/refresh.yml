@@ -35,6 +35,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event_name == 'schedule' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -261,10 +262,11 @@ jobs:
             fi
             sleep 5
           done
-      - name: Report provider refresh failure
+      - name: Record provider refresh degradation
         if: steps.refresh.outputs.outcome == 'failure'
         run: |
-          echo "The last known-good market outputs were preserved and degraded status was published."
+          echo "::warning::The last known-good market outputs were preserved and degraded status was published."
+          echo "A separate public-site health job is the scheduled failure-mail gate."
           exit 1
       - name: Report early retry pending
         if: steps.refresh.outputs.outcome == 'retry_pending'
@@ -275,3 +277,53 @@ jobs:
       - name: Report provider credential probe
         if: steps.refresh.outputs.outcome == 'probe_success'
         run: echo "KRX Open API and authenticated pykrx provider checks passed without changing public data."
+
+  public-site-health:
+    needs: refresh
+    if: ${{ always() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - name: Fail only when the existing Fear and Greed page is unusable
+        env:
+          PAGE_URL: https://sonchanggi.github.io/fearNgreed/
+        shell: bash
+        run: |
+          set -u
+          required_paths=(index.html data/summary.json data/dashboard.json)
+          for attempt in {1..12}; do
+            usable=true
+            for relative_path in "${required_paths[@]}"; do
+              readback="$RUNNER_TEMP/fearngreed-health-${relative_path//\//-}"
+              if ! curl --fail --silent --show-error --location \
+                --header "Cache-Control: no-cache" \
+                --connect-timeout 10 \
+                --max-time 120 \
+                --output "$readback" \
+                "${PAGE_URL%/}/${relative_path}?health=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}"; then
+                usable=false
+                break
+              fi
+              if [[ ! -s "$readback" ]]; then
+                usable=false
+                break
+              fi
+              if [[ "$relative_path" == "index.html" ]] && ! grep -Eiq '<!doctype html|<html' "$readback"; then
+                usable=false
+                break
+              fi
+              if [[ "$relative_path" == *.json ]] && ! jq -e 'type == "object" and length > 0' "$readback" >/dev/null; then
+                usable=false
+                break
+              fi
+            done
+            if [[ "$usable" == "true" ]]; then
+              echo "The existing Fear and Greed page remains usable; scheduled refresh errors stay in run logs without failure mail."
+              exit 0
+            fi
+            [[ $attempt -lt 12 ]] && sleep 10
+          done
+          echo "::error::The public Fear and Greed page or its required JSON is unavailable or invalid."
+          exit 1

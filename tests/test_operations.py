@@ -110,8 +110,16 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert "git rebase" not in workflow
     assert "git push --force" not in workflow
     assert workflow.index("Verify live public derivative hashes") < workflow.index(
-        "Report provider refresh failure"
+        "Record provider refresh degradation"
     )
+    degradation_block = workflow.split(
+        "- name: Record provider refresh degradation", 1
+    )[1].split("- name: Report early retry pending", 1)[0]
+    assert "exit 1" in degradation_block
+    assert "continue-on-error: ${{ github.event_name == 'schedule' }}" in workflow
+    assert "public-site-health:" in workflow
+    assert "Fail only when the existing Fear and Greed page is unusable" in workflow
+    assert "A separate public-site health job is the scheduled failure-mail gate." in workflow
     assert "Report early retry pending" in workflow
     assert "Report already-current session" in workflow
     assert "timeout-minutes: 120" in workflow
@@ -130,6 +138,9 @@ def test_pages_workflow_runs_local_and_live_contract_verification() -> None:
     assert workflow.index("actions/deploy-pages@") < workflow.index(
         "Verify live public derivative hashes"
     )
+    assert "continue-on-error: ${{ github.event_name == 'push' }}" in workflow
+    assert "public-site-health:" in workflow
+    assert "required_paths=(index.html data/summary.json data/dashboard.json)" in workflow
 
 
 def test_fast_signal_workflow_is_separate_bounded_and_secret_scoped() -> None:
