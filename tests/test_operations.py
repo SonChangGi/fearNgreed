@@ -112,9 +112,9 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert workflow.index("Verify live public derivative hashes") < workflow.index(
         "Record provider refresh degradation"
     )
-    degradation_block = workflow.split(
-        "- name: Record provider refresh degradation", 1
-    )[1].split("- name: Report early retry pending", 1)[0]
+    degradation_block = workflow.split("- name: Record provider refresh degradation", 1)[1].split(
+        "- name: Report early retry pending", 1
+    )[0]
     assert "exit 1" in degradation_block
     assert "continue-on-error: ${{ github.event_name == 'schedule' }}" in workflow
     assert "public-site-health:" in workflow
