@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPOSITORY_URL="https://github.com/SonChangGi/fearNgreed.git"
+PUBLIC_BASE_URL="${FEARNGREED_PUBLIC_BASE_URL:-https://sonchanggi.github.io/fearNgreed/}"
 SCRIPT_DIR="${0:A:h}"
 TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout"
 STATUS_WRITER="$SCRIPT_DIR/write-local-automation-status.py"
@@ -10,13 +11,24 @@ NETWORK_ATTEMPTS=4
 NETWORK_RETRY_DELAYS=(15 60 120)
 REFRESH_TIMEOUT_SECONDS=2100
 VALIDATION_TIMEOUT_SECONDS=900
-SEOUL_DATE="$(TZ=Asia/Seoul date +%F)"
+PUBLIC_READBACK_TIMEOUT_SECONDS=45
+PUBLIC_READBACK_ATTEMPTS=12
+PUBLIC_READBACK_DELAY_SECONDS=10
+SEOUL_DATE="${FEARNGREED_OFFICIAL_TARGET_DATE:-$(TZ=Asia/Seoul date +%F)}"
 SEOUL_WEEKDAY="$(TZ=Asia/Seoul date +%u)"
-SEOUL_TIME="$(TZ=Asia/Seoul date +%H%M)"
+SEOUL_TIME="$(TZ=Asia/Seoul date +%H%M%S)"
 STATUS_PATH="${FEARNGREED_OFFICIAL_STATUS_PATH:-$HOME/Library/Logs/fearNgreed/official-refresh-status.json}"
+RUN_STARTED_AT="${FEARNGREED_OFFICIAL_STARTED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+RUN_ID="${FEARNGREED_OFFICIAL_RUN_ID:-official-$(date -u +%Y%m%dt%H%M%Sz)-$$}"
+RUN_DEADLINE_AT="${FEARNGREED_OFFICIAL_DEADLINE_AT:-}"
+RUN_BUDGET_SECONDS="${FEARNGREED_OFFICIAL_BUDGET_SECONDS:-0}"
+GUARDED="${FEARNGREED_OFFICIAL_GUARDED:-false}"
 
 terminal_run=false
-run_mode="early"
+skipped_refresh=false
+redeploy_only=false
+run_mode="${FEARNGREED_OFFICIAL_RUN_MODE:-unscheduled}"
+WINDOW_REASON="outside_window"
 WORK_ROOT=""
 CHECKOUT=""
 CURRENT_STAGE="bootstrap"
@@ -29,14 +41,23 @@ write_status() {
   local run_status="$2"
   local reason="$3"
   local attempt="$4"
-  python3 "$STATUS_WRITER" \
+  local -a status_args
+  status_args=(
     --output "$STATUS_PATH" \
+    --component official-refresh \
+    --run-id "$RUN_ID" \
+    --started-at "$RUN_STARTED_AT" \
     --target-date "$SEOUL_DATE" \
     --run-mode "$run_mode" \
     --stage "$stage" \
     --status "$run_status" \
     --reason "$reason" \
     --attempt "$attempt"
+  )
+  if [[ -n "$RUN_DEADLINE_AT" ]]; then
+    status_args+=(--deadline-at "$RUN_DEADLINE_AT")
+  fi
+  python3 "$STATUS_WRITER" "${status_args[@]}"
 }
 
 finish_status() {
@@ -55,7 +76,64 @@ cleanup() {
   fi
   return "$exit_status"
 }
-trap cleanup EXIT
+
+configure_run_window() {
+  local now_seconds deadline_seconds observed_date
+  now_seconds=$((
+    10#${SEOUL_TIME[1,2]} * 3600
+      + 10#${SEOUL_TIME[3,4]} * 60
+      + 10#${SEOUL_TIME[5,6]}
+  ))
+  run_mode="unscheduled"
+  terminal_run=false
+  RUN_DEADLINE_AT=""
+  RUN_BUDGET_SECONDS=0
+
+  if (( SEOUL_WEEKDAY >= 6 )); then
+    # launchd may deliver Friday's missed weekday calendar event when the Mac
+    # next wakes during the weekend.  The plist never schedules weekends, so
+    # treat this as a bounded terminal catch-up for Friday's nominal date and
+    # let the provider decide whether that Friday was a KRX session.
+    observed_date="$SEOUL_DATE"
+    SEOUL_DATE="$(python3 -c \
+      'from datetime import date, timedelta; import sys; day=date.fromisoformat(sys.argv[1]); day -= timedelta(days=1); print(day - timedelta(days=max(0, day.weekday() - 4)))' \
+      "$observed_date")"
+    run_mode="terminal"
+    terminal_run=true
+    RUN_BUDGET_SECONDS=7200
+    RUN_DEADLINE_AT="$(python3 -c \
+      'from datetime import datetime, timedelta, timezone; import sys; value=datetime.strptime(sys.argv[1] + sys.argv[2], "%Y-%m-%d%H%M%S").replace(tzinfo=timezone(timedelta(hours=9))); print((value + timedelta(hours=2)).isoformat(timespec="seconds"))' \
+      "$observed_date" "$SEOUL_TIME")"
+    WINDOW_REASON="missed_friday_catchup"
+    return 0
+  fi
+
+  if (( now_seconds >= 18 * 3600 + 15 * 60 && now_seconds < 18 * 3600 + 45 * 60 )); then
+    run_mode="early"
+    deadline_seconds=$((18 * 3600 + 42 * 60))
+    RUN_DEADLINE_AT="${SEOUL_DATE}T18:42:00+09:00"
+  elif (( now_seconds >= 18 * 3600 + 45 * 60 && now_seconds < 20 * 3600 + 30 * 60 )); then
+    run_mode="early"
+    deadline_seconds=$((20 * 3600 + 25 * 60))
+    RUN_DEADLINE_AT="${SEOUL_DATE}T20:25:00+09:00"
+  elif (( now_seconds >= 20 * 3600 + 30 * 60 && now_seconds < 23 * 3600 + 30 * 60 )); then
+    run_mode="terminal"
+    terminal_run=true
+    deadline_seconds=$((23 * 3600 + 30 * 60))
+    RUN_DEADLINE_AT="${SEOUL_DATE}T23:30:00+09:00"
+  else
+    WINDOW_REASON="outside_window"
+    return 1
+  fi
+
+  RUN_BUDGET_SECONDS=$((deadline_seconds - now_seconds))
+  if (( RUN_BUDGET_SECONDS < 60 )); then
+    WINDOW_REASON="insufficient_run_window"
+    return 1
+  fi
+  WINDOW_REASON="scheduled_window"
+  return 0
+}
 
 network_reason() {
   local command_status="$1"
@@ -138,29 +216,74 @@ run_network_command() {
   done
 }
 
-if (( SEOUL_WEEKDAY > 5 )); then
-  run_mode="unscheduled"
-  finish_status schedule skipped weekend 0
-  exit 0
+verify_public_deployment() {
+  local attempt
+  for (( attempt = 1; attempt <= PUBLIC_READBACK_ATTEMPTS; attempt++ )); do
+    CURRENT_STAGE="readback"
+    CURRENT_ATTEMPT="$attempt"
+    write_status readback running hash_check_started "$attempt"
+    if python3 "$TIMEOUT_RUNNER" "$PUBLIC_READBACK_TIMEOUT_SECONDS" \
+      uv run --directory "$CHECKOUT" --frozen python -m fearngreed.verify \
+      --base-url "$PUBLIC_BASE_URL" >/dev/null 2>&1; then
+      write_status readback success public_hashes_match "$attempt"
+      return 0
+    fi
+    if (( attempt < PUBLIC_READBACK_ATTEMPTS )); then
+      write_status readback retrying public_hashes_pending "$attempt"
+      sleep "$PUBLIC_READBACK_DELAY_SECONDS"
+    fi
+  done
+  write_status readback pending public_hashes_unconfirmed "$PUBLIC_READBACK_ATTEMPTS"
+  return 1
+}
+
+if [[ "$GUARDED" != "true" ]]; then
+  if ! configure_run_window; then
+    finish_status schedule skipped "$WINDOW_REASON" 0
+    exit 0
+  fi
+
+  write_status watchdog running deadline_guard_started 0
+  export FEARNGREED_OFFICIAL_GUARDED=true
+  export FEARNGREED_OFFICIAL_RUN_MODE="$run_mode"
+  export FEARNGREED_OFFICIAL_TARGET_DATE="$SEOUL_DATE"
+  export FEARNGREED_OFFICIAL_STARTED_AT="$RUN_STARTED_AT"
+  export FEARNGREED_OFFICIAL_RUN_ID="$RUN_ID"
+  export FEARNGREED_OFFICIAL_DEADLINE_AT="$RUN_DEADLINE_AT"
+  export FEARNGREED_OFFICIAL_BUDGET_SECONDS="$RUN_BUDGET_SECONDS"
+  set +e
+  python3 "$TIMEOUT_RUNNER" "$RUN_BUDGET_SECONDS" /bin/zsh "$0"
+  guarded_status=$?
+  set -e
+  if (( guarded_status == 124 )); then
+    finish_status watchdog failed deadline_exceeded 0
+    exit 1
+  fi
+  exit "$guarded_status"
 fi
 
-if (( 10#$SEOUL_TIME >= 1815 && 10#$SEOUL_TIME < 2000 )); then
-  terminal_run=false
-  run_mode="early"
-elif (( 10#$SEOUL_TIME >= 2030 && 10#$SEOUL_TIME < 2300 )); then
+if [[ "$run_mode" == "terminal" ]]; then
   terminal_run=true
-  run_mode="terminal"
-else
-  run_mode="unscheduled"
-  finish_status schedule skipped outside_window 0
-  exit 0
+elif [[ "$run_mode" != "early" ]]; then
+  finish_status schedule failed invalid_run_mode 0
+  exit 1
 fi
+
+trap cleanup EXIT
 
 write_status bootstrap running started 0
 if ! command -v with-krx-keychain >/dev/null 2>&1; then
   finish_status bootstrap failed keychain_bridge_missing 0
   exit 1
 fi
+CURRENT_STAGE="credentials"
+CURRENT_ATTEMPT=0
+write_status credentials running check_started 0
+if ! with-krx-keychain --check >/dev/null 2>&1; then
+  finish_status credentials failed credentials_unavailable 0
+  exit 1
+fi
+write_status credentials success available 0
 
 umask 077
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fearngreed-official-refresh.XXXXXX")"
@@ -180,6 +303,9 @@ refresh_args=(--date "$SEOUL_DATE" --skip-if-current)
 if [[ "$terminal_run" == "true" ]]; then
   refresh_args+=(--failure-policy publish)
 else
+  # Early attempts wait for the exact Open API session without publishing.
+  # The terminal attempt may use the authenticated target-session fallback so
+  # it can also distinguish a genuine KRX holiday from an Open API lag.
   refresh_args+=(--failure-policy preserve --require-end-session)
 fi
 
@@ -216,15 +342,24 @@ if (( refresh_status == 0 )); then
     "$RECEIPT")"
   if [[ "$skipped" == "true" ]]; then
     git -C "$CHECKOUT" diff --quiet -- data
-    finish_status refresh skipped already_current 1
-    exit 0
+    skipped_refresh=true
   fi
 fi
 
-if git -C "$CHECKOUT" diff --quiet -- data; then
+if [[ "$skipped_refresh" != "true" ]] && git -C "$CHECKOUT" diff --quiet -- data; then
   finish_status refresh failed provider_unavailable 1
   exit 1
 fi
+
+CURRENT_STAGE="live-signal-expiry"
+CURRENT_ATTEMPT=1
+write_status live-signal-expiry running expiry_check_started 1
+(
+  cd "$CHECKOUT"
+  python3 "$TIMEOUT_RUNNER" 120 uv run --frozen python -m fearngreed.live_signal \
+    --expire-stale >/dev/null
+)
+write_status live-signal-expiry success expiry_checked 1
 
 unexpected=0
 while IFS= read -r changed_path; do
@@ -243,7 +378,10 @@ fi
 
 if (( refresh_status != 0 )); then
   changed_data="$(git -C "$CHECKOUT" diff --name-only -- data | LC_ALL=C sort)"
-  if [[ "$changed_data" != $'data/automation-status.json\ndata/summary.json' ]]; then
+  expected_degraded_files=$'data/automation-status.json\ndata/summary.json'
+  expected_degraded_with_expiry=$'data/automation-status.json\ndata/live-signal.json\ndata/summary.json'
+  if [[ "$changed_data" != "$expected_degraded_files" \
+    && "$changed_data" != "$expected_degraded_with_expiry" ]]; then
     finish_status validation failed degraded_boundary 1
     exit 1
   fi
@@ -261,7 +399,7 @@ write_status validation running checks_started 1
   python3 "$TIMEOUT_RUNNER" "$VALIDATION_TIMEOUT_SECONDS" npm test
   python3 "$TIMEOUT_RUNNER" 300 uv run --frozen python -m fearngreed.verify
   python3 "$TIMEOUT_RUNNER" 300 uv run --frozen python -m fearngreed.site --output dist
-  python3 "$TIMEOUT_RUNNER" 300 with-krx-keychain uv run --frozen python -c \
+  python3 "$TIMEOUT_RUNNER" 300 uv run --frozen python -c \
     "from pathlib import Path; from fearngreed.security import scan_public_files; assert not scan_public_files(Path('.'))"
 )
 write_status validation success checks_passed 1
@@ -269,14 +407,29 @@ write_status validation success checks_passed 1
 CURRENT_STAGE="publish"
 CURRENT_ATTEMPT=1
 write_status publish running preparing_commit 1
+
+# A current repository can still be paired with a stale or missing Pages
+# deployment. Avoid an unnecessary commit when exact public bytes already
+# match; otherwise push one empty recovery commit so the normal Pages workflow
+# redeploys the validated checkout.
+if [[ "$skipped_refresh" == "true" ]] && git -C "$CHECKOUT" diff --quiet -- data; then
+  if verify_public_deployment; then
+    finish_status publish published already_current_public 1
+    exit 0
+  fi
+  redeploy_only=true
+fi
+
 git -C "$CHECKOUT" config user.name "fearngreed-local-automation"
 git -C "$CHECKOUT" config user.email "actions@users.noreply.github.com"
 git -C "$CHECKOUT" config commit.gpgsign false
-if (( refresh_status == 0 )); then
+if [[ "$redeploy_only" == "true" ]]; then
+  commit_message="chore: redeploy validated research site"
+elif (( refresh_status == 0 )); then
   git -C "$CHECKOUT" add data
   commit_message="data: refresh fear and greed derivatives"
 else
-  git -C "$CHECKOUT" add data/summary.json data/automation-status.json
+  git -C "$CHECKOUT" add data/summary.json data/automation-status.json data/live-signal.json
   commit_message="data: publish degraded refresh status"
 fi
 git -C "$CHECKOUT" diff --cached --check
@@ -291,7 +444,11 @@ if [[ "$(git -C "$CHECKOUT" rev-parse origin/main)" != "$BASE_HEAD" ]]; then
   finish_status publish failed remote_head_changed 1
   exit 1
 fi
-git -C "$CHECKOUT" commit --quiet -m "$commit_message"
+if [[ "$redeploy_only" == "true" ]]; then
+  git -C "$CHECKOUT" commit --quiet --allow-empty -m "$commit_message"
+else
+  git -C "$CHECKOUT" commit --quiet -m "$commit_message"
+fi
 if run_network_command push git -C "$CHECKOUT" push --quiet origin HEAD:main; then
   :
 else
@@ -300,9 +457,22 @@ else
   exit "$push_status"
 fi
 
-if (( refresh_status == 0 )); then
-  finish_status publish published refresh_complete 1
-else
-  finish_status publish degraded provider_failure_published 1
+if verify_public_deployment; then
+  if [[ "$skipped_refresh" == "true" ]]; then
+    finish_status publish published already_current_redeployed 1
+    exit 0
+  fi
+  if (( refresh_status == 0 )); then
+    finish_status publish published refresh_complete 1
+    exit 0
+  fi
+  finish_status publish published degraded_status_published 1
   exit 1
 fi
+
+if (( refresh_status == 0 )); then
+  finish_status publish pushed pages_deploy_pending 1
+else
+  finish_status publish pushed degraded_status_deploy_pending 1
+fi
+exit 1

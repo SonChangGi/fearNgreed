@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 
 import jsonschema
 import pytest
 
+import fearngreed.verify as verify_module
 from fearngreed.verify import (
     _verify_cross_artifact_consistency,
     _verify_etf_price_contract,
@@ -18,6 +21,7 @@ from fearngreed.verify import (
     _verify_strategy_comparison,
     _verify_summary_freshness,
     verify_local,
+    verify_remote,
 )
 
 
@@ -28,21 +32,29 @@ def test_live_signal_verifier_matches_browser_anchor_and_capture_window() -> Non
     provisional_summary = deepcopy(summary)
     provisional_summary["dataAsOf"] = live["historyDataAsOf"]
 
-    _verify_live_signal(live, provisional_summary)
+    verified_at = datetime.fromisoformat(live["actionWindow"]["closesAt"])
+    _verify_live_signal(live, provisional_summary, observed_at=verified_at)
 
     mismatched_anchor = deepcopy(live)
     mismatched_anchor["historyDataAsOf"] = "2000-01-01"
     with pytest.raises(ValueError, match="history anchor"):
-        _verify_live_signal(mismatched_anchor, provisional_summary)
+        _verify_live_signal(mismatched_anchor, provisional_summary, observed_at=verified_at)
 
     late_capture = deepcopy(live)
     late_capture["generatedAt"] = late_capture["actionWindow"]["closesAt"]
     with pytest.raises(ValueError, match="outside its provisional window"):
-        _verify_live_signal(late_capture, provisional_summary)
+        _verify_live_signal(late_capture, provisional_summary, observed_at=verified_at)
 
     confirmed_summary = deepcopy(provisional_summary)
     confirmed_summary["dataAsOf"] = live["signalDate"]
-    _verify_live_signal(live, confirmed_summary)
+    _verify_live_signal(live, confirmed_summary, observed_at=verified_at)
+
+    eligible_stale = deepcopy(live)
+    eligible_stale["quality"] = {"state": "ok", "tradeEligible": True, "reasons": []}
+    for model in eligible_stale["models"].values():
+        model["tradeEligible"] = True
+    with pytest.raises(ValueError, match="remains trade eligible"):
+        _verify_live_signal(eligible_stale, provisional_summary, observed_at=verified_at)
 
 
 def test_verify_history_accepts_columnar_and_rejects_width_mismatch() -> None:
@@ -87,6 +99,46 @@ def test_verify_local_reports_hashes_and_headroom() -> None:
         "data/strategy-comparison.json",
         "data/live-signal.json",
     }
+
+
+def test_verify_remote_uses_cache_busted_exact_byte_readback(tmp_path, monkeypatch) -> None:
+    relative = "data/summary.json"
+    content = b'{"contract":"test"}\n'
+    digest = hashlib.sha256(content).hexdigest()
+    local_receipt = {"ok": True, "hashes": {relative: digest}}
+    requested: dict[str, object] = {}
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body: bytes):
+            self.content = body
+
+    def fake_verify_local(root, *, expected_data_as_of=None):
+        assert root == tmp_path
+        assert expected_data_as_of == "2026-08-28"
+        return local_receipt
+
+    def fake_get(url, *, headers, timeout):
+        requested.update(url=url, headers=headers, timeout=timeout)
+        return Response(content)
+
+    monkeypatch.setattr(verify_module, "PUBLIC_FILES", (relative,))
+    monkeypatch.setattr(verify_module, "verify_local", fake_verify_local)
+    monkeypatch.setattr(verify_module.requests, "get", fake_get)
+
+    receipt = verify_remote(
+        tmp_path,
+        "https://example.test/fearNgreed/",
+        expected_data_as_of="2026-08-28",
+    )
+
+    assert requested == {
+        "url": f"https://example.test/fearNgreed/{relative}?verify={digest[:16]}",
+        "headers": {"Cache-Control": "no-cache"},
+        "timeout": 20,
+    }
+    assert receipt["remoteHashes"] == {relative: digest}
 
 
 def test_verify_local_can_require_an_exact_official_data_date(tmp_path) -> None:

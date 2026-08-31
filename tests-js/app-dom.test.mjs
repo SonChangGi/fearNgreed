@@ -702,7 +702,7 @@ test("a newer provisional signal is input-linked but never extends confirmed cha
   const signalDate = nextIsoDate(CONFIRMED_DATA_AS_OF);
   const originalNow = Date.now;
   const realStartedAt = originalNow();
-  const scenarioStartedAt = Date.parse(`${signalDate}T07:30:00Z`);
+  const scenarioStartedAt = Date.parse(`${signalDate}T06:50:00Z`);
   Date.now = () => scenarioStartedAt + (originalNow() - realStartedAt);
   try {
     const window = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture({ signalDate }) } });
@@ -725,6 +725,34 @@ test("a newer provisional signal is input-linked but never extends confirmed cha
     );
     assert.notEqual(signature(document, ["#live-signal-state", "#live-signal-score"]), rawLive);
     assert.doesNotMatch(document.querySelector("#history-data-table").textContent, new RegExp(signalDate));
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("an elapsed provisional action window is fail-closed before candidate display", { concurrency: false, timeout: 120_000 }, async () => {
+  const signalDate = nextIsoDate(CONFIRMED_DATA_AS_OF);
+  const originalNow = Date.now;
+  const realStartedAt = originalNow();
+  const scenarioStartedAt = Date.parse(`${signalDate}T07:00:00Z`);
+  Date.now = () => scenarioStartedAt + (originalNow() - realStartedAt);
+  try {
+    const eligiblePayload = liveSignalFixture({
+      signalDate,
+      models: {
+        robust: { tradeEligible: true },
+        scaled: { tradeEligible: true },
+        raw: { tradeEligible: true }
+      }
+    });
+    const window = await bootDashboard({
+      dataOverrides: { "live-signal.json": eligiblePayload }
+    });
+    const strip = window.document.querySelector("#live-signal-strip");
+    assert.equal(strip.hidden, true);
+    assert.equal(strip.dataset.tradeEligible, "false");
+    assert.equal(strip.dataset.expiryReason, "provisional_signal_expired");
+    assert.notEqual(window.document.querySelector("#status-badge").textContent, "unavailable");
   } finally {
     Date.now = originalNow;
   }

@@ -8,7 +8,14 @@ TEMPLATE="$REPOSITORY_ROOT/automation/$LABEL.plist"
 DESTINATION="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/fearNgreed"
 
-with-krx-keychain --check
+if ! command -v with-krx-keychain >/dev/null 2>&1; then
+  echo "Cannot install official refresh: Keychain bridge is not available." >&2
+  exit 1
+fi
+if ! with-krx-keychain --check >/dev/null 2>&1; then
+  echo "Cannot install official refresh: Keychain credentials are incomplete." >&2
+  exit 1
+fi
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
 /usr/bin/sed \
   -e "s|__REPOSITORY_ROOT__|$REPOSITORY_ROOT|g" \

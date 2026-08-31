@@ -19,6 +19,14 @@ def test_status_writer_emits_and_atomically_persists_secret_safe_snapshot(
             str(WRITER),
             "--output",
             str(output),
+            "--component",
+            "official-refresh",
+            "--run-id",
+            "official-20260814t113000z-42",
+            "--started-at",
+            "2026-08-14T11:30:00Z",
+            "--deadline-at",
+            "2026-08-14T23:30:00+09:00",
             "--target-date",
             "2026-08-14",
             "--run-mode",
@@ -42,10 +50,13 @@ def test_status_writer_emits_and_atomically_persists_secret_safe_snapshot(
     assert saved_payload == stdout_payload
     assert saved_payload == {
         **saved_payload,
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "contract": "fearngreed-local-automation-status",
         "component": "official-refresh",
         "source": "local-launch-agent",
+        "runId": "official-20260814t113000z-42",
+        "startedAt": "2026-08-14T11:30:00Z",
+        "deadlineAt": "2026-08-14T23:30:00+09:00",
         "targetDate": "2026-08-14",
         "runMode": "terminal",
         "stage": "push",
@@ -69,6 +80,10 @@ def test_status_writer_runs_with_launch_agent_system_python(tmp_path: Path) -> N
             str(WRITER),
             "--output",
             str(output),
+            "--run-id",
+            "official-20260814t113000z-43",
+            "--started-at",
+            "2026-08-14T11:30:00Z",
             "--target-date",
             "2026-08-14",
             "--run-mode",
@@ -100,6 +115,10 @@ def test_status_writer_rejects_unstructured_reason_without_echoing_it(tmp_path: 
             str(WRITER),
             "--output",
             str(output),
+            "--run-id",
+            "official-20260814t113000z-44",
+            "--started-at",
+            "2026-08-14T11:30:00Z",
             "--target-date",
             "2026-08-14",
             "--run-mode",
@@ -120,3 +139,42 @@ def test_status_writer_rejects_unstructured_reason_without_echoing_it(tmp_path: 
     assert fake_secret not in completed.stdout
     assert fake_secret not in completed.stderr
     assert not output.exists()
+
+
+def test_status_writer_supports_live_signal_component_and_rejects_naive_time(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "live-status.json"
+    command = [
+        "python3",
+        str(WRITER),
+        "--output",
+        str(output),
+        "--component",
+        "live-signal",
+        "--run-id",
+        "live-20260814t064700z-45",
+        "--started-at",
+        "2026-08-14T06:47:00Z",
+        "--deadline-at",
+        "2026-08-14T16:00:00+09:00",
+        "--target-date",
+        "2026-08-14",
+        "--run-mode",
+        "capture",
+        "--stage",
+        "publish",
+        "--status",
+        "ready",
+        "--reason",
+        "provisional_signal_ready",
+    ]
+    completed = subprocess.run(command, check=True, capture_output=True, text=True)
+    payload = json.loads(completed.stdout)
+    assert payload["component"] == "live-signal"
+    assert payload["deadlineAt"] == "2026-08-14T16:00:00+09:00"
+
+    command[command.index("2026-08-14T16:00:00+09:00")] = "2026-08-14T16:00:00"
+    rejected = subprocess.run(command, check=False, capture_output=True, text=True)
+    assert rejected.returncode == 2
+    assert "2026-08-14T16:00:00" not in rejected.stderr

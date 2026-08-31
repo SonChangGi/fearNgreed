@@ -30,6 +30,11 @@ def test_live_signal_wrapper_is_bounded_and_never_mutates_git() -> None:
     assert '--output "$OUTPUT_PATH"' in script
     assert 'OUTPUT_PATH="$REPOSITORY_ROOT/var/live-signal-local.json"' in script
     assert '>"$receipt_file" 2>/dev/null' in script
+    assert 'STATUS_WRITER="$SCRIPT_DIR/write-local-automation-status.py"' in script
+    assert "live-signal-status.json" in script
+    assert "with-krx-keychain --check >/dev/null 2>&1" in script
+    assert "finish_status publish ready provisional_signal_ready" in script
+    assert script.index("with-krx-keychain --check") < script.index("mktemp")
     assert "set -x" not in script
     assert "printenv" not in script
     assert "git " not in script
@@ -61,6 +66,7 @@ def test_launch_agent_installer_checks_bridge_without_reading_credentials() -> N
     script = (ROOT / "scripts" / "install-live-signal-launch-agent").read_text(encoding="utf-8")
 
     assert "with-krx-keychain --check" in script
+    assert "credentials are incomplete" in script
     assert "launchctl bootstrap" in script
     assert "launchctl enable" in script
     assert "security " not in script

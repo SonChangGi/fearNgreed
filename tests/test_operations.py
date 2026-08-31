@@ -20,7 +20,11 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
         'cron: "30 11 * * 1-5"',
     ):
         assert schedule in workflow
-    assert "TZ=Asia/Seoul date +%F" in workflow
+    assert "Resolve expected KRX session" in workflow
+    assert "python -m fearngreed.automation" in workflow
+    assert 'observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"' in workflow
+    assert 'session_args+=(--schedule "$EVENT_SCHEDULE")' in workflow
+    assert 'target_date="$TARGET_DATE"' in workflow
     assert "EVENT_SCHEDULE" in workflow
     assert "failure_policy=preserve" in workflow
     assert "args+=(--require-end-session)" in workflow
@@ -40,7 +44,7 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert "10#$current_kst_time < 1815" in workflow
     assert "Manual final-data refresh is available from 18:15 KST" in workflow
     assert '[[ "$OFFICIAL_DATA_DATE" < "$current_kst_date" ]]' in workflow
-    assert 'target_date="${OFFICIAL_DATA_DATE:-$current_kst_date}"' in workflow
+    assert 'target_date="${OFFICIAL_DATA_DATE:-$current_kst_date}"' not in workflow
     assert 'elif [[ -z "$OFFICIAL_DATA_DATE" ]]; then' in workflow
     official_block = workflow.split('if [[ -n "$OFFICIAL_DATA_DATE" ]]; then', 1)[1].split("fi", 1)[
         0
@@ -100,7 +104,15 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert workflow.count("--expected-data-as-of") == 2
     assert workflow.count("steps.refresh.outputs.dataAsOf") == 2
     assert 'verify_args=(--base-url "${{ steps.deployment.outputs.page_url }}")' in workflow
-    assert 'if [[ "${{ steps.refresh.outputs.outcome }}" == "success" ]]; then' in workflow
+    assert (
+        workflow.count(
+            "steps.refresh.outputs.outcome == 'success' || "
+            "steps.refresh.outputs.outcome == 'failure' || "
+            "steps.refresh.outputs.outcome == 'skipped'"
+        )
+        >= 12
+    )
+    assert workflow.count('if [[ "${{ steps.refresh.outputs.outcome }}" != "failure" ]]; then') == 2
     assert workflow.index("Commit validated derivatives") < workflow.index(
         "Deploy validated derivatives"
     )
@@ -116,12 +128,23 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
         "- name: Report early retry pending", 1
     )[0]
     assert "exit 1" in degradation_block
-    assert "continue-on-error: ${{ github.event_name == 'schedule' }}" in workflow
+    assert "continue-on-error: ${{ github.event_name == 'schedule' }}" not in workflow
     assert "public-site-health:" in workflow
-    assert "Fail only when the existing Fear and Greed page is unusable" in workflow
-    assert "A separate public-site health job is the scheduled failure-mail gate." in workflow
+    assert "Verify public usability and terminal freshness" in workflow
+    assert "needs.refresh.outputs.outcome" in workflow
+    assert "needs.refresh.outputs.target_date" in workflow
+    assert ".dataAsOf == $target" in workflow
+    assert "last-good public market outputs remain available" in workflow
+    assert "The terminal freshness gate will report this scheduled refresh as failed." in workflow
+    assert "Publish refresh decision summary" in workflow
+    assert "Expire closed provisional signal" in workflow
+    assert "python -m fearngreed.live_signal --expire-stale" in workflow
+    assert "provisional_signal_expired" in workflow
+    assert "data/live-signal.json" in workflow
     assert "Report early retry pending" in workflow
     assert "Report already-current session" in workflow
+    assert "the validated site was redeployed and exact public bytes were verified" in workflow
+    assert "success|skipped)" in workflow
     assert "timeout-minutes: 120" in workflow
     assert "timeout --signal=TERM --kill-after=30s 35m" in workflow
     assert "mark_failed('refresh_timeout')" in workflow
@@ -130,17 +153,21 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
 def test_pages_workflow_runs_local_and_live_contract_verification() -> None:
     workflow = (ROOT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
 
+    assert "Verify checkout public contract" in workflow
     assert "uv run --frozen python -m fearngreed.verify\n" in workflow
-    assert "python -m fearngreed.verify --base-url" in workflow
-    assert workflow.index("python -m fearngreed.verify\n") < workflow.index(
+    assert 'verify_args=(--base-url "${{ steps.deployment.outputs.page_url }}")' in workflow
+    assert workflow.index("Verify checkout public contract") < workflow.index(
         "actions/upload-pages-artifact@"
     )
     assert workflow.index("actions/deploy-pages@") < workflow.index(
-        "Verify live public derivative hashes"
+        "Verify exact live public bytes and freshness"
     )
-    assert "continue-on-error: ${{ github.event_name == 'push' }}" in workflow
-    assert "public-site-health:" in workflow
-    assert "required_paths=(index.html data/summary.json data/dashboard.json)" in workflow
+    assert "continue-on-error: ${{ github.event_name == 'push' }}" not in workflow
+    assert "source_freshness_passed" in workflow
+    assert '[[ "$data_as_of" == "$expected_data_as_of" ]]' in workflow
+    assert 'verify_args+=(--expected-data-as-of "$EXPECTED_DATA_AS_OF")' in workflow
+    assert "for attempt in {1..30}" in workflow
+    assert "public-site-health:" not in workflow
 
 
 def test_fast_signal_workflow_is_separate_bounded_and_secret_scoped() -> None:
@@ -222,15 +249,17 @@ def test_failed_refresh_preserves_market_outputs_and_last_success(tmp_path, monk
     assert updated_summary["status"]["state"] == "degraded"
     assert updated_summary["status"]["label"] == "데이터 저하"
     assert updated_summary["status"]["degradedReasons"] == ["provider_unavailable"]
-    assert updated_summary["status"]["expectedDataAsOf"] == "2026-07-15"
-    assert updated_summary["status"]["sourceFreshnessPassed"] is True
+    assert updated_summary["status"]["freshnessBasis"] == "source_alignment_only"
+    assert updated_summary["status"]["expectedDataAsOf"] is None
+    assert updated_summary["status"]["sourceFreshnessPassed"] is False
     assert updated_summary["automation"]["lastSuccessAt"] == "2026-07-16T01:00:00Z"
     assert updated_automation["state"] == "degraded"
     assert updated_automation["lastSuccessAt"] == "2026-07-16T01:00:00Z"
     assert updated_automation["dataAsOf"] == "2026-07-15"
     assert updated_automation["sourceMode"] == "krx_open_api"
-    assert updated_automation["expectedDataAsOf"] == "2026-07-15"
-    assert updated_automation["sourceFreshnessPassed"] is True
+    assert updated_automation["freshnessBasis"] == "source_alignment_only"
+    assert updated_automation["expectedDataAsOf"] is None
+    assert updated_automation["sourceFreshnessPassed"] is False
     assert (data / "dashboard.json").read_bytes() == dashboard
     assert (data / "history.json").read_bytes() == history
     assert not list(data.glob(".*.json.*"))

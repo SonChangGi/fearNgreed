@@ -23,6 +23,7 @@ def test_official_refresh_wrapper_is_isolated_bounded_and_secret_safe() -> None:
     assert '"$REFRESH_TIMEOUT_SECONDS"' in script
     assert "refresh_status == 124" in script
     assert "mark_failed('refresh_timeout')" in script
+    assert 'refresh_args=(--date "$SEOUL_DATE" --skip-if-current)' in script
     assert "--failure-policy preserve --require-end-session" in script
     assert "--failure-policy publish" in script
     assert 'git -C "$CHECKOUT" rev-parse origin/main' in script
@@ -40,7 +41,37 @@ def test_official_refresh_wrapper_is_isolated_bounded_and_secret_safe() -> None:
     assert 'STATUS_WRITER="$SCRIPT_DIR/write-local-automation-status.py"' in script
     assert "official-refresh-status.json" in script
     assert "write_status refresh running collection_started 1" in script
+    assert 'python3 "$TIMEOUT_RUNNER" "$RUN_BUDGET_SECONDS" /bin/zsh "$0"' in script
+    assert "finish_status watchdog failed deadline_exceeded 0" in script
+    assert "T18:42:00+09:00" in script
+    assert "T20:25:00+09:00" in script
+    assert "missed_friday_catchup" in script
+    assert "RUN_BUDGET_SECONDS=7200" in script
+    assert "verify_public_deployment" in script
+    assert 'python -m fearngreed.verify \\\n      --base-url "$PUBLIC_BASE_URL"' in script
+    assert "public_hashes_match" in script
     assert "finish_status publish published refresh_complete 1" in script
+    assert "finish_status publish pushed pages_deploy_pending 1" in script
+    assert "skipped_refresh=true" in script
+    assert "redeploy_only=true" in script
+    assert 'commit --quiet --allow-empty -m "$commit_message"' in script
+    assert 'commit_message="chore: redeploy validated research site"' in script
+    assert "finish_status publish published already_current_redeployed 1" in script
+    assert script.index("write_status validation success checks_passed 1") < script.index(
+        'if [[ "$skipped_refresh" == "true" ]]'
+    )
+    assert "python -m fearngreed.live_signal" in script
+    assert "--expire-stale" in script
+    assert "expected_degraded_with_expiry" in script
+    assert "with-krx-keychain --check >/dev/null 2>&1" in script
+    assert script.index("with-krx-keychain --check") < script.index("umask 077")
+    public_scan = re.search(
+        r'python3 "\$TIMEOUT_RUNNER" 300 .*?scan_public_files;.*?\n\)',
+        script,
+        re.DOTALL,
+    )
+    assert public_scan is not None
+    assert "with-krx-keychain" not in public_scan.group(0)
     assert 'local run_status="$2"' in script
     assert 'local status="$2"' not in script
     assert "git reset" not in script
@@ -85,6 +116,9 @@ def test_write_status_runs_under_zsh_without_reserved_variable_collision(
         "STATUS_PATH": str(status_path),
         "SEOUL_DATE": "2026-08-14",
         "run_mode": "unscheduled",
+        "RUN_ID": "official-20260814t113000z-42",
+        "RUN_STARTED_AT": "2026-08-14T11:30:00Z",
+        "RUN_DEADLINE_AT": "",
     }
     completed = subprocess.run(
         [
@@ -104,6 +138,159 @@ def test_write_status_runs_under_zsh_without_reserved_variable_collision(
     assert payload["stage"] == "schedule"
     assert payload["status"] == "skipped"
     assert payload["reason"] == "outside_window"
+
+
+@pytest.mark.parametrize(
+    ("clock", "expected_mode", "expected_budget", "expected_deadline"),
+    [
+        ("182000", "early", "1320", "2026-08-14T18:42:00+09:00"),
+        ("190000", "early", "5100", "2026-08-14T20:25:00+09:00"),
+        ("210000", "terminal", "9000", "2026-08-14T23:30:00+09:00"),
+    ],
+)
+def test_run_window_has_absolute_deadline_before_later_schedule(
+    clock: str,
+    expected_mode: str,
+    expected_budget: str,
+    expected_deadline: str,
+) -> None:
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh runtime validation runs on macOS where the LaunchAgent is installed")
+
+    script = (ROOT / "scripts" / "run-official-refresh").read_text(encoding="utf-8")
+    function_match = re.search(r"configure_run_window\(\) \{\n.*?\n\}", script, re.DOTALL)
+    assert function_match is not None
+    completed = subprocess.run(
+        [
+            zsh,
+            "-c",
+            f"""
+set -eu
+SEOUL_DATE=2026-08-14
+SEOUL_WEEKDAY=5
+SEOUL_TIME={clock}
+run_mode=unscheduled
+terminal_run=false
+RUN_DEADLINE_AT=''
+RUN_BUDGET_SECONDS=0
+WINDOW_REASON=outside_window
+{function_match.group(0)}
+configure_run_window
+print "$run_mode|$RUN_BUDGET_SECONDS|$RUN_DEADLINE_AT|$terminal_run"
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    expected_terminal = "true" if expected_mode == "terminal" else "false"
+    assert completed.stdout.strip() == (
+        f"{expected_mode}|{expected_budget}|{expected_deadline}|{expected_terminal}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("observed_date", "weekday", "expected_deadline"),
+    [
+        ("2026-08-15", "6", "2026-08-15T10:00:00+09:00"),
+        ("2026-08-16", "7", "2026-08-16T10:00:00+09:00"),
+    ],
+)
+def test_weekend_delayed_launch_recovers_friday_nominal_target(
+    observed_date: str,
+    weekday: str,
+    expected_deadline: str,
+) -> None:
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh runtime validation runs on macOS where the LaunchAgent is installed")
+
+    script = (ROOT / "scripts" / "run-official-refresh").read_text(encoding="utf-8")
+    function_match = re.search(r"configure_run_window\(\) \{\n.*?\n\}", script, re.DOTALL)
+    assert function_match is not None
+    completed = subprocess.run(
+        [
+            zsh,
+            "-c",
+            f"""
+set -eu
+SEOUL_DATE={observed_date}
+SEOUL_WEEKDAY={weekday}
+SEOUL_TIME=080000
+run_mode=unscheduled
+terminal_run=false
+RUN_DEADLINE_AT=''
+RUN_BUDGET_SECONDS=0
+WINDOW_REASON=outside_window
+{function_match.group(0)}
+configure_run_window
+print "$run_mode|$RUN_BUDGET_SECONDS|$RUN_DEADLINE_AT|$terminal_run|$SEOUL_DATE|$WINDOW_REASON"
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == (
+        f"terminal|7200|{expected_deadline}|true|2026-08-14|missed_friday_catchup"
+    )
+
+
+@pytest.mark.parametrize(("success_at", "expected_result"), [(3, "0"), (0, "1")])
+def test_public_readback_is_bounded_and_requires_exact_remote_hashes(
+    success_at: int,
+    expected_result: str,
+) -> None:
+    zsh = shutil.which("zsh")
+    if zsh is None:
+        pytest.skip("zsh runtime validation runs on macOS where the LaunchAgent is installed")
+
+    script = (ROOT / "scripts" / "run-official-refresh").read_text(encoding="utf-8")
+    function_match = re.search(r"verify_public_deployment\(\) \{\n.*?\n\}", script, re.DOTALL)
+    assert function_match is not None
+    completed = subprocess.run(
+        [
+            zsh,
+            "-c",
+            f"""
+set -u
+PUBLIC_READBACK_ATTEMPTS=3
+PUBLIC_READBACK_DELAY_SECONDS=10
+PUBLIC_READBACK_TIMEOUT_SECONDS=45
+PUBLIC_BASE_URL=https://example.invalid/fearNgreed/
+TIMEOUT_RUNNER=unused
+CHECKOUT=unused
+CURRENT_STAGE=bootstrap
+CURRENT_ATTEMPT=0
+typeset -i calls=0
+typeset -a delays=()
+typeset -a events=()
+write_status() {{ events+=("$1:$2:$3:$4"); }}
+sleep() {{ delays+=("$1"); }}
+python3() {{ calls=$((calls + 1)); (( {success_at} > 0 && calls == {success_at} )); }}
+{function_match.group(0)}
+verify_public_deployment
+result=$?
+print "$result|$calls|${{(j:,:)delays}}|${{events[-1]}}"
+""",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    if expected_result == "0":
+        assert completed.stdout.strip() == "0|3|10,10|readback:success:public_hashes_match:3"
+    else:
+        assert completed.stdout.strip() == (
+            "1|3|10,10|readback:pending:public_hashes_unconfirmed:3"
+        )
 
 
 def test_changed_file_scan_preserves_zsh_path() -> None:
@@ -296,6 +483,7 @@ def test_official_refresh_installer_checks_bridge_without_reading_credentials() 
     )
 
     assert "with-krx-keychain --check" in script
+    assert "credentials are incomplete" in script
     assert "launchctl bootstrap" in script
     assert "launchctl enable" in script
     assert "security " not in script

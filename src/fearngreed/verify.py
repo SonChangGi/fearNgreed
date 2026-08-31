@@ -11,6 +11,7 @@ from typing import Any
 import jsonschema
 import requests
 
+from .live_signal import PROVISIONAL_EXPIRED_REASON
 from .security import scan_public_files
 
 PUBLIC_FILES = (
@@ -215,20 +216,31 @@ def verify_remote(
     remote_hashes: dict[str, str] = {}
     normalized = base_url.rstrip("/")
     for relative in PUBLIC_FILES:
+        expected_digest = local["hashes"][relative]
+        readback_url = f"{normalized}/{relative}?verify={expected_digest[:16]}"
         try:
-            response = requests.get(f"{normalized}/{relative}", timeout=20)
+            response = requests.get(
+                readback_url,
+                headers={"Cache-Control": "no-cache"},
+                timeout=20,
+            )
         except requests.RequestException:
             raise ValueError(f"public readback request failed: {relative}") from None
         if response.status_code != 200:
             raise ValueError(f"public readback returned HTTP {response.status_code}: {relative}")
         digest = hashlib.sha256(response.content).hexdigest()
         remote_hashes[relative] = digest
-        if digest != local["hashes"][relative]:
+        if digest != expected_digest:
             raise ValueError(f"public readback hash mismatch: {relative}")
     return {**local, "baseUrl": normalized, "remoteHashes": remote_hashes}
 
 
-def _verify_live_signal(live: dict[str, Any], summary: dict[str, Any]) -> None:
+def _verify_live_signal(
+    live: dict[str, Any],
+    summary: dict[str, Any],
+    *,
+    observed_at: datetime | None = None,
+) -> None:
     """Keep the fast same-day observation outside confirmed research artifacts."""
 
     try:
@@ -260,10 +272,39 @@ def _verify_live_signal(live: dict[str, Any], summary: dict[str, Any]) -> None:
         raise ValueError("live signal action window date does not match signalDate")
     try:
         generated_at = datetime.fromisoformat(str(live.get("generatedAt")).replace("Z", "+00:00"))
+        confirmation_at = datetime.fromisoformat(
+            str(live.get("expectedConfirmationAt")).replace("Z", "+00:00")
+        )
     except ValueError:
         raise ValueError("live signal generatedAt is invalid") from None
     if generated_at.tzinfo is None or not (opens_at <= generated_at < closes_at):
         raise ValueError("live signal capture time is outside its provisional window")
+    if confirmation_at.tzinfo is None:
+        raise ValueError("live signal expected confirmation is invalid")
+    now = observed_at or datetime.now().astimezone()
+    if now.tzinfo is None:
+        raise ValueError("live signal verification time is invalid")
+    expired = live.get("phase") == "provisional" and (
+        confirmed_date >= signal_date or now >= closes_at
+    )
+    quality = live.get("quality")
+    models = live.get("models")
+    if not isinstance(quality, dict) or not isinstance(models, dict):
+        raise ValueError("live signal eligibility contract is invalid")
+    if expired:
+        reasons = quality.get("reasons")
+        if (
+            quality.get("state") != "unavailable"
+            or quality.get("tradeEligible") is not False
+            or not isinstance(reasons, list)
+            or PROVISIONAL_EXPIRED_REASON not in reasons
+            or window.get("state") != "closed"
+            or any(
+                not isinstance(model, dict) or model.get("tradeEligible") is not False
+                for model in models.values()
+            )
+        ):
+            raise ValueError("expired provisional live signal remains trade eligible")
 
 
 def _verify_history(history: dict[str, Any]) -> None:

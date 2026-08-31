@@ -185,7 +185,9 @@ def _run_authenticated(request_name: str, request: Callable[[Any], pd.DataFrame]
             session = get_auth_session()
             is_valid = getattr(session, "is_valid", None)
             if session is None or not callable(is_valid) or not bool(is_valid()):
-                raise ProviderError("authenticated pykrx session is unavailable")
+                raise ProviderError(
+                    _sanitized_auth_failure(captured_out.getvalue(), captured_err.getvalue())
+                )
             with _authenticated_request_timeout(session):
                 frame = request(stock)
     except ProviderError:
@@ -195,6 +197,20 @@ def _run_authenticated(request_name: str, request: Callable[[Any], pd.DataFrame]
     if not isinstance(frame, pd.DataFrame):
         raise ProviderError(f"pykrx {request_name} response contract changed")
     return frame
+
+
+def _sanitized_auth_failure(stdout: str, stderr: str) -> str:
+    """Classify known pykrx login failures without exposing captured provider text.
+
+    pykrx currently prints the login ID and provider messages while creating an
+    authenticated session.  Those streams stay captured; only a fixed public-
+    safe code is returned to the refresh layer.
+    """
+
+    captured = f"{stdout}\n{stderr}".lower()
+    if "비밀번호 변경" in captured or "cd010" in captured:
+        return "KRX password change is required"
+    return "authenticated pykrx login failed"
 
 
 @contextlib.contextmanager

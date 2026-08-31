@@ -257,9 +257,13 @@ def refresh(
             target_kospi = fetch_kospi_index(end, end)
             target_has_session = _frame_contains_exact_session(target_kospi, end)
         except ProviderError as error:
+            # The Open API is behind and the authenticated exact-date check
+            # failed, so we cannot distinguish a new session from a holiday.
+            # Do not reuse the older Open API row as proof that public data is
+            # fresh; publish an explicit source-alignment failure instead.
             raise RefreshStageError(
                 _public_failure_reason(str(error)),
-                expected_as_of=expected_as_of,
+                expected_as_of=None,
             ) from None
         if not target_has_session:
             current_data_as_of = published_data_as_of
@@ -1061,6 +1065,11 @@ def mark_failed(reason: str, expected_as_of: date | None = None) -> None:
         and current_data_as_of is not None
         and effective_expected_as_of > current_data_as_of
     )
+    freshness_confirmed = bool(
+        effective_expected_as_of is not None
+        and current_data_as_of is not None
+        and effective_expected_as_of <= current_data_as_of
+    )
     failure_state = "stale" if freshness_lag_detected else "degraded"
     previous_reasons = previous_automation.get("degradedReasons", [])
     if not isinstance(previous_reasons, list):
@@ -1074,19 +1083,25 @@ def mark_failed(reason: str, expected_as_of: date | None = None) -> None:
         "degradedReasons": list(dict.fromkeys([*previous_reasons, reason])),
         "sourceMode": previous_automation.get("sourceMode", "unavailable"),
     }
-    freshness_fields = ("freshnessBasis", "expectedDataAsOf", "sourceFreshnessPassed")
-    for field_name in freshness_fields:
-        if field_name in previous_automation:
-            automation[field_name] = previous_automation[field_name]
     if freshness_lag_detected:
-        expected_value = effective_expected_as_of.isoformat()
-        automation.update(
-            {
-                "freshnessBasis": "official_krx_latest_completed_session",
-                "expectedDataAsOf": expected_value,
-                "sourceFreshnessPassed": False,
-            }
-        )
+        freshness_status = {
+            "freshnessBasis": "official_krx_latest_completed_session",
+            "expectedDataAsOf": effective_expected_as_of.isoformat(),
+            "sourceFreshnessPassed": False,
+        }
+    elif freshness_confirmed:
+        freshness_status = {
+            "freshnessBasis": "official_krx_latest_completed_session",
+            "expectedDataAsOf": current_data_as_of.isoformat(),
+            "sourceFreshnessPassed": True,
+        }
+    else:
+        freshness_status = {
+            "freshnessBasis": "source_alignment_only",
+            "expectedDataAsOf": None,
+            "sourceFreshnessPassed": False,
+        }
+    automation.update(freshness_status)
 
     if summary is not None:
         try:
@@ -1100,14 +1115,7 @@ def mark_failed(reason: str, expected_as_of: date | None = None) -> None:
             status["state"] = failure_state
             status["label"] = "데이터 지연" if freshness_lag_detected else "데이터 저하"
             status["degradedReasons"] = list(dict.fromkeys([*previous, reason]))
-            if freshness_lag_detected:
-                status.update(
-                    {
-                        "freshnessBasis": "official_krx_latest_completed_session",
-                        "expectedDataAsOf": effective_expected_as_of.isoformat(),
-                        "sourceFreshnessPassed": False,
-                    }
-                )
+            status.update(freshness_status)
             summary_automation = summary.get("automation")
             if not isinstance(summary_automation, dict):
                 summary_automation = {}
@@ -1138,6 +1146,10 @@ def _public_failure_reason(reason: str) -> str:
         return "krx_open_api_key_missing"
     if "krx login credentials" in lowered and "not configured" in lowered:
         return "krx_login_credentials_missing"
+    if "password change" in lowered:
+        return "krx_password_change_required"
+    if "pykrx login failed" in lowered:
+        return "authenticated_pykrx_login_failed"
     if "credential" in lowered or "not configured" in lowered:
         return "krx_credentials_missing"
     if "krx open api" in lowered:

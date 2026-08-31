@@ -34,6 +34,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const historyChartState = createHistoryChartState();
 const controlApiClient = new FearControlApiClient();
 const CONTROL_API_BASE_STORAGE_KEY = "fearngreed-control-api-base-v1";
+const PROVISIONAL_SIGNAL_EXPIRED_REASON = "provisional_signal_expired";
 let verifiedControlArtifact = null;
 let controlRunPending = false;
 
@@ -303,6 +304,28 @@ function validateLiveSignal(liveSignal, summary) {
   const closesAt = Date.parse(window.closesAt || "");
   if (!Number.isFinite(opensAt) || !Number.isFinite(closesAt) || !(opensAt <= generatedAt && generatedAt < closesAt)) throw new Error("빠른 신호 수집 시각이 잠정 분석 시간 밖입니다.");
   return liveSignal;
+}
+
+function failClosedExpiredLiveSignal(liveSignal, summary, now = Date.now()) {
+  if (liveSignal == null || liveSignal.phase !== "provisional") return liveSignal;
+  const closesAt = Date.parse(liveSignal.actionWindow?.closesAt || "");
+  const confirmed = isIsoDate(summary?.dataAsOf) && liveSignal.signalDate <= summary.dataAsOf;
+  if (!confirmed && (!Number.isFinite(closesAt) || now < closesAt)) return liveSignal;
+  const reasons = Array.isArray(liveSignal.quality?.reasons)
+    ? [...new Set([...liveSignal.quality.reasons, PROVISIONAL_SIGNAL_EXPIRED_REASON])]
+    : [PROVISIONAL_SIGNAL_EXPIRED_REASON];
+  const models = liveSignal.models && typeof liveSignal.models === "object"
+    ? Object.fromEntries(Object.entries(liveSignal.models).map(([name, model]) => [
+      name,
+      model && typeof model === "object" ? { ...model, tradeEligible: false } : model
+    ]))
+    : liveSignal.models;
+  return {
+    ...liveSignal,
+    actionWindow: { ...liveSignal.actionWindow, state: "closed" },
+    quality: { ...liveSignal.quality, state: "unavailable", tradeEligible: false, reasons },
+    models
+  };
 }
 
 function decodeHistory(history) {
@@ -654,7 +677,14 @@ function renderLiveSignal() {
   const strip = $("#live-signal-strip");
   const view = selectedLiveSignal();
   if (!strip || !view) {
-    if (strip) strip.hidden = true;
+    if (strip) {
+      strip.hidden = true;
+      if (store.liveSignal?.quality?.reasons?.includes(PROVISIONAL_SIGNAL_EXPIRED_REASON)) {
+        strip.dataset.phase = store.liveSignal.phase;
+        strip.dataset.tradeEligible = "false";
+        strip.dataset.expiryReason = PROVISIONAL_SIGNAL_EXPIRED_REASON;
+      }
+    }
     return;
   }
   const { live, signal, tradeEligible } = view;
@@ -3686,7 +3716,7 @@ Promise.all([loadJson("data/summary.json"), loadJson("data/dashboard.json"), loa
     for (const candidate of [publicLiveSignal, localLiveSignal]) {
       try {
         const validated = validateLiveSignal(candidate, summary);
-        if (validated) liveCandidates.push(validated);
+        if (validated) liveCandidates.push(failClosedExpiredLiveSignal(validated, summary));
       } catch (_) {
         // A malformed optional fast signal never blocks confirmed research.
       }

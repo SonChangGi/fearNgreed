@@ -44,6 +44,8 @@ ETF_TICKERS = tuple(ETF_LISTING_DATES)
     [
         ("KRX_API_KEY is not configured", "krx_open_api_key_missing"),
         ("KRX login credentials are not configured", "krx_login_credentials_missing"),
+        ("KRX password change is required", "krx_password_change_required"),
+        ("authenticated pykrx login failed", "authenticated_pykrx_login_failed"),
     ],
 )
 def test_public_failure_reason_distinguishes_missing_krx_credentials(

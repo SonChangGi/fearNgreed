@@ -83,12 +83,15 @@
     "provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["price", "flow", "flowScope", "historyRole"],
+      "required": ["price", "flow", "flowScope", "historyRole", "historySource"],
       "properties": {
         "price": { "const": "authenticated-pykrx-kospi-index" },
         "flow": { "const": "authenticated-pykrx-kospi-investor-flow" },
         "flowScope": { "const": "KOSPI-excluding-ETF-ETN-ELW" },
-        "historyRole": { "const": "past-only-training" }
+        "historyRole": { "const": "past-only-training" },
+        "historySource": {
+          "enum": ["configured-last-good", "repository-last-good", "public-last-good"]
+        }
       }
     }
   },

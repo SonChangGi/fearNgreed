@@ -10,8 +10,11 @@ import pytest
 
 from fearngreed.live_signal import (
     LIVE_CONTRACT,
+    PROVISIONAL_EXPIRED_REASON,
     LiveSignalError,
     build_live_payload,
+    expire_provisional_payload,
+    resolve_live_history,
     write_atomic,
 )
 
@@ -20,19 +23,19 @@ KST = ZoneInfo("Asia/Seoul")
 HISTORY_ANCHOR = date(2026, 7, 16)
 
 
-def _root_with_history(tmp_path: Path) -> Path:
+def _root_with_history(tmp_path: Path, cutoff: date = HISTORY_ANCHOR) -> Path:
     data = tmp_path / "data"
-    data.mkdir()
+    data.mkdir(parents=True)
     history = json.loads((ROOT / "data" / "history.json").read_text(encoding="utf-8"))
-    cutoff = HISTORY_ANCHOR.isoformat()
+    cutoff_text = cutoff.isoformat()
     if isinstance(history.get("seriesRows"), list):
         date_index = history["seriesColumns"].index("date")
         history["seriesRows"] = [
-            row for row in history["seriesRows"] if str(row[date_index]) <= cutoff
+            row for row in history["seriesRows"] if str(row[date_index]) <= cutoff_text
         ]
     else:
-        history["series"] = [row for row in history.get("series", []) if row["date"] <= cutoff]
-    history["dataAsOf"] = cutoff
+        history["series"] = [row for row in history.get("series", []) if row["date"] <= cutoff_text]
+    history["dataAsOf"] = cutoff_text
     (data / "history.json").write_text(json.dumps(history), encoding="utf-8")
     return tmp_path
 
@@ -74,6 +77,103 @@ def test_live_signal_is_separate_past_only_same_day_snapshot(tmp_path, monkeypat
     assert payload["models"]["robust"]["fitMethod"] == "huber"
     assert payload["actionWindow"]["state"] == "open"
     assert payload["quality"] == {"state": "ok", "tradeEligible": True, "reasons": []}
+    assert payload["provenance"]["historySource"] == "repository-last-good"
+
+
+def test_live_signal_uses_freshest_valid_public_history_over_stale_checkout(
+    tmp_path, monkeypatch
+) -> None:
+    root = _root_with_history(tmp_path, date(2026, 7, 15))
+    public_root = _root_with_history(tmp_path / "public", HISTORY_ANCHOR)
+    public_history = json.loads((public_root / "data" / "history.json").read_text(encoding="utf-8"))
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return public_history
+
+    monkeypatch.setattr("fearngreed.live_signal.requests.get", lambda *args, **kwargs: Response())
+
+    history, rows, source = resolve_live_history(
+        root,
+        public_history_url="https://example.test/history.json",
+    )
+
+    assert history["dataAsOf"] == HISTORY_ANCHOR.isoformat()
+    assert rows[-1]["date"] == HISTORY_ANCHOR.isoformat()
+    assert source == "public-last-good"
+
+
+def test_live_history_rejects_mismatched_methodology_and_required_contract(
+    tmp_path, monkeypatch
+) -> None:
+    root = _root_with_history(tmp_path, date(2026, 7, 15))
+    public_root = _root_with_history(tmp_path / "public", HISTORY_ANCHOR)
+    public_history = json.loads((public_root / "data" / "history.json").read_text(encoding="utf-8"))
+    public_history["methodologyVersion"] = "fear-flow-future"
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return public_history
+
+    monkeypatch.setattr("fearngreed.live_signal.requests.get", lambda *args, **kwargs: Response())
+
+    history, _, source = resolve_live_history(
+        root,
+        public_history_url="https://example.test/history.json",
+    )
+    assert history["dataAsOf"] == "2026-07-15"
+    assert source == "repository-last-good"
+
+    local_path = root / "data" / "history.json"
+    invalid_local = json.loads(local_path.read_text(encoding="utf-8"))
+    invalid_local["schemaVersion"] = 2
+    local_path.write_text(json.dumps(invalid_local), encoding="utf-8")
+    with pytest.raises(LiveSignalError, match="live_history_contract_invalid"):
+        resolve_live_history(
+            root,
+            public_history_url="https://example.test/history.json",
+        )
+
+
+def test_expired_provisional_signal_is_idempotently_blocked(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KRX_ID", "id")
+    monkeypatch.setenv("KRX_PW", "pw")
+    root = _root_with_history(tmp_path)
+    day = date(2026, 7, 20)
+    kospi, flow = _frames(day)
+    payload = build_live_payload(
+        day=day,
+        observed_at=datetime(2026, 7, 20, 15, 48, tzinfo=KST),
+        root=root,
+        kospi=kospi,
+        flow=flow,
+    )
+
+    expired, changed = expire_provisional_payload(
+        payload,
+        observed_at=datetime(2026, 7, 20, 16, 0, tzinfo=KST),
+    )
+    assert changed is True
+    assert expired["actionWindow"]["state"] == "closed"
+    assert expired["quality"] == {
+        "state": "unavailable",
+        "tradeEligible": False,
+        "reasons": [PROVISIONAL_EXPIRED_REASON],
+    }
+    assert all(model["tradeEligible"] is False for model in expired["models"].values())
+
+    unchanged, changed_again = expire_provisional_payload(
+        expired,
+        observed_at=datetime(2026, 7, 21, 9, 0, tzinfo=KST),
+    )
+    assert changed_again is False
+    assert unchanged == expired
 
 
 def test_live_signal_rejects_wrong_date_duplicate_and_zero_turnover(tmp_path, monkeypatch) -> None:

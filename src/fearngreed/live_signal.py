@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -12,13 +13,17 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests
 
 from .model import FlowObservation, FlowSignal, fit_latest_signal
+from .pipeline import HISTORY_NUMERIC_PRECISION_DIGITS, METHODOLOGY_VERSION
 from .providers.common import ProviderError
 from .providers.pykrx_flow import fetch_kospi_index, fetch_market_participant_flows
 
 KST = ZoneInfo("Asia/Seoul")
 LIVE_CONTRACT = "fearngreed-live-signal"
+PUBLIC_HISTORY_URL = "https://sonchanggi.github.io/fearNgreed/data/history.json"
+PROVISIONAL_EXPIRED_REASON = "provisional_signal_expired"
 
 
 class LiveSignalError(RuntimeError):
@@ -47,6 +52,177 @@ def _decode_history(payload: dict[str, Any]) -> list[dict[str, Any]]:
             raise LiveSignalError("live_history_contract_invalid")
         rows.append(dict(zip(columns, row, strict=True)))
     return rows
+
+
+def _validated_history_candidate(
+    payload: object, *, source: str
+) -> tuple[date, dict[str, Any], list[dict[str, Any]], str]:
+    if not isinstance(payload, dict):
+        raise LiveSignalError("live_history_contract_invalid")
+    required_columns = {
+        "date",
+        "kospiClose",
+        "return1d",
+        "flowShare",
+        "rawFlowTrillion",
+    }
+    columns = payload.get("seriesColumns")
+    if (
+        payload.get("schemaVersion") != 1
+        or payload.get("methodologyVersion") != METHODOLOGY_VERSION
+        or payload.get("fixture") is not False
+        or payload.get("numericPrecisionDigits") != HISTORY_NUMERIC_PRECISION_DIGITS
+        or payload.get("seriesEncoding") != "columnar-v1"
+        or not isinstance(columns, list)
+        or not required_columns.issubset(columns)
+        or not isinstance(payload.get("models"), dict)
+        or not isinstance(payload.get("flowChannelRoles"), dict)
+    ):
+        raise LiveSignalError("live_history_contract_invalid")
+    rows = _decode_history(payload)
+    if len(rows) < 252:
+        raise LiveSignalError("live_history_contract_invalid")
+    try:
+        data_as_of = date.fromisoformat(str(payload.get("dataAsOf")))
+        row_dates = [date.fromisoformat(str(row.get("date"))) for row in rows]
+    except ValueError:
+        raise LiveSignalError("live_history_contract_invalid") from None
+    if (
+        row_dates != sorted(row_dates)
+        or len(row_dates) != len(set(row_dates))
+        or row_dates[-1] != data_as_of
+    ):
+        raise LiveSignalError("live_history_contract_invalid")
+    for row in rows[-252:]:
+        try:
+            values = [float(row[field]) for field in required_columns if field != "date"]
+        except (KeyError, TypeError, ValueError):
+            raise LiveSignalError("live_history_contract_invalid") from None
+        if not all(math.isfinite(value) for value in values) or float(row["kospiClose"]) <= 0:
+            raise LiveSignalError("live_history_contract_invalid")
+    return data_as_of, payload, rows, source
+
+
+def _read_history_path(
+    path: Path, *, source: str
+) -> tuple[date, dict[str, Any], list[dict[str, Any]], str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise LiveSignalError("live_history_contract_invalid") from None
+    return _validated_history_candidate(payload, source=source)
+
+
+def _fetch_public_history(
+    url: str,
+) -> tuple[date, dict[str, Any], list[dict[str, Any]], str]:
+    try:
+        response = requests.get(
+            url,
+            headers={"Accept": "application/json"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        raise LiveSignalError("live_public_history_unavailable") from None
+    return _validated_history_candidate(payload, source="public-last-good")
+
+
+def resolve_live_history(
+    root: Path,
+    *,
+    public_history_url: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+    """Select the freshest validated past-only history without trusting checkout age.
+
+    The local file remains a no-network last-good fallback.  Production capture
+    also compares the public, already-validated history so a detached or old
+    checkout cannot silently anchor the same-day model to stale sessions.
+    """
+
+    candidates: list[tuple[date, dict[str, Any], list[dict[str, Any]], str]] = []
+    configured_path = os.getenv("FEARNGREED_LIVE_HISTORY_PATH", "").strip()
+    paths: list[tuple[Path, str]] = []
+    if configured_path:
+        configured = Path(configured_path).expanduser()
+        if not configured.is_absolute():
+            configured = root / configured
+        paths.append((configured, "configured-last-good"))
+    paths.append((root / "data" / "history.json", "repository-last-good"))
+    seen: set[Path] = set()
+    for path, source in paths:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            candidates.append(_read_history_path(resolved, source=source))
+        except LiveSignalError:
+            continue
+    if public_history_url:
+        try:
+            candidates.append(_fetch_public_history(public_history_url))
+        except LiveSignalError:
+            pass
+    if not candidates:
+        raise LiveSignalError("live_history_contract_invalid")
+    _, payload, rows, source = max(candidates, key=lambda candidate: candidate[0])
+    return payload, rows, source
+
+
+def expire_provisional_payload(
+    payload: dict[str, Any],
+    *,
+    observed_at: datetime,
+    confirmed_data_as_of: date | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Fail closed once a provisional signal is no longer current/actionable."""
+
+    if payload.get("contract") != LIVE_CONTRACT:
+        raise LiveSignalError("live_signal_contract_invalid")
+    if payload.get("phase") != "provisional":
+        return copy.deepcopy(payload), False
+    try:
+        signal_date = date.fromisoformat(str(payload.get("signalDate")))
+        action_window = payload.get("actionWindow")
+        if not isinstance(action_window, dict):
+            raise ValueError
+        closes_at = datetime.fromisoformat(
+            str(action_window.get("closesAt")).replace("Z", "+00:00")
+        )
+    except ValueError:
+        raise LiveSignalError("live_signal_contract_invalid") from None
+    if closes_at.tzinfo is None:
+        raise LiveSignalError("live_signal_contract_invalid")
+    now = observed_at if observed_at.tzinfo is not None else observed_at.replace(tzinfo=KST)
+    expired = now >= closes_at or (
+        confirmed_data_as_of is not None and confirmed_data_as_of >= signal_date
+    )
+    result = copy.deepcopy(payload)
+    if not expired:
+        return result, False
+    quality = result.get("quality")
+    window = result.get("actionWindow")
+    models = result.get("models")
+    if (
+        not isinstance(quality, dict)
+        or not isinstance(window, dict)
+        or not isinstance(models, dict)
+    ):
+        raise LiveSignalError("live_signal_contract_invalid")
+    reasons = quality.get("reasons")
+    if not isinstance(reasons, list):
+        raise LiveSignalError("live_signal_contract_invalid")
+    quality["state"] = "unavailable"
+    quality["tradeEligible"] = False
+    quality["reasons"] = list(dict.fromkeys([*reasons, PROVISIONAL_EXPIRED_REASON]))
+    window["state"] = "closed"
+    for model in models.values():
+        if not isinstance(model, dict):
+            raise LiveSignalError("live_signal_contract_invalid")
+        model["tradeEligible"] = False
+    return result, result != payload
 
 
 def _finite(value: object) -> float:
@@ -143,22 +319,17 @@ def build_live_payload(
     root: Path,
     kospi: pd.DataFrame | None = None,
     flow: pd.DataFrame | None = None,
+    public_history_url: str | None = None,
 ) -> dict[str, Any]:
     if not os.getenv("KRX_ID") or not os.getenv("KRX_PW"):
         raise LiveSignalError("krx_login_credentials_missing")
     local_time = observed_at.astimezone(KST)
     if local_time.date() != day or not (time(15, 40) <= local_time.time() < time(16, 0)):
         raise LiveSignalError("live_capture_window_closed")
-    history_path = root / "data" / "history.json"
-    try:
-        history = json.loads(history_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        raise LiveSignalError("live_history_contract_invalid") from None
-    if not isinstance(history, dict):
-        raise LiveSignalError("live_history_contract_invalid")
-    rows = _decode_history(history)
-    if not rows:
-        raise LiveSignalError("live_history_empty")
+    history, rows, history_source = resolve_live_history(
+        root,
+        public_history_url=public_history_url,
+    )
     history_date = date.fromisoformat(str(history.get("dataAsOf")))
     if history_date >= day:
         raise LiveSignalError("live_session_already_confirmed")
@@ -252,6 +423,7 @@ def build_live_payload(
             "flow": "authenticated-pykrx-kospi-investor-flow",
             "flowScope": "KOSPI-excluding-ETF-ETN-ELW",
             "historyRole": "past-only-training",
+            "historySource": history_source,
         },
     }
 
@@ -274,7 +446,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--date", type=date.fromisoformat)
     parser.add_argument("--now", type=datetime.fromisoformat)
     parser.add_argument("--output", type=Path, default=Path("data/live-signal.json"))
+    parser.add_argument(
+        "--expire-stale",
+        action="store_true",
+        help="Fail closed an existing provisional output after confirmation time",
+    )
     return parser.parse_args(argv)
+
+
+def _confirmed_data_as_of(root: Path) -> date | None:
+    try:
+        summary = json.loads((root / "data" / "summary.json").read_text(encoding="utf-8"))
+        return date.fromisoformat(str(summary.get("dataAsOf")))
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def expire_live_signal_file(
+    path: Path,
+    *,
+    observed_at: datetime,
+    confirmed_data_as_of: date | None = None,
+) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise LiveSignalError("live_signal_contract_invalid") from None
+    if not isinstance(payload, dict):
+        raise LiveSignalError("live_signal_contract_invalid")
+    expired, changed = expire_provisional_payload(
+        payload,
+        observed_at=observed_at,
+        confirmed_data_as_of=confirmed_data_as_of,
+    )
+    if changed:
+        write_atomic(path, expired)
+    return changed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -285,8 +492,39 @@ def main(argv: list[str] | None = None) -> int:
     day = args.date or now.astimezone(KST).date()
     root = repository_root()
     output = args.output if args.output.is_absolute() else root / args.output
+    if args.expire_stale:
+        try:
+            changed = expire_live_signal_file(
+                output,
+                observed_at=now,
+                confirmed_data_as_of=_confirmed_data_as_of(root),
+            )
+        except LiveSignalError as error:
+            print(json.dumps({"ok": False, "reason": str(error)}, ensure_ascii=False))
+            return 1
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "changed": changed,
+                    "state": "expired" if changed else "unchanged",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
     try:
-        payload = build_live_payload(day=day, observed_at=now, root=root)
+        public_history_url = os.getenv(
+            "FEARNGREED_PUBLIC_HISTORY_URL",
+            PUBLIC_HISTORY_URL,
+        ).strip()
+        payload = build_live_payload(
+            day=day,
+            observed_at=now,
+            root=root,
+            public_history_url=public_history_url or None,
+        )
         write_atomic(output, payload)
     except LiveSignalError as error:
         if str(error) == "live_session_already_confirmed":

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
+from datetime import UTC, date, datetime
 from pathlib import Path
 
+from .live_signal import expire_live_signal_file
 from .security import scan_public_files
 
 STATIC_PATHS = ("index.html", "assets", "data", "docs", "schemas")
@@ -22,6 +25,16 @@ def build_site(root: Path, output: Path) -> None:
             shutil.copy2(source, destination)
         else:
             raise FileNotFoundError(f"missing static path: {name}")
+    try:
+        summary = json.loads((output / "data" / "summary.json").read_text(encoding="utf-8"))
+        confirmed_data_as_of = date.fromisoformat(str(summary.get("dataAsOf")))
+    except (AttributeError, OSError, ValueError):
+        raise ValueError("site summary dataAsOf is invalid") from None
+    expire_live_signal_file(
+        output / "data" / "live-signal.json",
+        observed_at=datetime.now(UTC),
+        confirmed_data_as_of=confirmed_data_as_of,
+    )
     private_files = [
         path for path in output.rglob("*") if "private" in path.relative_to(output).parts
     ]
@@ -40,7 +53,11 @@ def main() -> int:
     root = Path(__file__).resolve().parents[2]
     output = args.output if args.output.is_absolute() else root / args.output
     build_site(root, output)
-    print(f"Pages artifact ready: {output.relative_to(root)}")
+    try:
+        display_path = output.relative_to(root)
+    except ValueError:
+        display_path = output
+    print(f"Pages artifact ready: {display_path}")
     return 0
 
 

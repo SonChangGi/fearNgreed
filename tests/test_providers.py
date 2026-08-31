@@ -312,10 +312,31 @@ def test_pykrx_invalid_login_fails_closed_even_if_public_data_would_return(
     monkeypatch.setenv("KRX_ID", "login-id-canary")
     monkeypatch.setenv("KRX_PW", "password-canary")
 
-    with pytest.raises(ProviderError, match="session is unavailable"):
+    with pytest.raises(ProviderError, match="login failed"):
         fetch_individual_flow(date(2026, 7, 15), date(2026, 7, 15))
 
     assert request_called is False
+    output = capsys.readouterr()
+    assert "canary" not in output.out + output.err
+
+
+def test_pykrx_password_change_message_is_classified_without_leaking_provider_output(
+    monkeypatch, capsys
+) -> None:
+    stock = types.SimpleNamespace()
+    stock.get_market_trading_value_by_date = lambda *_args, **_kwargs: pd.DataFrame()
+    install_fake_pykrx(
+        monkeypatch,
+        stock,
+        valid=False,
+        auth_message="CD010 비밀번호 변경 필요 login-id-canary",
+    )
+    monkeypatch.setenv("KRX_ID", "login-id-canary")
+    monkeypatch.setenv("KRX_PW", "password-canary")
+
+    with pytest.raises(ProviderError, match="password change is required"):
+        fetch_individual_flow(date(2026, 7, 15), date(2026, 7, 15))
+
     output = capsys.readouterr()
     assert "canary" not in output.out + output.err
 

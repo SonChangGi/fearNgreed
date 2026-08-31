@@ -4,10 +4,57 @@ set -euo pipefail
 SCRIPT_DIR="${0:A:h}"
 REPOSITORY_ROOT="${SCRIPT_DIR:h}"
 TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout"
+STATUS_WRITER="$SCRIPT_DIR/write-local-automation-status.py"
 CAPTURE_TIMEOUT_SECONDS=120
 OUTPUT_PATH="$REPOSITORY_ROOT/var/live-signal-local.json"
 SEOUL_DATE="$(TZ=Asia/Seoul date +%F)"
 SEOUL_WEEKDAY="$(TZ=Asia/Seoul date +%u)"
+STATUS_PATH="${FEARNGREED_LIVE_STATUS_PATH:-$HOME/Library/Logs/fearNgreed/live-signal-status.json}"
+RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+RUN_ID="live-$(date -u +%Y%m%dt%H%M%Sz)-$$"
+RUN_DEADLINE_AT="${SEOUL_DATE}T16:00:00+09:00"
+
+CURRENT_STAGE="bootstrap"
+CURRENT_ATTEMPT=0
+FINALIZED=false
+receipt_file=""
+candidate_file=""
+
+write_status() {
+  local stage="$1"
+  local run_status="$2"
+  local reason="$3"
+  local attempt="$4"
+  python3 "$STATUS_WRITER" \
+    --output "$STATUS_PATH" \
+    --component live-signal \
+    --run-id "$RUN_ID" \
+    --started-at "$RUN_STARTED_AT" \
+    --deadline-at "$RUN_DEADLINE_AT" \
+    --target-date "$SEOUL_DATE" \
+    --run-mode capture \
+    --stage "$stage" \
+    --status "$run_status" \
+    --reason "$reason" \
+    --attempt "$attempt"
+}
+
+finish_status() {
+  write_status "$@"
+  FINALIZED=true
+}
+
+cleanup() {
+  local exit_status=$?
+  set +e
+  if (( exit_status != 0 )) && [[ "$FINALIZED" != "true" ]]; then
+    write_status "$CURRENT_STAGE" failed unexpected_exit "$CURRENT_ATTEMPT" >/dev/null 2>&1
+  fi
+  [[ -z "$receipt_file" ]] || rm -f "$receipt_file"
+  [[ -z "$candidate_file" ]] || rm -f "$candidate_file"
+  return "$exit_status"
+}
+trap cleanup EXIT
 
 inside_capture_window() {
   local current_time
@@ -31,36 +78,51 @@ receipt_field() {
 }
 
 if (( SEOUL_WEEKDAY > 5 )); then
+  finish_status schedule skipped weekend 0
   echo "live-signal skipped: weekend"
   exit 0
 fi
 if ! inside_capture_window; then
+  finish_status schedule skipped outside_window 0
   echo "live-signal skipped: outside 15:47-16:00 KST"
   exit 0
 fi
+write_status bootstrap running started 0
 if ! command -v with-krx-keychain >/dev/null 2>&1; then
+  finish_status bootstrap failed keychain_bridge_missing 0
   echo "live-signal unavailable: Keychain bridge not found"
   exit 1
 fi
+CURRENT_STAGE="credentials"
+write_status credentials running check_started 0
+if ! with-krx-keychain --check >/dev/null 2>&1; then
+  finish_status credentials failed credentials_unavailable 0
+  echo "live-signal unavailable: Keychain credentials are incomplete"
+  exit 1
+fi
+write_status credentials success available 0
 
 umask 077
 mkdir -p "$REPOSITORY_ROOT/var"
 receipt_file="$(mktemp "$REPOSITORY_ROOT/var/.live-signal-receipt.XXXXXX")"
 candidate_file="$(mktemp "$REPOSITORY_ROOT/var/.live-signal-candidate.XXXXXX")"
-trap 'rm -f "$receipt_file" "$candidate_file"' EXIT
 PUBLISHED_OUTPUT_PATH="$OUTPUT_PATH"
 # Keep the collector pointed at staging until the post-capture cutoff check passes.
 OUTPUT_PATH="$candidate_file"
 
 cd "$REPOSITORY_ROOT"
 for attempt in 1 2 3 4; do
+  CURRENT_STAGE="capture"
+  CURRENT_ATTEMPT="$attempt"
   if ! inside_capture_window; then
+    finish_status capture skipped cutoff_reached "$attempt"
     echo "live-signal skipped: 16:00 KST cutoff reached"
     exit 0
   fi
 
   : >"$receipt_file"
   rm -f "$OUTPUT_PATH"
+  write_status capture running attempt_started "$attempt"
   set +e
   python3 "$TIMEOUT_RUNNER" "$CAPTURE_TIMEOUT_SECONDS" \
     with-krx-keychain uv run --frozen python -m fearngreed.live_signal \
@@ -70,18 +132,22 @@ for attempt in 1 2 3 4; do
   set -e
   if (( capture_status == 0 )); then
     if ! inside_capture_window; then
+      finish_status capture skipped completed_after_cutoff "$attempt"
       echo "live-signal skipped: capture completed after 16:00 KST"
       exit 0
     fi
     if [[ "$(receipt_field skipped)" == "true" ]]; then
+      finish_status capture skipped session_confirmed "$attempt"
       echo "live-signal skipped: session is already confirmed"
       exit 0
     fi
     if [[ ! -s "$OUTPUT_PATH" ]]; then
+      finish_status capture failed candidate_missing "$attempt"
       echo "live-signal failed: successful capture returned no candidate"
       exit 1
     fi
     /bin/mv -f "$OUTPUT_PATH" "$PUBLISHED_OUTPUT_PATH"
+    finish_status publish ready provisional_signal_ready "$attempt"
     echo "live-signal ready: $SEOUL_DATE (attempt $attempt)"
     /usr/bin/osascript -e \
       'display notification "15:47 잠정 신호가 갱신되었습니다." with title "Fear & Greed Flow Lab"' \
@@ -98,6 +164,7 @@ for attempt in 1 2 3 4; do
     live_kospi_session_unavailable | live_flow_session_unavailable | live_kospi_date_mismatch | live_flow_date_mismatch | live_observation_invalid | live_capture_window_closed | live_capture_timeout)
       ;;
     *)
+      finish_status capture failed pipeline_error "$attempt"
       echo "live-signal failed: capture pipeline error"
       exit 1
       ;;
@@ -105,11 +172,14 @@ for attempt in 1 2 3 4; do
 
   remaining="$(seconds_until_cutoff)"
   if (( attempt == 4 || remaining <= 180 )); then
+    finish_status capture skipped provisional_inputs_unavailable "$attempt"
     echo "live-signal skipped: no KRX session or provisional inputs not ready"
     exit 0
   fi
+  write_status capture retrying "$reason" "$attempt"
   sleep 180
 done
 
+finish_status capture skipped provisional_inputs_unavailable 4
 echo "live-signal skipped: no KRX session or provisional inputs not ready"
 exit 0
