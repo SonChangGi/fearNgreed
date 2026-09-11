@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
+import textwrap
 from datetime import date, timedelta
 from pathlib import Path
+
+import pytest
 
 import fearngreed.refresh as refresh_module
 from fearngreed.verify import verify_local
@@ -102,7 +107,7 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert "id-token: write" in workflow
     assert "actions/deploy-pages@" in workflow
     assert workflow.count("--expected-data-as-of") == 2
-    assert workflow.count("steps.refresh.outputs.dataAsOf") == 2
+    assert workflow.count("steps.refresh.outputs.dataAsOf") == 3
     assert 'verify_args=(--base-url "${{ steps.deployment.outputs.page_url }}")' in workflow
     assert (
         workflow.count(
@@ -133,6 +138,14 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert "Verify public usability and terminal freshness" in workflow
     assert "needs.refresh.outputs.outcome" in workflow
     assert "needs.refresh.outputs.target_date" in workflow
+    assert "needs.refresh.outputs.confirmed_date" in workflow
+    assert "needs.refresh.outputs.confirmed_non_trading_day" in workflow
+    assert "REFRESH_RESULT: ${{ needs.refresh.result }}" in workflow
+    assert "PUBLICATION_VERIFIED: ${{ needs.refresh.outputs.publication_verified }}" in workflow
+    assert "steps.deployment.outcome == 'success'" in workflow
+    assert "steps.live_verification.outcome == 'success'" in workflow
+    assert "id: live_verification" in workflow
+    assert '--arg target "$CONFIRMED_DATE"' in workflow
     assert ".dataAsOf == $target" in workflow
     assert "last-good public market outputs remain available" in workflow
     assert "The terminal freshness gate will report this scheduled refresh as failed." in workflow
@@ -148,6 +161,181 @@ def test_refresh_workflow_publishes_only_status_after_provider_failure() -> None
     assert "timeout-minutes: 120" in workflow
     assert "timeout --signal=TERM --kill-after=30s 35m" in workflow
     assert "mark_failed('refresh_timeout')" in workflow
+
+
+@pytest.mark.parametrize(
+    ("overrides", "summary_date", "source_fresh", "expected_code", "expected_message"),
+    [
+        ({}, "2026-09-10", True, 0, "scheduled freshness contract passed"),
+        (
+            {"REFRESH_RESULT": "failure"},
+            "2026-09-10",
+            True,
+            1,
+            "does not confirm validation or publication",
+        ),
+        (
+            {"PUBLICATION_VERIFIED": "false"},
+            "2026-09-10",
+            True,
+            1,
+            "no successful deployment and exact public-byte verification",
+        ),
+        (
+            {
+                "REFRESH_OUTCOME": "skipped",
+                "TARGET_DATE": "2026-09-11",
+                "CONFIRMED_NON_TRADING_DAY": "true",
+            },
+            "2026-09-10",
+            True,
+            0,
+            "scheduled freshness contract passed",
+        ),
+        (
+            {"REFRESH_OUTCOME": "skipped", "TARGET_DATE": "2026-09-11"},
+            "2026-09-10",
+            True,
+            1,
+            "not backed by a validated non-trading-day receipt",
+        ),
+        (
+            {"TARGET_DATE": "2026-09-11", "CONFIRMED_NON_TRADING_DAY": "true"},
+            "2026-09-10",
+            True,
+            1,
+            "not backed by a validated non-trading-day receipt",
+        ),
+        (
+            {
+                "REFRESH_OUTCOME": "failure",
+                "REFRESH_RESULT": "failure",
+                "CONFIRMED_DATE": "",
+                "PUBLICATION_VERIFIED": "false",
+            },
+            "2026-09-09",
+            True,
+            1,
+            "does not confirm validation or publication",
+        ),
+        (
+            {"CONFIRMED_DATE": ""},
+            "2026-09-10",
+            True,
+            1,
+            "no valid requested and provider-confirmed session dates",
+        ),
+        (
+            {},
+            "2026-09-09",
+            True,
+            1,
+            "does not match provider-confirmed session 2026-09-10",
+        ),
+        (
+            {},
+            "2026-09-10",
+            False,
+            1,
+            "does not match provider-confirmed session 2026-09-10",
+        ),
+        (
+            {
+                "EVENT_SCHEDULE": "15 9 * * 1-5",
+                "REFRESH_OUTCOME": "retry_pending",
+                "CONFIRMED_DATE": "",
+                "PUBLICATION_VERIFIED": "false",
+            },
+            "2026-09-09",
+            True,
+            0,
+            "scheduled freshness contract passed",
+        ),
+    ],
+)
+def test_refresh_health_shell_requires_validated_publication(
+    tmp_path, overrides, summary_date, source_fresh, expected_code, expected_message
+) -> None:
+    """Execute the deployed shell gate against local readback fixtures."""
+    if shutil.which("jq") is None:
+        pytest.skip("The workflow health gate requires jq")
+    workflow = (ROOT / ".github" / "workflows" / "refresh.yml").read_text(encoding="utf-8")
+    health_step = workflow.split("      - name: Verify public usability and terminal freshness", 1)[
+        1
+    ]
+    script = textwrap.dedent(health_step.split("        run: |\n", 1)[1])
+    readback = tmp_path / "readback"
+    readback.mkdir()
+    (readback / "index.html").write_text("<!doctype html><title>Research</title>", encoding="utf-8")
+    (readback / "summary.json").write_text(
+        json.dumps(
+            {
+                "dataAsOf": summary_date,
+                "status": {
+                    "expectedDataAsOf": summary_date,
+                    "sourceFreshnessPassed": source_fresh,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (readback / "dashboard.json").write_text(
+        json.dumps({"dataAsOf": summary_date}), encoding="utf-8"
+    )
+    executables = tmp_path / "bin"
+    executables.mkdir()
+    curl = executables / "curl"
+    curl.write_text(
+        textwrap.dedent(
+            """\
+            #!/bin/bash
+            set -eu
+            output=''
+            url=''
+            while [[ $# -gt 0 ]]; do
+              case "$1" in
+                --output) output="$2"; shift 2 ;;
+                *) url="$1"; shift ;;
+              esac
+            done
+            relative="${url%%[?]*}"
+            cp "$HEALTH_FIXTURES/${relative##*/}" "$output"
+            """
+        ),
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    sleep = executables / "sleep"
+    sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sleep.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{executables}{os.pathsep}{os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path),
+        "HEALTH_FIXTURES": str(readback),
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "PAGE_URL": "https://example.invalid/fearNgreed/",
+        "EVENT_SCHEDULE": "30 11 * * 1-5",
+        "REFRESH_OUTCOME": "success",
+        "REFRESH_RESULT": "success",
+        "TARGET_DATE": "2026-09-10",
+        "CONFIRMED_DATE": "2026-09-10",
+        "CONFIRMED_NON_TRADING_DAY": "false",
+        "PUBLICATION_VERIFIED": "true",
+        **overrides,
+    }
+    completed = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == expected_code, output
+    assert expected_message in output
 
 
 def test_pages_workflow_runs_local_and_live_contract_verification() -> None:

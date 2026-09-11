@@ -90,6 +90,51 @@ def _configure_fake_refresh_credentials(monkeypatch) -> None:
     monkeypatch.setenv("KRX_PW", "password-canary")
 
 
+def test_refresh_diagnostics_explain_optional_failure_without_provider_material(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KRX_API_KEY", "secret_canary")
+    outputs = SimpleNamespace(
+        summary={
+            "status": {"degradedReasons": ["krx_open_api_target_session_lag", "secret_canary"]}
+        },
+        dashboard={
+            "crosschecks": {
+                "etf": {
+                    "252670": {
+                        "state": "unavailable",
+                        "reason": "expected_date_not_common",
+                        "rawResponse": "must never be logged",
+                        "historyReconciliation": {
+                            "state": "unavailable",
+                            "reason": "unanchored_gap",
+                        },
+                    },
+                    "069500": {"state": "ok", "reason": "private provider response!"},
+                    "secret_canary": {"state": "ok"},
+                }
+            }
+        },
+        strategy_comparison={
+            "actualEtfPairs": {
+                "pairs": {
+                    "2x": {"status": "unavailable", "reason": "official_crosscheck_failed_252670"}
+                }
+            }
+        },
+    )
+    diagnostics = refresh_module._refresh_diagnostics(outputs)
+    assert diagnostics["actualEtfPairs"]["2x"]["reason"] == "official_crosscheck_failed_252670"
+    assert diagnostics["etfCrosschecks"]["252670"]["historyReason"] == "unanchored_gap"
+    assert diagnostics["degradedReasons"] == [
+        "krx_open_api_target_session_lag",
+        "redacted_diagnostic",
+    ]
+    encoded = json.dumps(diagnostics)
+    for private in ("secret_canary", "private provider", "rawResponse", "must never"):
+        assert private not in encoded
+
+
 def _install_probe_fakes(monkeypatch, *, missing: str | None = None) -> list[Path]:
     cache_paths: list[Path] = []
 

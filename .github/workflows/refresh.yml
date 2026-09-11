@@ -38,6 +38,9 @@ jobs:
     outputs:
       outcome: ${{ steps.refresh.outputs.outcome }}
       target_date: ${{ steps.session.outputs.target_date }}
+      confirmed_date: ${{ steps.refresh.outputs.dataAsOf }}
+      confirmed_non_trading_day: ${{ steps.refresh.outputs.confirmedNonTradingDay }}
+      publication_verified: ${{ steps.deployment.outcome == 'success' && steps.live_verification.outcome == 'success' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -172,6 +175,7 @@ jobs:
           if [[ $refresh_status -eq 0 ]]; then
             data_as_of="$(uv run --frozen python -c "import datetime as dt, json, sys; from pathlib import Path; receipt=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8')); assert receipt.get('ok') is True; value=receipt['expectedDataAsOf']; dt.date.fromisoformat(value); print(value)" "$refresh_receipt_file")"
             skipped="$(uv run --frozen python -c "import json, sys; from pathlib import Path; receipt=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8')); print('true' if receipt.get('skipped') is True else 'false')" "$refresh_receipt_file")"
+            confirmed_non_trading_day="$(uv run --frozen python -c "import json, sys; from pathlib import Path; receipt=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8')); confirmed=receipt.get('reason') == 'krx_target_is_non_trading_day' and receipt.get('skipped') is True and receipt.get('requestedDate') == sys.argv[2]; print('true' if confirmed else 'false')" "$refresh_receipt_file" "$target_date")"
             cat "$refresh_receipt_file"
             if [[ "$skipped" == "true" ]]; then
               echo "outcome=skipped" >> "$GITHUB_OUTPUT"
@@ -179,6 +183,7 @@ jobs:
               echo "outcome=success" >> "$GITHUB_OUTPUT"
             fi
             echo "dataAsOf=$data_as_of" >> "$GITHUB_OUTPUT"
+            echo "confirmedNonTradingDay=$confirmed_non_trading_day" >> "$GITHUB_OUTPUT"
           else
             cat "$refresh_receipt_file"
             if [[ "$failure_policy" == "preserve" ]]; then
@@ -294,6 +299,7 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
       - name: Verify live public derivative hashes
+        id: live_verification
         if: steps.refresh.outputs.outcome == 'success' || steps.refresh.outputs.outcome == 'failure' || steps.refresh.outputs.outcome == 'skipped'
         shell: bash
         env:
@@ -341,10 +347,34 @@ jobs:
           PAGE_URL: https://sonchanggi.github.io/fearNgreed/
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           REFRESH_OUTCOME: ${{ needs.refresh.outputs.outcome }}
+          REFRESH_RESULT: ${{ needs.refresh.result }}
           TARGET_DATE: ${{ needs.refresh.outputs.target_date }}
+          CONFIRMED_DATE: ${{ needs.refresh.outputs.confirmed_date }}
+          CONFIRMED_NON_TRADING_DAY: ${{ needs.refresh.outputs.confirmed_non_trading_day }}
+          PUBLICATION_VERIFIED: ${{ needs.refresh.outputs.publication_verified }}
         shell: bash
         run: |
           set -u
+          if [[ "$REFRESH_RESULT" != "success" ]]; then
+            echo "::error::The refresh job ended with $REFRESH_RESULT; collection outcome $REFRESH_OUTCOME does not confirm validation or publication."
+            exit 1
+          fi
+          if [[ "$EVENT_SCHEDULE" == "30 11 * * 1-5" ]]; then
+            if [[ "$PUBLICATION_VERIFIED" != "true" ]]; then
+              echo "::error::The terminal refresh has no successful deployment and exact public-byte verification."
+              exit 1
+            fi
+            if [[ ! "$TARGET_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ || ! "$CONFIRMED_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+              echo "::error::The terminal refresh has no valid requested and provider-confirmed session dates."
+              exit 1
+            fi
+            if [[ "$CONFIRMED_DATE" != "$TARGET_DATE" ]]; then
+              if [[ "$REFRESH_OUTCOME" != "skipped" || "$CONFIRMED_NON_TRADING_DAY" != "true" || ! "$CONFIRMED_DATE" < "$TARGET_DATE" ]]; then
+                echo "::error::The older confirmed session is not backed by a validated non-trading-day receipt."
+                exit 1
+              fi
+            fi
+          fi
           required_paths=(index.html data/summary.json data/dashboard.json)
           for attempt in {1..12}; do
             usable=true
@@ -377,13 +407,13 @@ jobs:
                 case "$REFRESH_OUTCOME" in
                   success|skipped)
                     summary_path="$RUNNER_TEMP/fearngreed-health-data-summary.json"
-                    if ! jq -e --arg target "$TARGET_DATE" '
+                    if ! jq -e --arg target "$CONFIRMED_DATE" '
                       .dataAsOf == $target
                       and .status.expectedDataAsOf == $target
                       and .status.sourceFreshnessPassed == true
                     ' "$summary_path" >/dev/null; then
                       usable=false
-                      echo "::warning::The terminal refresh completed but the public summary has not reached $TARGET_DATE."
+                      echo "::warning::The public summary does not match provider-confirmed session $CONFIRMED_DATE (requested $TARGET_DATE)."
                     fi
                     ;;
                   failure|"")

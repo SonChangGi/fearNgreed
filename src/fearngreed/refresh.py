@@ -450,6 +450,49 @@ def refresh(
         "sizes": sizes,
         "incremental": seed is not None,
         "noOp": no_op,
+        "diagnostics": _refresh_diagnostics(outputs),
+    }
+
+
+def _refresh_diagnostics(outputs: PipelineOutputs) -> dict[str, object]:
+    """Keep failed validation runs diagnosable without logging provider payloads."""
+    secrets = tuple(
+        value for name in ("KRX_API_KEY", "KRX_ID", "KRX_PW") if (value := os.getenv(name))
+    )
+
+    def code(value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or any(secret in value for secret in secrets):
+            return "redacted_diagnostic"
+        return value if re.fullmatch(r"[a-z0-9_]{1,100}", value) else "redacted_diagnostic"
+
+    etfs = outputs.dashboard.get("crosschecks", {}).get("etf", {})
+    pairs = outputs.strategy_comparison.get("actualEtfPairs", {}).get("pairs", {})
+    return {
+        "degradedReasons": [
+            code(reason) for reason in outputs.summary.get("status", {}).get("degradedReasons", [])
+        ],
+        "etfCrosschecks": {
+            ticker: {
+                "state": code(etfs.get(ticker, {}).get("state")),
+                "reason": code(etfs.get(ticker, {}).get("reason")),
+                "historyState": code(
+                    etfs.get(ticker, {}).get("historyReconciliation", {}).get("state")
+                ),
+                "historyReason": code(
+                    etfs.get(ticker, {}).get("historyReconciliation", {}).get("reason")
+                ),
+            }
+            for ticker in ETF_LISTING_DATES
+        },
+        "actualEtfPairs": {
+            pair_id: {
+                "status": code(pairs.get(pair_id, {}).get("status")),
+                "reason": code(pairs.get(pair_id, {}).get("reason")),
+            }
+            for pair_id in ("1x", "2x")
+        },
     }
 
 

@@ -1,19 +1,39 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { Window } from "happy-dom";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const DATA_FILES = new Set(["summary.json", "dashboard.json", "history.json", "strategy-comparison.json", "live-signal.json"]);
+const windows = new Set();
+const animationFrames = new Set();
+const originalGlobals = new Map();
+let bootId = 0;
 
 function installGlobal(name, value) {
+  if (!originalGlobals.has(name)) originalGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
   Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
 }
 
+export async function cleanupDashboards() {
+  for (const id of animationFrames) clearTimeout(id);
+  animationFrames.clear();
+  await Promise.all([...windows].map((window) => window.happyDOM.close()));
+  windows.clear();
+  for (const [name, descriptor] of originalGlobals) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete globalThis[name];
+  }
+  originalGlobals.clear();
+}
+
 export async function waitFor(predicate, message, timeoutMs = 90_000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+  // Application time may be fixed at a trading-window boundary. Test deadlines
+  // use the monotonic clock so neither Date mocks nor wall-clock jumps affect it.
+  const started = performance.now();
+  while (performance.now() - started < timeoutMs) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -22,6 +42,7 @@ export async function waitFor(predicate, message, timeoutMs = 90_000) {
 
 export async function bootDashboard({ url = "http://fearngreed.test/", storage = {}, dataOverrides = {}, setupWindow = null } = {}) {
   const window = new Window({ url });
+  windows.add(window);
   const html = (await readFile(path.join(ROOT, "index.html"), "utf8")).replace(/<script\b[\s\S]*?<\/script>/gi, "");
   window.document.write(html);
   window.document.close();
@@ -39,8 +60,18 @@ export async function bootDashboard({ url = "http://fearngreed.test/", storage =
   });
   window.matchMedia = media;
   delete window.IntersectionObserver;
-  window.requestAnimationFrame = (callback) => setTimeout(() => callback(Date.now()), 0);
-  window.cancelAnimationFrame = (id) => clearTimeout(id);
+  window.requestAnimationFrame = (callback) => {
+    const id = setTimeout(() => {
+      animationFrames.delete(id);
+      callback(performance.now());
+    }, 0);
+    animationFrames.add(id);
+    return id;
+  };
+  window.cancelAnimationFrame = (id) => {
+    animationFrames.delete(id);
+    clearTimeout(id);
+  };
   [window.HTMLCollection, window.NodeList, window.HTMLTableRowsCollection].filter(Boolean).forEach((Collection) => {
     if (!Collection.prototype[Symbol.iterator]) Collection.prototype[Symbol.iterator] = Array.prototype[Symbol.iterator];
   });
@@ -97,7 +128,7 @@ export async function bootDashboard({ url = "http://fearngreed.test/", storage =
   installGlobal("Element", window.Element);
   installGlobal("Node", window.Node);
 
-  const moduleUrl = `${pathToFileURL(path.join(ROOT, "assets", "app.js")).href}?dom-test=${Date.now()}-${Math.random()}`;
+  const moduleUrl = `${pathToFileURL(path.join(ROOT, "assets", "app.js")).href}?dom-test=${++bootId}`;
   await import(moduleUrl);
   await waitFor(
     () => (window.document.querySelector("#signal-settings-status")?.dataset.state === "ok" && window.document.querySelector(".analysis-config")?.getAttribute("aria-busy") === "false") || window.document.querySelector("#status-badge")?.textContent === "unavailable",

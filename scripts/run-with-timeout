@@ -44,13 +44,31 @@ def main(argv: list[str]) -> int:
     previous_handlers = {
         signum: signal.signal(signum, forward_signal) for signum in (signal.SIGTERM, signal.SIGINT)
     }
-    deadline = time.monotonic() + seconds
+    # macOS monotonic time pauses during system sleep. Also bound real elapsed
+    # time so a suspended job cannot occupy later launchd slots after waking.
+    # Keep the monotonic bound so moving the wall clock backwards cannot extend
+    # the original runtime budget.
+    monotonic_deadline = time.monotonic() + seconds
+    wall_deadline = time.time() + seconds
     try:
         while True:
-            remaining = deadline - time.monotonic()
+            remaining = min(monotonic_deadline - time.monotonic(), wall_deadline - time.time())
+            if remaining <= 0:
+                _signal_process_group(process, signal.SIGTERM)
+                try:
+                    process.wait(timeout=TERMINATION_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    _signal_process_group(process, signal.SIGKILL)
+                    process.wait()
+                return 128 + forwarded_signal if forwarded_signal is not None else 124
             try:
-                status = process.wait(timeout=max(0.0, min(remaining, 0.2)))
-                return 128 + forwarded_signal if forwarded_signal is not None else status
+                status = process.wait(timeout=min(remaining, 0.2))
+                if forwarded_signal is not None:
+                    return 128 + forwarded_signal
+                # A child may finish immediately on resume before this parent
+                # is scheduled. Such a late result must still report timeout.
+                if time.monotonic() < monotonic_deadline and time.time() < wall_deadline:
+                    return status
             except subprocess.TimeoutExpired:
                 if forwarded_signal is not None:
                     try:
@@ -59,14 +77,6 @@ def main(argv: list[str]) -> int:
                         _signal_process_group(process, signal.SIGKILL)
                         process.wait()
                     return 128 + forwarded_signal
-                if remaining <= 0:
-                    _signal_process_group(process, signal.SIGTERM)
-                    try:
-                        process.wait(timeout=TERMINATION_GRACE_SECONDS)
-                    except subprocess.TimeoutExpired:
-                        _signal_process_group(process, signal.SIGKILL)
-                        process.wait()
-                    return 124
     finally:
         for signum, previous in previous_handlers.items():
             signal.signal(signum, previous)

@@ -1,8 +1,10 @@
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { bootDashboard, click, fireInput, signature, submit, waitFor } from "./helpers/dashboard-harness.mjs";
+import { bootDashboard, cleanupDashboards, click, fireInput, signature, submit, waitFor } from "./helpers/dashboard-harness.mjs";
+
+afterEach(cleanupDashboards);
 
 const SIGNAL_OUTPUTS = ["#state", "#signal-bridge", "#scatter-chart", "#residual-chart", "#event-table tbody"];
 const STRATEGY_OUTPUTS = ["#history-chart", "#backtest-cards", "#open-trades", "#backtest-table tbody", "#trade-table tbody"];
@@ -19,12 +21,8 @@ function koreanDate(date) {
   return `${year}년 ${month}월 ${day}일`;
 }
 
-function kstDate(offsetDays = 0) {
-  return new Date(Date.now() + 9 * 60 * 60 * 1000 + offsetDays * 86_400_000).toISOString().slice(0, 10);
-}
-
 function liveSignalFixture(overrides = {}) {
-  const signalDate = overrides.signalDate || kstDate();
+  const signalDate = overrides.signalDate || nextIsoDate(CONFIRMED_DATA_AS_OF);
   return {
     schemaVersion: 1,
     contract: "fearngreed-live-signal",
@@ -698,68 +696,59 @@ test("current open trades expose execution details and follow policy, pair, and 
   assert.notEqual(historicalOpenTrade, twoX);
 });
 
-test("a newer provisional signal is input-linked but never extends confirmed charts or backtests", { concurrency: false, timeout: 120_000 }, async () => {
+test("a newer provisional signal is input-linked but never extends confirmed charts or backtests", { concurrency: false, timeout: 120_000 }, async (t) => {
   const signalDate = nextIsoDate(CONFIRMED_DATA_AS_OF);
-  const originalNow = Date.now;
-  const realStartedAt = originalNow();
-  const scenarioStartedAt = Date.parse(`${signalDate}T06:50:00Z`);
-  Date.now = () => scenarioStartedAt + (originalNow() - realStartedAt);
-  try {
-    const window = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture({ signalDate }) } });
-    const { document } = window;
-    const strip = document.querySelector("#live-signal-strip");
-    assert.equal(strip.hidden, false);
-    assert.equal(strip.dataset.phase, "provisional");
-    assert.match(document.querySelector("#live-phase-badge").textContent, /잠정/);
-    assert.match(document.querySelector("#live-signal-score").textContent, /백분위/);
-    assert.match(document.querySelector("#live-signal-time").textContent, /계산/);
-    assert.match(document.querySelector("#live-action-note").textContent, /시간외 종가/);
-    assert.match(document.querySelector("#live-confirmed-anchor").textContent, new RegExp(`${koreanDate(CONFIRMED_DATA_AS_OF)} 확정 기준`));
-    assert.doesNotMatch(document.querySelector("#history-data-table").textContent, new RegExp(signalDate));
+  t.mock.method(Date, "now", () => Date.parse(`${signalDate}T06:50:00Z`));
+  const window = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture({ signalDate }) } });
+  const { document } = window;
+  const strip = document.querySelector("#live-signal-strip");
+  assert.equal(strip.hidden, false);
+  assert.equal(strip.dataset.phase, "provisional");
+  assert.match(document.querySelector("#live-phase-badge").textContent, /잠정/);
+  assert.match(document.querySelector("#live-signal-score").textContent, /백분위/);
+  assert.match(document.querySelector("#live-signal-time").textContent, /계산/);
+  // A valid provisional input is visible even when the latest training sample
+  // legitimately yields no entry candidate or blocks entry on model quality.
+  assert.match(document.querySelector("#live-action-note").textContent,
+    strip.dataset.tradeEligible === "true" ? /시간외 종가|신규 진입 후보 없음/ : /신규 진입 차단/);
+  assert.match(document.querySelector("#live-confirmed-anchor").textContent, new RegExp(`${koreanDate(CONFIRMED_DATA_AS_OF)} 확정 기준`));
+  assert.doesNotMatch(document.querySelector("#history-data-table").textContent, new RegExp(signalDate));
 
-    const rawLive = signature(document, ["#live-signal-state", "#live-signal-score"]);
-    click(window, '[data-model="robust"]');
-    await waitFor(
-      () => document.querySelector("#signal-settings-status").dataset.state === "ok" && document.querySelector(".analysis-config").getAttribute("aria-busy") === "false",
-      "live signal track recompute"
-    );
-    assert.notEqual(signature(document, ["#live-signal-state", "#live-signal-score"]), rawLive);
-    assert.doesNotMatch(document.querySelector("#history-data-table").textContent, new RegExp(signalDate));
-  } finally {
-    Date.now = originalNow;
-  }
+  const rawLive = signature(document, ["#live-signal-state", "#live-signal-score"]);
+  click(window, '[data-model="robust"]');
+  await waitFor(
+    () => document.querySelector("#signal-settings-status").dataset.state === "ok" && document.querySelector(".analysis-config").getAttribute("aria-busy") === "false",
+    "live signal track recompute"
+  );
+  assert.notEqual(signature(document, ["#live-signal-state", "#live-signal-score"]), rawLive);
+  assert.doesNotMatch(document.querySelector("#history-data-table").textContent, new RegExp(signalDate));
 });
 
-test("an elapsed provisional action window is fail-closed before candidate display", { concurrency: false, timeout: 120_000 }, async () => {
+test("an elapsed provisional action window is fail-closed before candidate display", { concurrency: false, timeout: 120_000 }, async (t) => {
   const signalDate = nextIsoDate(CONFIRMED_DATA_AS_OF);
-  const originalNow = Date.now;
-  const realStartedAt = originalNow();
-  const scenarioStartedAt = Date.parse(`${signalDate}T07:00:00Z`);
-  Date.now = () => scenarioStartedAt + (originalNow() - realStartedAt);
-  try {
-    const eligiblePayload = liveSignalFixture({
-      signalDate,
-      models: {
-        robust: { tradeEligible: true },
-        scaled: { tradeEligible: true },
-        raw: { tradeEligible: true }
-      }
-    });
-    const window = await bootDashboard({
-      dataOverrides: { "live-signal.json": eligiblePayload }
-    });
-    const strip = window.document.querySelector("#live-signal-strip");
-    assert.equal(strip.hidden, true);
-    assert.equal(strip.dataset.tradeEligible, "false");
-    assert.equal(strip.dataset.expiryReason, "provisional_signal_expired");
-    assert.notEqual(window.document.querySelector("#status-badge").textContent, "unavailable");
-  } finally {
-    Date.now = originalNow;
-  }
+  t.mock.method(Date, "now", () => Date.parse(`${signalDate}T07:00:00Z`));
+  const eligiblePayload = liveSignalFixture({
+    signalDate,
+    models: {
+      robust: { tradeEligible: true },
+      scaled: { tradeEligible: true },
+      raw: { tradeEligible: true }
+    }
+  });
+  const window = await bootDashboard({
+    dataOverrides: { "live-signal.json": eligiblePayload }
+  });
+  const strip = window.document.querySelector("#live-signal-strip");
+  assert.equal(strip.hidden, true);
+  assert.equal(strip.dataset.tradeEligible, "false");
+  assert.equal(strip.dataset.expiryReason, "provisional_signal_expired");
+  assert.notEqual(window.document.querySelector("#status-badge").textContent, "unavailable");
 });
 
-test("same-date or malformed live payloads never replace the confirmed dashboard", { concurrency: false, timeout: 120_000 }, async () => {
-  const sameDateWindow = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture({ signalDate: "2026-07-16", inputRow: { ...liveSignalFixture().inputRow, date: "2026-07-16" } }) } });
+test("same-date or malformed live payloads never replace the confirmed dashboard", { concurrency: false, timeout: 120_000 }, async (t) => {
+  const today = nextIsoDate(nextIsoDate(CONFIRMED_DATA_AS_OF));
+  t.mock.method(Date, "now", () => Date.parse(`${today}T06:50:00Z`));
+  const sameDateWindow = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture({ signalDate: CONFIRMED_DATA_AS_OF, historyDataAsOf: "2020-01-02" }) } });
   assert.equal(sameDateWindow.document.querySelector("#live-signal-strip").hidden, true);
   assert.notEqual(sameDateWindow.document.querySelector("#status-badge").textContent, "unavailable");
 
@@ -768,7 +757,12 @@ test("same-date or malformed live payloads never replace the confirmed dashboard
   assert.notEqual(malformedWindow.document.querySelector("#status-badge").textContent, "unavailable");
   assert.match(malformedWindow.document.querySelector("#state").textContent, /중립|공포|탐욕/);
 
-  const staleDate = kstDate(-1);
+  const staleDate = nextIsoDate(CONFIRMED_DATA_AS_OF);
   const staleWindow = await bootDashboard({ dataOverrides: { "live-signal.json": liveSignalFixture({ signalDate: staleDate, inputRow: { ...liveSignalFixture().inputRow, date: staleDate } }) } });
   assert.equal(staleWindow.document.querySelector("#live-signal-strip").hidden, true);
+});
+
+test("DOM wait deadlines remain bounded with a frozen application clock", { timeout: 2_000 }, async (t) => {
+  t.mock.method(Date, "now", () => 0);
+  await assert.rejects(waitFor(() => false, "frozen-clock regression", 20), /Timed out: frozen-clock regression/);
 });
