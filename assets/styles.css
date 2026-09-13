@@ -275,6 +275,7 @@ main, .site-footer { width: min(1320px, calc(100% - 48px)); margin-inline: auto;
 .analysis-date-panel .history-range-toolbar { margin-top: 9px; padding: 0; border: 0; background: transparent; }
 .analysis-track-note, .analysis-selection-note { margin: 10px 2px 0; color: var(--muted); font-size: .7rem; line-height: 1.5; }
 .analysis-selection-note { margin-top: 4px; color: var(--primary-strong); font-weight: 750; }
+.analysis-track-note:empty, .analysis-selection-note:empty, .chart-note:empty, .control-api-status:empty { display: none; }
 
 .conclusion-section { margin: 12px 0 18px; }
 .conclusion-card { position: relative; overflow: hidden; padding: 16px 18px; border-left: 4px solid var(--greed); }

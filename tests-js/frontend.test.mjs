@@ -40,9 +40,6 @@ test('strategy controls expose a bounded dynamic exit input and a symmetric inve
   assert.match(html,/id="exit-threshold-form"/);
   assert.match(html,/id="exit-threshold-input"[^>]+type="number"[^>]+min="50"[^>]+max="94"[^>]+step="1"[^>]+value="80"/);
   assert.match(html,/id="exit-threshold-status"[^>]+aria-live="polite"/);
-  assert.match(html,/롱은 입력값 이상, 인버스는 대칭값 이하/);
-  assert.match(html,/50 미만은 공포에서 중립 이상으로 회복했다는 의미가 사라지고/);
-  assert.match(html,/95 이상은 사전 정의한 극단 탐욕·ETF 교체 구간과 겹칩니다/);
   assert.match(app,/DEFAULT_LONG_EXIT_PERCENTILE/);
   assert.match(app,/normalizeLongExitPercentile/);
   assert.match(app,/inverse-exit-threshold-value/);
@@ -57,9 +54,9 @@ test('position policy comparison discloses actual inverse execution and side-awa
   assert.match(html,/id="strategy-exposure"/);
   assert.match(html,/id="exit-sensitivity"/);
   assert.match(html,/id="actual-etf-method-note"/);
-  assert.match(html,/인버스도 현물 ETF 매수로 계산합니다/);
+  assert.match(html,/인버스: 현물 ETF 매수/);
   assert.match(html,/롱 \/ 인버스 \/ 현금/);
-  assert.match(html,/2X는 일간 목표 배율이므로 누적 경로는 1X와 달라질 수 있습니다/);
+  assert.match(html,/2X: 일간 목표 배율/);
   for(const ticker of ['069500','114800','122630','252670']) assert.match(html,new RegExp(ticker));
   assert.match(app,/ACTUAL_ETF_PAIRS/);
   assert.match(app,/function heldInstrument/);
@@ -219,7 +216,7 @@ test('common design v1.2 keeps compact typography and one closed operations surf
   assert.doesNotMatch(css,/font-weight:\s*(?:8\d\d|9\d\d)/);
   assert.match(sharedNav,/\.quant-shared-nav__link\[aria-current="page"\],[\s\S]*?background:\s*var\(--quant-nav-active-bg\)\s*!important/);
   assert.equal((html.match(/id="status-detail-summary"/g)||[]).length,1);
-  assert.match(html,/<details class="card research-details" id="method">[\s\S]*?id="status-detail-summary">데이터 · 출처 · 운영 상세/);
+  assert.match(html,/<details class="card research-details" id="method">[\s\S]*?id="status-detail-summary">데이터·운영/);
   assert.ok(html.indexOf('id="quality-strip"') > html.indexOf('id="method"'));
   assert.ok(html.indexOf('id="flow-channels"') > html.indexOf('id="method"'));
   for(const phrase of ['전체 분석 다시 계산','차트 선택은 평가 종료일 성과를 바꾸지 않습니다','현재 전략 신호에는 개인 수급 채널이 반영됩니다','정책 외의 모든 입력은 동일하게 유지됩니다']) assert.doesNotMatch(html,new RegExp(phrase));
@@ -290,8 +287,7 @@ test('absolute-flow and scale-adjusted signals are selectable tracks inside one 
   assert.match(app,/function primaryModelKind/);
   assert.match(app,/runDynamicEventStudy/);
   assert.match(app,/function eventModelKind\(\)[\s\S]*?return store\.model/);
-  assert.match(html,/SELECTED RESEARCH TRACK · EVENT STUDY/);
-  assert.match(html,/신호일 종가→h일 종가/);
+  assert.match(html,/신호일 종가 → h일 후 종가/);
   assert.match(app,/\$\{esc\(store\.eventAsset\)\} · \$\{esc\(sampleLabel\)\} · \$\{esc\(pairLabel\(store\.backtestProxy, true\)\)\}/);
 });
 
@@ -424,8 +420,8 @@ test('KOSPI history supports calendar presets and validated shareable custom dat
 
 test('integrated history separates close signals from next-open actual ETF actions and uses scenario exposure',async()=>{
   const [html,app,css]=await Promise.all([read('index.html'),read('assets/app.js'),read('assets/styles.css')]);
-  assert.match(html,/공포 원과 탐욕 마름모는 종가 상태의 첫 관측입니다/);
-  assert.match(html,/같은 시가의 청산과 반대 ETF 매수는 하나의 교체로 표시합니다/);
+  assert.match(html,/공포 원·탐욕 마름모: 첫 종가 신호/);
+  assert.match(html,/교체: 같은 시가에 청산 후 반대 ETF 매수/);
   assert.match(app,/function extremeSignalMap/);
   assert.match(app,/function scenarioActions/);
   assert.match(app,/class="execution-action (entry|exit|reversal)/);
@@ -465,7 +461,7 @@ test('chart selection snapshot is dynamic while period-end cards and tables stay
   assert.match(html,/id="history-selected-snapshot"[^>]*aria-live="polite"/);
   assert.match(html,/id="history-chart"[^>]*aria-describedby="history-help"[^>]*aria-keyshortcuts="[^"]*Shift\+ArrowLeft[^"]*Escape"[^>]*tabindex="0"/);
   assert.match(html,/id="history-help" class="chart-note history-interaction-help"/);
-  assert.match(html,/마우스·펜으로 가로 드래그[\s\S]*Shift\+화살표[\s\S]*Esc/);
+  assert.match(html,/드래그: 구간 수익률[\s\S]*Shift\+←\/→[\s\S]*Esc/);
   assert.doesNotMatch(html,/차트 선택은 평가 종료일 성과를 바꾸지 않습니다/);
   assert.match(html,/평가 종료일 성과/);
   assert.match(app,/function renderHistorySelectedSnapshot/);
@@ -502,7 +498,7 @@ test('scatter refits the selected historical session and renders exact empirical
   assert.match(app,/typeof value !== "number"/);
   for(const field of ['extremeFearUpper','fearUpper','greedLower','extremeGreedLower']) assert.match(app,new RegExp(field));
   assert.match(app,/clipPath id="scatter-plot-clip"/);
-  assert.match(app,/선택 종료일의 과거 전용 회귀/);
+  assert.match(app,/상태 경계 산출 불가/);
   assert.doesNotMatch(app,/function empiricalExtremeResidualCutoffs/);
   assert.match(app,/당시 롤링 상태/);
   assert.match(css,/\.scatter-zone-extreme-fear/);
@@ -548,7 +544,7 @@ test('integrated controls fail closed before load and keep selected-date diagnos
   assert.match(app,/const selectedModel = modelPayload\(\)/);
   assert.match(app,/basisDate: selectedDate/);
   assert.match(app,/latestEventError/);
-  assert.match(app,/사건 연구 계산 오류로 결과를 표시하지 않습니다/);
+  assert.match(app,/사건 연구 계산 오류/);
   assert.match(app,/const form = event\.currentTarget/);
   assert.doesNotMatch(app,/event\.currentTarget\.setAttribute/);
   assert.match(css,/@media \(max-width: 900px\)[\s\S]*?\.chart-grid \{ grid-template-columns: 1fr; \}/);
