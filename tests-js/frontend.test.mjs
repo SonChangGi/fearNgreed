@@ -174,7 +174,7 @@ test('shared shell uses the canonical project order and common theme storage con
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   const nav=html.match(/<div class="quant-shared-nav__links"[\s\S]*?<\/div>/)?.[0]||'';
   const labels=[...nav.matchAll(/class="quant-shared-nav__link(?: is-active)?"[^>]*>([^<]+)<\/a>/g)].map((match)=>match[1]);
-  assert.deepEqual(labels,['Fear &amp; Greed','Factor','DRAM','ETF','SOX','Regime','News','SPO','알파 하우스']);
+  assert.deepEqual(labels,['Fear &amp; Greed','Factor','DRAM','ETF','SOX','Regime','News','알파 하우스']);
   assert.match(html,/https:\/\/sonchanggi\.github\.io\/quant-dashboard\/shared\/navigation\/v1\/nav\.js" data-quant-project="fearngreed"/);
   assert.doesNotMatch(nav,/best-factor|momentum-factor-lab/);
   assert.match(html,/class="quant-shared-nav__brand"[^>]+https:\/\/sonchanggi\.github\.io\/quant-dashboard\//);
