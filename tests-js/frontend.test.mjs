@@ -310,7 +310,7 @@ test('operational and research-signal badges cannot share the same label',async(
   const [html,app]=await Promise.all([read('index.html'),read('assets/app.js')]);
   assert.match(html,/id="status-badge"/);
   assert.match(html,/id="signal-badge"/);
-  assert.match(app,/badge\.textContent = `데이터/);
+  assert.match(app,/badge\.textContent = \[refreshState\.label, `데이터/);
   assert.match(app,/signal-badge/);
   assert.doesNotMatch(app,/summary\.status\.label \|\| qualityLabel/);
 });

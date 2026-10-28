@@ -62,6 +62,10 @@ const DEGRADED_REASON_LABELS = Object.freeze({
   refresh_end_before_published_data: "공개 기준일보다 과거인 갱신 요청 차단",
   refresh_data_as_of_regression: "공개 데이터 기준일 후퇴 차단",
   krx_open_api_unavailable: "KRX Open API 일시 이용 불가",
+  krx_open_api_target_session_lag: "KRX Open API 당일 자료 지연 · 인증 KRX 경로로 확인",
+  stock_crosscheck_authenticated_pykrx_fallback: "종목 가격 교차검증에 인증 KRX 경로 사용",
+  krx_password_change_required: "KRX 비밀번호 변경 필요 · 계정에서 변경 후 로컬 인증정보 갱신",
+  authenticated_pykrx_login_failed: "KRX 로그인 실패 · 인증정보 확인 필요",
   authenticated_pykrx_unavailable: "인증 KRX 수급 경로 일시 이용 불가",
   yfinance_unavailable: "조정가격 연구 소스 일시 이용 불가",
   refresh_timeout: "데이터 갱신 제한시간 초과",
@@ -364,6 +368,19 @@ function effectiveStatus(summary) {
   const ageDays = Math.floor((Date.now() - freshnessTimestamp) / 86_400_000);
   if (Number.isFinite(ageDays) && ageDays > summary.status.expectedFreshnessDays) return "stale";
   return summary.status.state;
+}
+
+function refreshOutcome(summary, status) {
+  const attempted = Date.parse(summary.automation?.lastAttemptAt || "");
+  const succeeded = Date.parse(summary.automation?.lastSuccessAt || "");
+  if (Number.isFinite(attempted) && (!Number.isFinite(succeeded) || attempted > succeeded)) {
+    return {label: "최근 갱신 실패", note: `최근 갱신 실패 · 마지막 정상 데이터 ${summary.dataAsOf || "없음"} 유지`};
+  }
+  if (["ok", "degraded"].includes(status) && Number.isFinite(attempted)
+      && attempted === succeeded && summary.status.sourceFreshnessPassed === true) {
+    return {label: "갱신 완료", note: `${summary.dataAsOf} 확정 데이터 갱신 완료`};
+  }
+  return {label: "", note: ""};
 }
 
 function entity() {
@@ -708,11 +725,12 @@ function renderHeader(scenarioBundle = selectedScenarioBundle()) {
   const base = analysisEntity();
   const model = modelPayload();
   const status = effectiveStatus(summary);
+  const refreshState = refreshOutcome(summary, status);
   const state = status === "unavailable" ? "unavailable" : stateFromValue(model);
   const agreement = selectedModelAgreement();
   $("#current-state-label").textContent = "평가 종료일 신호";
   const badge = $("#status-badge");
-  badge.textContent = `데이터 ${qualityLabel(status)}`;
+  badge.textContent = [refreshState.label, `데이터 ${qualityLabel(status)}`].filter(Boolean).join(" · ");
   badge.className = `badge ${status}`;
   const confidence = $("#confidence-badge");
   const modelQuality = model?.quality || base.modelQuality;
@@ -745,7 +763,7 @@ function renderHeader(scenarioBundle = selectedScenarioBundle()) {
         ? `자동 갱신 마지막 성공 ${summary.automation?.lastSuccessAt ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(summary.automation.lastSuccessAt)) : fmt.date(summary.dataAsOf)}`
         : "";
   const reasonNote = reasonDetails.join(" · ");
-  $("#status-note").textContent = [freshnessNote, reasonNote].filter(Boolean).join(". ") || "";
+  $("#status-note").textContent = [refreshState.note, freshnessNote, reasonNote].filter(Boolean).join(". ") || "";
   $("#status-detail-summary").textContent = status === "ok" ? "데이터·운영" : `데이터·운영 · 주의 ${Math.max(1, reasonLabels.length)}건`;
   $("#analysis-config-summary").textContent = `${modelRole()} · ${policyLabel()} · ${pairLabel(store.backtestProxy, true)} · ${historyWindowLabel()}`;
 
