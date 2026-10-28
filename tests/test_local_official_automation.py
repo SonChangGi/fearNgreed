@@ -477,15 +477,17 @@ def test_official_refresh_launch_agent_has_three_weekday_schedules() -> None:
     assert "KRX" not in path.read_text(encoding="utf-8")
 
 
-def test_official_refresh_installer_checks_bridge_without_reading_credentials() -> None:
+def test_official_refresh_installer_uses_verified_registration_helper() -> None:
     script = (ROOT / "scripts" / "install-official-refresh-launch-agent").read_text(
         encoding="utf-8"
     )
 
-    assert "with-krx-keychain --check" in script
-    assert "credentials are incomplete" in script
-    assert "launchctl bootstrap" in script
-    assert "launchctl enable" in script
+    assert "official-refresh-registration.py" in script
+    assert "exec /usr/bin/python3" in script
+    assert " install " in script
+    assert "launchctl bootout" not in script
+    assert "launchctl enable" not in script
+    assert "launchctl kickstart" not in script
     assert "security " not in script
     assert "KRX_API_KEY" not in script
     assert "KRX_ID" not in script
