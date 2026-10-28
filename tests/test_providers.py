@@ -6,14 +6,52 @@ from datetime import date
 
 import pandas as pd
 import pytest
+import requests
 
 from fearngreed.providers.common import ProviderError
 from fearngreed.providers.krx_open import KRXOpenAPIClient
 from fearngreed.providers.pykrx_flow import (
+    _authenticated_request_timeout,
     fetch_individual_flow,
     fetch_market_participant_flows,
     fetch_stock_prices,
 )
+
+
+def test_etf_request_retries_timeout_once_with_bounded_deadline(monkeypatch):
+    session = FakeAuthSession()
+    calls, sleeps = [], []
+
+    def request(method, url, **kwargs):
+        calls.append(kwargs["timeout"])
+        if len(calls) == 1:
+            raise requests.ReadTimeout("password-canary")
+        return FakeResponse({})
+
+    session.session.request = request
+    monkeypatch.setattr("fearngreed.providers.pykrx_flow.time.sleep", sleeps.append)
+    with _authenticated_request_timeout(session, etf=True):
+        session.session.get("https://data.krx.example/etf")
+    assert calls == [30, 30]
+    assert sleeps == [1]
+    assert session.session.request is request
+
+
+@pytest.mark.parametrize("error", [requests.ReadTimeout, requests.HTTPError])
+def test_etf_request_retry_is_bounded_and_does_not_retry_other_failures(monkeypatch, error):
+    session = FakeAuthSession()
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append(kwargs["timeout"])
+        raise error("password-canary")
+
+    session.session.request = request
+    monkeypatch.setattr("fearngreed.providers.pykrx_flow.time.sleep", lambda _: None)
+    with pytest.raises(error), _authenticated_request_timeout(session, etf=True):
+        session.session.get("https://data.krx.example/etf", timeout=3)
+    assert calls == ([3, 3] if error is requests.ReadTimeout else [3])
+    assert session.session.request is request
 
 
 class FakeResponse:

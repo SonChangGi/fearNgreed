@@ -4,11 +4,13 @@ import contextlib
 import functools
 import io
 import os
+import time
 from collections.abc import Callable
 from datetime import date
 from typing import Any
 
 import pandas as pd
+import requests
 
 from .common import ProviderError
 
@@ -188,7 +190,7 @@ def _run_authenticated(request_name: str, request: Callable[[Any], pd.DataFrame]
                 raise ProviderError(
                     _sanitized_auth_failure(captured_out.getvalue(), captured_err.getvalue())
                 )
-            with _authenticated_request_timeout(session):
+            with _authenticated_request_timeout(session, etf=request_name == "etf"):
                 frame = request(stock)
     except ProviderError:
         raise
@@ -214,7 +216,7 @@ def _sanitized_auth_failure(stdout: str, stderr: str) -> str:
 
 
 @contextlib.contextmanager
-def _authenticated_request_timeout(session: Any):
+def _authenticated_request_timeout(session: Any, *, etf: bool = False):
     """Give pykrx's authenticated requests.Session a fail-closed default timeout.
 
     pykrx 1.2.8 calls the underlying ``Session.get/post`` without a timeout.
@@ -229,8 +231,16 @@ def _authenticated_request_timeout(session: Any):
 
     @functools.wraps(original_request)
     def request_with_timeout(method: str, url: str, **kwargs: Any):
-        kwargs.setdefault("timeout", PYKRX_REQUEST_TIMEOUT_SECONDS)
-        return original_request(method, url, **kwargs)
+        kwargs.setdefault("timeout", 30 if etf else PYKRX_REQUEST_TIMEOUT_SECONDS)
+        # Retry only a timed-out ETF read, inside the already authenticated
+        # scope. Other provider/authentication/contract failures stay terminal.
+        for attempt in range(2 if etf else 1):
+            try:
+                return original_request(method, url, **kwargs)
+            except requests.Timeout:
+                if not etf or attempt == 1:
+                    raise
+                time.sleep(1)
 
     raw_session.request = request_with_timeout
     try:

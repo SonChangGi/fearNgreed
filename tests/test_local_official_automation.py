@@ -17,6 +17,10 @@ def test_official_refresh_wrapper_is_isolated_bounded_and_secret_safe() -> None:
     script = (ROOT / "scripts" / "run-official-refresh").read_text(encoding="utf-8")
 
     assert "mktemp -d" in script
+    assert (
+        'export FEARNGREED_ETF_CACHE_DIR="${FEARNGREED_ETF_CACHE_DIR:-'
+        '$HOME/Library/Caches/fearNgreed/krx-etf}"' in script
+    )
     assert "git clone --quiet --depth 1 --branch main" in script
     assert "with-krx-keychain uv run --frozen python -m fearngreed.refresh" in script
     assert 'TIMEOUT_RUNNER="$SCRIPT_DIR/run-with-timeout"' in script

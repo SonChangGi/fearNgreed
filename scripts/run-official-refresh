@@ -286,6 +286,7 @@ fi
 write_status credentials success available 0
 
 umask 077
+export FEARNGREED_ETF_CACHE_DIR="${FEARNGREED_ETF_CACHE_DIR:-$HOME/Library/Caches/fearNgreed/krx-etf}"
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fearngreed-official-refresh.XXXXXX")"
 RECEIPT="$WORK_ROOT/refresh-receipt.json"
 

@@ -27,6 +27,7 @@ from .pipeline import (
     write_outputs_atomic,
 )
 from .providers.common import ProviderError
+from .providers.etf_history import fetch_etf_history
 from .providers.krx_open import KRXOpenAPIClient
 from .providers.pykrx_flow import (
     fetch_etf_prices,
@@ -319,6 +320,8 @@ def refresh(
         end,
         recent_open=recent_open_etfs,
         degraded=degraded,
+        cache_dir=Path(os.environ.get("FEARNGREED_ETF_CACHE_DIR") or root / "var/cache/krx-etf"),
+        force_refresh=backfill_start_date is not None,
     )
 
     stock_crosscheck_start = max(start, end - timedelta(days=14))
@@ -960,6 +963,8 @@ def _fetch_authenticated_etf_histories(
     *,
     recent_open: dict[str, pd.DataFrame],
     degraded: list[str],
+    cache_dir: Path | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Fetch official range histories for multi-anchor adjusted-price checks.
 
@@ -970,7 +975,18 @@ def _fetch_authenticated_etf_histories(
     output: dict[str, pd.DataFrame] = {}
     for ticker, listing_date in ETF_LISTING_DATES.items():
         try:
-            history = fetch_etf_prices(ticker, listing_date, end)
+            history = (
+                fetch_etf_prices(ticker, listing_date, end)
+                if cache_dir is None
+                else fetch_etf_history(
+                    ticker,
+                    listing_date,
+                    end,
+                    cache_dir=cache_dir,
+                    fetch_range=fetch_etf_prices,
+                    force_refresh=force_refresh,
+                )
+            )
         except ProviderError:
             degraded.append(f"historical_etf_{ticker}_unavailable")
             fallback = recent_open.get(ticker)
