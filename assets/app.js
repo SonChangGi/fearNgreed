@@ -1118,6 +1118,10 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
   const initialIndex = Number.isInteger(geometry.initialIndex) ? Math.max(0, Math.min(fallbackIndex, geometry.initialIndex)) : latestIndex;
   const persistSelection = geometry.persistSelection === true;
   const rangeSelection = geometry.rangeSelection === true && typeof geometry.onRangeSelect === "function";
+  if(!rangeSelection&&valid.length){
+    const groups=chart.id==='equity-chart'?[[['value','전략','relative',1,'strategyReturn'],['longShortValue','비교 전략','relative',1,'longShortReturn'],['buyHoldValue','ETF B&H','relative',1,'buyHoldReturn']],[['drawdown','전략 낙폭','pp',100],['longShortDrawdown','비교 전략 낙폭','pp',100],['buyHoldDrawdown','ETF 낙폭','pp',100]]]:chart.id==='residual-chart'?[[['selectedPercentile','잔차 백분위','absolute',1]]]:[];
+    [...chart.querySelectorAll('svg')].forEach((svg,n)=>{const keys=groups[n];if(!keys)return;window.QuantRange?.svg({id:'fear-'+chart.id+(n?'-drawdown':''),element:svg,host:chart.parentElement,currentIndex:()=>chart._chartIndex,domain:valid.map(r=>({key:r.date,label:r.date})),series:keys.filter(([k])=>valid.some(r=>Number.isFinite(r[k]))).map(([key,label,measure,scale,pointField])=>({id:key,label,measure,scale,unit:measure==='pp'?'%':key==='selectedPercentile'?'백분위점':'배',...(pointField?{pointUnit:'%',pointScale:100}:{}),points:valid.map(r=>({key:r.date,value:r[key],...(pointField?{pointValue:r[pointField]}:{})}))})),x:i=>(geometry.plotLeft||0)+i/Math.max(1,valid.length-1)*((geometry.plotRight||geometry.viewBoxWidth)-(geometry.plotLeft||0))})});
+  }
   let dragState = null;
   let suppressClick = false;
   let keyboardRangeAnchor = null;
@@ -1226,6 +1230,7 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
     if (distance >= 4 || index !== dragState.startIndex) dragState.moved = true;
     selectIndex(index, { x: event.clientX, y: event.clientY }, { phase: "range-preview" });
     if (dragState.moved) {
+      if(event.pointerId!=null&&!chart.hasPointerCapture?.(event.pointerId))chart.setPointerCapture?.(event.pointerId);
       chart.classList.add("is-range-dragging");
       geometry.onRangeSelect(dragState.startIndex, index, { committed: false, phase: "preview" });
       if (event.cancelable) event.preventDefault();
@@ -1234,7 +1239,7 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
   chart.onpointerdown = (event) => {
     const pointerType = event.pointerType || "mouse";
     const primaryButton = event.button == null || event.button === 0;
-    if (rangeSelection && ["mouse", "pen"].includes(pointerType) && primaryButton && event.isPrimary !== false) {
+    if (rangeSelection && (["mouse", "pen"].includes(pointerType) || (pointerType === "touch" && chart.dataset.quantTouchSelection === "true")) && primaryButton && event.isPrimary !== false) {
       chart.focus({ preventScroll: true });
       const startIndex = selectPointer(event, false, "range-anchor");
       if (!Number.isInteger(startIndex)) return;
@@ -1245,12 +1250,12 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
         clientY: Number(event.clientY),
         moved: false
       };
-      chart.setPointerCapture?.(event.pointerId);
+
       if (event.cancelable) event.preventDefault();
       return;
     }
     if (pointerType !== "mouse") {
-      clearRange("tap");
+      if(!event.target.closest?.("[data-qr-series-id]"))clearRange("tap");
       selectPointer(event, persistSelection, "tap");
     }
   };
@@ -1266,7 +1271,7 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
       selectIndex(index, null, { commit: persistSelection, phase: "range-end" });
       geometry.onRangeSelect(activeDrag.startIndex, index, { committed: true, phase: "commit" });
     } else {
-      clearRange("click");
+      if(!event.target.closest?.("[data-qr-series-id]"))clearRange("click");
       selectIndex(Number.isInteger(index) ? index : activeDrag.startIndex, null, { commit: persistSelection, phase: "commit" });
     }
   };
@@ -1282,7 +1287,7 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
       event.preventDefault();
       return;
     }
-    clearRange("click");
+    if(!event.target.closest?.("[data-qr-series-id]"))clearRange("click");
     selectPointer(event, true);
   } : null;
   chart.onblur = () => {
@@ -1874,8 +1879,8 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   const priceTicks = niceTicks(min - pad, max + pad, 6).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${plotRight}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 12}" y="${y(value) + 4}" text-anchor="end">${Math.round(value).toLocaleString()}</text>`).join("");
   const equityTicks = niceTicks(equityMin0 - equityPad, equityMax0 + equityPad, 5).map((value) => `<line class="grid-line" x1="${p.l}" y1="${equityY(value)}" x2="${plotRight}" y2="${equityY(value)}"/><text class="axis-label" x="${p.l - 12}" y="${equityY(value) + 4}" text-anchor="end">${esc(fmt.pct(value, Math.abs(equityMax0 - equityMin0) < .2 ? 1 : 0))}</text>`).join("");
   const dateAxis = chartDateAxis(plotRows, x, { top: p.priceTop, bottom: p.equityBottom, labelY: p.dateLabel, maxTicks: 7 });
-  const longCashLine = showLongCash ? `<g class="history-series line-strategy" data-history-series="long_cash">${pathSegments(plotRows, "longCashReturn", x, equityY)}</g>` : "";
-  const longShortLine = showLongShort ? `<g class="history-series line-longshort" data-history-series="long_inverse_cash">${pathSegments(plotRows, "longShortReturn", x, equityY)}</g>` : "";
+  const longCashLine = showLongCash ? `<g class="history-series line-strategy" data-qr-series-id="long_cash" data-history-series="long_cash">${pathSegments(plotRows, "longCashReturn", x, equityY)}</g>` : "";
+  const longShortLine = showLongShort ? `<g class="history-series line-longshort" data-qr-series-id="long_inverse_cash" data-history-series="long_inverse_cash">${pathSegments(plotRows, "longShortReturn", x, equityY)}</g>` : "";
   const laneBackgrounds = laneDefs.map((lane) => `<rect class="holding-lane-background" x="${p.l}" y="${lane.top}" width="${plotRight - p.l}" height="${lane.bottom - lane.top}"/><text class="holding-lane-label" x="${p.l - 12}" y="${(lane.top + lane.bottom) / 2 + 4}" text-anchor="end">${esc(lane.label)}</text>`).join("");
   const lastRow = plotRows.at(-1);
   const endSeries = [
@@ -1887,13 +1892,13 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   endSeries.forEach((series, index) => { series.labelY = Math.max(equityY(series.value), index ? endSeries[index - 1].labelY + labelGap : minLabelY); });
   const overflow = endSeries.length ? Math.max(0, endSeries.at(-1).labelY - maxLabelY) : 0;
   if (overflow) endSeries.forEach((series) => { series.labelY -= overflow; });
-  const endLabels = endSeries.map((series) => `<g class="history-series history-series-end" data-history-series="${series.id}"><circle class="line-end-dot ${series.cls}" cx="${plotRight}" cy="${equityY(series.value)}" r="3"/><path class="line-end-connector ${series.cls}" d="M ${plotRight + 3} ${equityY(series.value)} L ${plotRight + 12} ${series.labelY}"/><text class="line-end-label ${series.cls}" x="${plotRight + 16}" y="${series.labelY + 4}">${esc(series.label)} ${esc(fmt.signedPct(series.value, 1))}</text></g>`).join("");
+  const endLabels = endSeries.map((series) => `<g class="history-series history-series-end" data-qr-series-id="${series.id}" data-history-series="${series.id}"><circle class="line-end-dot ${series.cls}" cx="${plotRight}" cy="${equityY(series.value)}" r="3"/><path class="line-end-connector ${series.cls}" d="M ${plotRight + 3} ${equityY(series.value)} L ${plotRight + 12} ${series.labelY}"/><text class="line-end-label ${series.cls}" x="${plotRight + 16}" y="${series.labelY + 4}">${esc(series.label)} ${esc(fmt.signedPct(series.value, 1))}</text></g>`).join("");
   const latestPrice = Number(lastRow.kospiClose ?? lastRow.kospi);
   const latestPriceY = y(latestPrice);
   const matchedPeriodEndIndex = plotRows.findIndex((row) => row.date === m.end);
   const periodEndIndex = matchedPeriodEndIndex >= 0 ? matchedPeriodEndIndex : plotRows.length - 1;
   const zeroReference = equityMin0 - equityPad <= 0 && equityMax0 + equityPad >= 0 ? `<line class="reference-line performance-zero" x1="${p.l}" y1="${equityY(0)}" x2="${plotRight}" y2="${equityY(0)}"/>` : "";
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}<g id="history-range-brush" class="history-range-brush" aria-hidden="true" hidden><rect class="history-range-band" x="0" y="${p.priceTop}" width="0" height="${p.equityBottom - p.priceTop}"/><line class="history-range-boundary start" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/><line class="history-range-boundary end" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/></g>${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="history-series line-price" data-history-series="kospi">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><g class="history-series history-series-end" data-history-series="kospi"><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text></g>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="history-series line-buyhold" data-history-series="buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<circle id="history-active-point" class="history-active-point" cx="0" cy="0" r="5"/><text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">${esc(Math.abs(Number(firstEtfEvaluation?.buyHoldValue) - 1) < 1e-10 ? "ETF 평가 첫 종가 = 0%" : "ETF 평가 첫 시가 = 0%")}</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}<g id="history-range-brush" class="history-range-brush" aria-hidden="true" hidden><rect class="history-range-band" x="0" y="${p.priceTop}" width="0" height="${p.equityBottom - p.priceTop}"/><line class="history-range-boundary start" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/><line class="history-range-boundary end" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/></g>${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="history-series line-price" data-qr-series-id="kospi" data-history-series="kospi">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><g class="history-series history-series-end" data-qr-series-id="kospi" data-history-series="kospi"><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text></g>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="history-series line-buyhold" data-qr-series-id="buyhold" data-history-series="buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<circle id="history-active-point" class="history-active-point" cx="0" cy="0" r="5"/><text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">${esc(Math.abs(Number(firstEtfEvaluation?.buyHoldValue) - 1) < 1e-10 ? "ETF 평가 첫 종가 = 0%" : "ETF 평가 첫 시가 = 0%")}</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
   container.setAttribute("aria-label", `${plotRows[0].date}부터 ${plotRows.at(-1).date}까지 ${compactModelName()} KOSPI 종가 신호, ${pairLabel(store.backtestProxy, true)} 다음 시가 체결, ${policyLabel()} 비용 후 누적수익률 통합 차트.`);
   let selectedHistoryRow = plotRows[periodEndIndex];
   let selectedHistoryIndex = periodEndIndex;
@@ -1903,6 +1908,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   dateInput.min = plotRows[0].date;
   dateInput.max = plotRows.at(-1).date;
 
+  let rangeHud = null;
   const updateHistorySeriesView = (seriesId, { preview = false } = {}) => {
     const shownSeries = preview ? historyChartState.preview(seriesId, visibleSeriesIds) : historyChartState.activate(seriesId, visibleSeriesIds);
     const persistedSeries = historyChartState.activeSeries;
@@ -1930,9 +1936,11 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     $("#history-kospi-close").textContent = historyIndexPointText(selectedHistoryRow.kospiClose ?? selectedHistoryRow.kospi);
     $("#history-kospi-buyhold").textContent = fmt.signedPct(selectedHistoryRow.kospiBuyHoldReturn, 2);
     renderHistorySelectedSnapshot(selectedHistoryRow, { periodEnd: m.end || plotRows.at(-1).date, showLongCash, showLongShort, pair, activeSeries: shownSeries, range: selectedHistoryRange });
+    rangeHud?.setSeries(shownSeries);
   };
 
   const clearHistoryRange = () => {
+    rangeHud?.clear();
     selectedHistoryRange = null;
     container.removeAttribute("data-range-start");
     container.removeAttribute("data-range-end");
@@ -1974,12 +1982,17 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     if (showLongShort) parts.push(`롱 인버스 현금 ${fmt.signedPct(snapshot.returns.long_inverse_cash, 2)}`);
     parts.push(`${pair.longTicker} ETF B&H ${fmt.signedPct(snapshot.returns.buyhold, 2)}`);
     container.setAttribute("aria-valuetext", parts.join(", "));
+    const first=plotRows[snapshot.startIndex],last=plotRows[snapshot.endIndex];
+    const fields={kospi:r=>r.kospiClose??r.kospi,long_cash:r=>r.longCashValue,long_inverse_cash:r=>r.longShortValue,buyhold:r=>r.buyHoldValue};
+    rangeHud?.present({start:{index:snapshot.startIndex},end:{index:snapshot.endIndex}}, {kind:'timeseries',a:snapshot.startIndex,b:snapshot.endIndex,start:{key:snapshot.startDate,label:snapshot.startDate},end:{key:snapshot.endDate,label:snapshot.endDate},count:snapshot.count,series:visibleSeriesIds.map(id=>({id,label:historySnapshotSeriesLabel(id,pair),unit:id==='kospi'?'pt':'배',precision:id==='kospi'?2:3,start:fields[id](first),end:fields[id](last),delta:{value:snapshot.returns[id]==null?null:snapshot.returns[id]*100,unit:'%'}}))});
   };
+  rangeHud=window.QuantRange?.svg({id:'fear-native-history',element:container.querySelector('svg'),host:container.parentElement,interaction:'external',band:false,primarySeries:activeHistorySeries,domain:plotRows.map(r=>({key:r.date,label:r.date})),series:visibleSeriesIds.map(id=>({id,label:historySnapshotSeriesLabel(id,pair),measure:id==='kospi'?'relative':'pp',scale:id==='kospi'?1:100,unit:id==='kospi'?'pt':'%',points:plotRows.map(r=>({key:r.date,value:historySeriesValue(r,id)}))})),currentIndex:()=>selectedHistoryIndex,onSeriesRequest:(id,ctx)=>{if(ctx.mode==='point'){container._selectIndex?.(ctx.index);updateHistorySeriesView(id)}else{updateHistorySeriesView(id);updateHistoryRange(ctx.selection.start.index,ctx.selection.end.index)}},x:i=>x(i),plotTop:p.priceTop,plotBottom:p.equityBottom,onReset:()=>{container._chartPinnedIndex=periodEndIndex;container._clearRange?.();container.classList.remove('is-exploring')},onSeriesChange:id=>updateHistorySeriesView(id),onTouchMode:enabled=>{container.dataset.quantTouchSelection=String(enabled);container.style.touchAction=enabled?'none':''}});
+  if(rangeHud)$('#history-selected-snapshot').classList.add('qr-native-readout');
 
   $$("#history-series-controls [data-history-series]").forEach((button) => {
     const seriesId = button.dataset.historySeries;
     button.hidden = !visibleSeriesIds.includes(seriesId);
-    button.onclick = () => updateHistorySeriesView(seriesId);
+    button.onclick = () => rangeHud ? rangeHud.selectSeries(seriesId,{origin:'legend'}) : updateHistorySeriesView(seriesId);
     button.onmouseenter = () => updateHistorySeriesView(seriesId, { preview: true });
     button.onmouseleave = () => updateHistorySeriesView(historyChartState.activeSeries);
     button.onfocus = () => updateHistorySeriesView(seriesId, { preview: true });
@@ -2164,6 +2177,7 @@ function renderScatter() {
   const currentLabelY = Math.max(p.t + 15, Math.min(h - p.b - 8, y(current.y) - 10));
   const currentLabel = `<text class="scatter-current-label" x="${currentLabelX}" y="${currentLabelY}" text-anchor="${currentLabelAnchor}">평가 종료일 · ${esc(labels[stateFromValue(current)] || stateFromValue(current))}</text>`;
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><defs><clipPath id="scatter-plot-clip"><rect x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/></clipPath></defs><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${extremeZones}${xTicks}${yTicks}${zeroAxes}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/>${regressionLine}${residual}${marks}${currentLabel}<text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 7}" text-anchor="middle">KOSPI 1일 수익률 (%)</text><text class="axis-title" x="${p.l}" y="13">${store.model === "raw" ? "개인 순매수대금 (조원)" : "순매수대금 ÷ KOSPI 거래대금 (%)"}</text></svg>`;
+  window.QuantRange?.scatterSvg({id:'fear-scatter',element:container.querySelector('svg'),host:container.parentElement,scatter:points.map(r=>({id:r.date,label:r.date,x:r.return1d*100,y:r.y*(store.model==='raw'?1:100)})),scatterAxes:{xLabel:'수익률 %',yLabel:store.model==='raw'?'순매수 조원':'순매수 비율 %'},bounds:{left:p.l,right:w-p.r,top:p.t,bottom:h-p.b},xDomain:[xmin*100,xmax*100],yDomain:[ymin*(store.model==='raw'?1:100),ymax*(store.model==='raw'?1:100)]});
   const inputLabel = store.model === "raw" ? "개인 순매수대금" : "거래대금 대비 개인 순매수 비율";
   $("#scatter-title").textContent = `수익률 × ${inputLabel}`;
   $("#scatter-subtitle").textContent = `${modelName()} · ${current.date} 기준 · 직전 ${regression.trainingCount || regression.window || points.length - 1}거래일 학습`;
@@ -2207,7 +2221,7 @@ function renderResidual() {
   const latestIndex = latest ? rows.findIndex((row) => row.date === latest.date) : -1;
   const latestMark = latest && latestIndex >= 0 ? `<circle class="line-end-dot strategy" cx="${x(latestIndex)}" cy="${y(latest.selectedPercentile)}" r="3"/><text class="line-end-label strategy" x="${w - p.r + 9}" y="${y(latest.selectedPercentile) + 4}">${esc(fmt.score(latest.selectedPercentile, 1))}</text>` : "";
   const dateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 20, maxTicks: 5 });
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/><rect class="residual-band-fear" x="${p.l}" y="${y(lowerExtreme)}" width="${w - p.l - p.r}" height="${y(0) - y(lowerExtreme)}"/><rect class="residual-band-greed" x="${p.l}" y="${y(100)}" width="${w - p.l - p.r}" height="${y(upperExtreme) - y(100)}"/>${dateAxis}${boundaries}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-primary">${pathSegments(eligibleRows, "selectedPercentile", x, y)}</g><g class="line-blocked">${pathSegments(blockedRows, "selectedPercentile", x, y)}</g>${blockedMarks}${latestMark}<text class="panel-title" x="${p.l}" y="18">잔차 경험적 백분위</text><text class="axis-unit" x="${w - p.r}" y="18" text-anchor="end">0–100 · 거래 차단은 회색 점선</text><text class="residual-zone-label fear" x="${w - p.r - 7}" y="${y(lowerExtreme / 2) + 3}" text-anchor="end">극단 공포 ≤${esc(lowerExtreme)}</text><text class="residual-zone-label greed" x="${w - p.r - 7}" y="${y((100 + upperExtreme) / 2) + 3}" text-anchor="end">극단 탐욕 ≥${esc(upperExtreme)}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/><rect class="residual-band-fear" x="${p.l}" y="${y(lowerExtreme)}" width="${w - p.l - p.r}" height="${y(0) - y(lowerExtreme)}"/><rect class="residual-band-greed" x="${p.l}" y="${y(100)}" width="${w - p.l - p.r}" height="${y(upperExtreme) - y(100)}"/>${dateAxis}${boundaries}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g data-qr-series-id="selectedPercentile" class="line-primary">${pathSegments(eligibleRows, "selectedPercentile", x, y)}</g><g data-qr-series-id="selectedPercentile" class="line-blocked">${pathSegments(blockedRows, "selectedPercentile", x, y)}</g>${blockedMarks}${latestMark}<text class="panel-title" x="${p.l}" y="18">잔차 경험적 백분위</text><text class="axis-unit" x="${w - p.r}" y="18" text-anchor="end">0–100 · 거래 차단은 회색 점선</text><text class="residual-zone-label fear" x="${w - p.r - 7}" y="${y(lowerExtreme / 2) + 3}" text-anchor="end">극단 공포 ≤${esc(lowerExtreme)}</text><text class="residual-zone-label greed" x="${w - p.r - 7}" y="${y((100 + upperExtreme) / 2) + 3}" text-anchor="end">극단 탐욕 ≥${esc(upperExtreme)}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   container.setAttribute("aria-label", `${compactModelName(kind)} 잔차 백분위 ${rows[0].date}부터 ${rows.at(-1).date}. 최신 ${latest ? fmt.score(latest.selectedPercentile) : "산출 불가"}.`);
   attachChartNavigation(container, validRows, (row) => `${row.date}, ${compactModelName(kind)} 잔차 백분위 ${fmt.score(row.selectedPercentile)}, ${labels[row.selectedState] || row.selectedState}, 거래 사용 ${row.selectedEligible === true ? "가능" : "차단"}`, {
     viewBoxWidth: w,
@@ -2300,14 +2314,15 @@ function renderEventVisual(section) {
     geometry.push({ row, plotX: x(mean), plotY: y });
     if (Number.isFinite(benchmark)) hasBenchmark = true;
     if (Number.isFinite(excess)) hasExcess = true;
-    const interval = Number.isFinite(low) && Number.isFinite(high) ? `<line class="event-interval" x1="${x(low)}" y1="${y}" x2="${x(high)}" y2="${y}"/><line class="event-interval-cap" x1="${x(low)}" y1="${y - 5}" x2="${x(low)}" y2="${y + 5}"/><line class="event-interval-cap" x1="${x(high)}" y1="${y - 5}" x2="${x(high)}" y2="${y + 5}"/>` : "";
-    const meanMark = greed ? `<rect class="event-mean greed" x="${x(mean) - 5}" y="${y - 5}" width="10" height="10" transform="rotate(45 ${x(mean)} ${y})"/>` : `<circle class="event-mean fear" cx="${x(mean)}" cy="${y}" r="5"/>`;
-    const benchmarkMark = Number.isFinite(benchmark) ? `<rect class="event-benchmark" x="${x(benchmark) - 4}" y="${y - 4}" width="8" height="8"/><line class="event-excess-connector" x1="${x(benchmark)}" y1="${y + 8}" x2="${x(mean)}" y2="${y + 8}"/>` : "";
-    const excessInterval = excessCi.length === 2 && excessCi.every(Number.isFinite) ? `<line class="event-excess-interval" x1="${x(excessCi[0])}" y1="${y + 10}" x2="${x(excessCi[1])}" y2="${y + 10}"/>` : "";
-    const excessLabel = Number.isFinite(excess) ? `<text class="event-excess-label" x="${w - p.r + 8}" y="${y + 4}">Δ ${esc(fmt.signedPct(excess, 1))}</text>` : "";
+    const interval = Number.isFinite(low) && Number.isFinite(high) ? `<line data-qr-series-id="mean" data-qr-index="${index}" class="event-interval" x1="${x(low)}" y1="${y}" x2="${x(high)}" y2="${y}"/><line data-qr-series-id="mean" data-qr-index="${index}" class="event-interval-cap" x1="${x(low)}" y1="${y - 5}" x2="${x(low)}" y2="${y + 5}"/><line data-qr-series-id="mean" data-qr-index="${index}" class="event-interval-cap" x1="${x(high)}" y1="${y - 5}" x2="${x(high)}" y2="${y + 5}"/>` : "";
+    const meanMark = greed ? `<rect data-qr-series-id="mean" data-qr-index="${index}" class="event-mean greed" x="${x(mean) - 5}" y="${y - 5}" width="10" height="10" transform="rotate(45 ${x(mean)} ${y})"/>` : `<circle data-qr-series-id="mean" data-qr-index="${index}" class="event-mean fear" cx="${x(mean)}" cy="${y}" r="5"/>`;
+    const benchmarkMark = Number.isFinite(benchmark) ? `<rect data-qr-series-id="benchmark" data-qr-index="${index}" class="event-benchmark" x="${x(benchmark) - 4}" y="${y - 4}" width="8" height="8"/><line class="event-excess-connector" x1="${x(benchmark)}" y1="${y + 8}" x2="${x(mean)}" y2="${y + 8}"/>` : "";
+    const excessInterval = excessCi.length === 2 && excessCi.every(Number.isFinite) ? `<line data-qr-series-id="excess" data-qr-index="${index}" class="event-excess-interval" x1="${x(excessCi[0])}" y1="${y + 10}" x2="${x(excessCi[1])}" y2="${y + 10}"/>` : "";
+    const excessLabel = Number.isFinite(excess) ? `<text data-qr-series-id="excess" data-qr-index="${index}" class="event-excess-label" x="${w - p.r + 8}" y="${y + 4}">Δ ${esc(fmt.signedPct(excess, 1))}</text>` : "";
     return `<text class="event-row-label" x="${p.l - 12}" y="${y + 4}" text-anchor="end">${esc(`${stateLabel} · ${row.horizon}일 · n=${row.eventCount}`)}</text>${interval}${benchmarkMark}${excessInterval}${meanMark}${excessLabel}`;
   }).join("");
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${ticks}<line class="reference-line" x1="${x(0)}" y1="${p.t}" x2="${x(0)}" y2="${h - p.b}"/>${marks}<line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><text class="axis-title" x="${p.l}" y="14">평균 선행수익률 · 95% CI</text></svg>`;
+  window.QuantRange?.svg({id:'fear-event-ci',element:container.querySelector('svg'),host:container.parentElement,kind:'category',orientation:'vertical',domain:rows.map((r,i)=>({key:String(i),label:(labels[r.state]||r.state)+' · '+r.horizon+'일'})),series:[['mean','평균 수익률',r=>Number(r.mean)],['benchmark','벤치마크',eventBenchmark],['excess','초과 수익률',eventExcess]].map(([id,label,value])=>({id,label,unit:'%',measure:'pp',scale:100,points:rows.map((r,i)=>({key:String(i),value:value(r)}))})),x:i=>rowY(i),plotLeft:p.l,plotRight:w-p.r});
   container.setAttribute("aria-label", `${store.eventAsset} ${rows.length}개 사건 요약. 평균과 95% 신뢰구간${hasBenchmark ? ", 비교 벤치마크" : ""}${hasExcess ? ", 초과수익" : ""}.`);
   attachScatterNavigation(container, geometry, (row) => `${labels[row.state] || row.state} ${row.horizon}일, 평균 ${fmt.signedPct(row.mean)}, 95% 신뢰구간 ${fmt.pct(row.meanCi95?.[0])}에서 ${fmt.pct(row.meanCi95?.[1])}, 사건 ${row.eventCount}개${eventBenchmark(row) == null ? "" : `, 벤치마크 ${fmt.signedPct(eventBenchmark(row))}`}${eventExcess(row) == null ? "" : `, 초과수익 ${fmt.signedPct(eventExcess(row))}`}`, { width: w, height: h });
   $("#event-benchmark-legend").hidden = !hasBenchmark;
@@ -2825,13 +2840,13 @@ function renderEquity(result, selectionLabel, comparisonResult = null, primaryPo
   const labelOverflow = endSeries.length ? Math.max(0, endSeries.at(-1).labelY - (h - p.b - 4)) : 0;
   if (labelOverflow) endSeries.forEach((series) => { series.labelY -= labelOverflow; });
   const valueEndLabels = endSeries.map((series) => `<circle class="line-end-dot ${series.cls}" cx="${w - p.r}" cy="${y(series.value)}" r="3"/><path class="line-end-connector ${series.cls}" d="M ${w - p.r + 3} ${y(series.value)} L ${w - p.r + 11} ${series.labelY}"/><text class="line-end-label ${series.cls}" x="${w - p.r + 15}" y="${series.labelY + 4}">${esc(series.label)} ${esc(fmt.signedPct(series.value, 1))}</text>`).join("");
-  const valueSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${valueDateAxis}${yTicks}${zeroLine}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="${primaryLineClass}">${pathSegments(rows, "strategyReturn", x, y)}</g>${comparable ? `<g class="line-longshort">${pathSegments(rows, "longShortReturn", x, y)}</g>` : ""}<g class="line-buyhold">${pathSegments(rows, "buyHoldReturn", x, y)}</g>${valueEndLabels}<text class="panel-title" x="${p.l}" y="20">비용 후 누적수익률</text><text class="axis-unit" x="${w - p.r}" y="20" text-anchor="end">${esc(equityBuyHoldBasis)}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
+  const valueSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${valueDateAxis}${yTicks}${zeroLine}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g data-qr-series-id="value" class="${primaryLineClass}">${pathSegments(rows, "strategyReturn", x, y)}</g>${comparable ? `<g data-qr-series-id="longShortValue" class="line-longshort">${pathSegments(rows, "longShortReturn", x, y)}</g>` : ""}<g data-qr-series-id="buyHoldValue" class="line-buyhold">${pathSegments(rows, "buyHoldReturn", x, y)}</g>${valueEndLabels}<text class="panel-title" x="${p.l}" y="20">비용 후 누적수익률</text><text class="axis-unit" x="${w - p.r}" y="20" text-anchor="end">${esc(equityBuyHoldBasis)}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   const drawdowns = rows.flatMap((row) => [Number(row.drawdown), Number(row.longShortDrawdown), Number(row.buyHoldDrawdown)]).filter(Number.isFinite);
   const ddMin = Math.min(...drawdowns, -.01), ddMax = 0;
   const ddY = scale(ddMin, ddMax, h - p.b, p.t);
   const ddTicks = niceTicks(ddMin, ddMax).map((value) => `<line class="grid-line" x1="${p.l}" y1="${ddY(value)}" x2="${w - p.r}" y2="${ddY(value)}"/><text class="axis-label" x="${p.l - 9}" y="${ddY(value) + 4}" text-anchor="end">${esc(fmt.pct(value, 0))}</text>`).join("");
   const ddDateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 20, maxTicks: 6 });
-  const ddSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${ddDateAxis}${ddTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="${primaryLineClass}">${pathSegments(rows, "drawdown", x, ddY)}</g>${comparable ? `<g class="line-longshort">${pathSegments(rows, "longShortDrawdown", x, ddY)}</g>` : ""}<g class="line-buyhold">${pathSegments(rows, "buyHoldDrawdown", x, ddY)}</g><text class="panel-title" x="${p.l}" y="20">고점 대비 낙폭</text><text class="axis-unit" x="${w - p.r}" y="20" text-anchor="end">0% = 직전 최고점</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
+  const ddSvg = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${ddDateAxis}${ddTicks}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g data-qr-series-id="drawdown" class="${primaryLineClass}">${pathSegments(rows, "drawdown", x, ddY)}</g>${comparable ? `<g data-qr-series-id="longShortDrawdown" class="line-longshort">${pathSegments(rows, "longShortDrawdown", x, ddY)}</g>` : ""}<g data-qr-series-id="buyHoldDrawdown" class="line-buyhold">${pathSegments(rows, "buyHoldDrawdown", x, ddY)}</g><text class="panel-title" x="${p.l}" y="20">고점 대비 낙폭</text><text class="axis-unit" x="${w - p.r}" y="20" text-anchor="end">0% = 직전 최고점</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 5}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   container.innerHTML = valueSvg + ddSvg;
   const last = rows.at(-1);
   container.setAttribute("aria-label", `${selectionLabel}. ${rows[0].date}부터 ${last.date}. 최종 ${primaryLabel} ${fmt.score(last.value, 3)}${comparable ? `, 롱 인버스 현금 ${fmt.score(last.longShortValue, 3)}` : ""}, ${pair.longTicker} ETF B&H ${fmt.score(last.buyHoldValue, 3)}.`);
@@ -2920,8 +2935,9 @@ function renderDiagnostics() {
   const ticks = niceTicks(min, max).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 8}" y="${y(value) + 4}" text-anchor="end">${esc(formatValue(value))}</text>`).join("");
   const reference = field === "muHynixRelativeSpread" && min <= 0 && max >= 0 ? `<line class="reference-line" x1="${p.l}" y1="${y(0)}" x2="${w - p.r}" y2="${y(0)}"/>` : field === "muHynixRatioIndexed" && min <= 100 && max >= 100 ? `<line class="reference-line" x1="${p.l}" y1="${y(100)}" x2="${w - p.r}" y2="${y(100)}"/>` : "";
   const dateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 19, maxTicks: 5 });
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${dateAxis}${ticks}${reference}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g class="line-accent">${pathSegments(rows, field, x, y)}</g><text class="panel-title" x="${p.l}" y="19">${field === "muHynixRelativeSpread" ? "MU 대비 하이닉스 상대 스프레드 (지수포인트)" : "MU / 하이닉스 비율지수"}</text><text class="axis-unit" x="${w - p.r}" y="19" text-anchor="end">${field === "muHynixRelativeSpread" ? "미국 선행 세션 · 환율 환산" : "시작 = 100"}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 4}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${dateAxis}${ticks}${reference}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g data-qr-series-id="${field}" class="line-accent">${pathSegments(rows, field, x, y)}</g><text class="panel-title" x="${p.l}" y="19">${field === "muHynixRelativeSpread" ? "MU 대비 하이닉스 상대 스프레드 (지수포인트)" : "MU / 하이닉스 비율지수"}</text><text class="axis-unit" x="${w - p.r}" y="19" text-anchor="end">${field === "muHynixRelativeSpread" ? "미국 선행 세션 · 환율 환산" : "시작 = 100"}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 4}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   container.setAttribute("aria-label", `${rows[0].date}부터 ${rows.at(-1).date}까지 선택 평가 기간의 ${field === "muHynixRelativeSpread" ? "Micron 대비 SK하이닉스 상대 스프레드" : "Micron 대 SK하이닉스 비율지수"}. 기간 끝 관측 ${formatValue(rows.at(-1)[field])}.`);
+  window.QuantRange?.svg({id:'fear-diagnostics',element:container.querySelector('svg'),host:container.parentElement,domain:rows.map(r=>({key:r.date,label:r.date})),series:[{id:field,label:field==='muHynixRelativeSpread'?'상대 스프레드':'비율지수',unit:'pt',measure:field==='muHynixRelativeSpread'?'absolute':'relative',scale:1,points:rows.map(r=>({key:r.date,value:r[field]}))}],x:i=>x(i),plotTop:p.t,plotBottom:h-p.b});
   attachChartNavigation(container, rows, (row) => `${row.date}, ${field === "muHynixRelativeSpread" ? "상대 스프레드" : "비율지수"} ${formatValue(row[field])}`, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
 }
 
