@@ -163,7 +163,7 @@ test("recommended page defaults load once while legacy custom scenarios remain e
     ],
     [196, 0.4, 2, 20]
   );
-  assert.match(freshDocument.querySelector("#signal-settings-status").textContent, /과거 196일 · 최소 R² 0\.40 · 극단 ≤2\/≥98/);
+  assert.match(freshDocument.querySelector("#signal-settings-status").textContent, /과거 196일 · 최소 R² 0\.4 · 극단 ≤2\/≥98/);
 
   const migrated = await bootDashboard({
     storage: {
@@ -498,7 +498,7 @@ test("integrated chart exploration changes only local chart context", { concurre
   const asOfText = document.querySelector("#asof").textContent;
   const backtestSubtitle = document.querySelector("#backtest-card-subtitle").textContent;
   const initialDate = dateInput.value;
-  const signedPct = (value) => `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
+  const signedPct = (value) => `${value >= 0 ? "+" : ""}${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(value * 100)}%`;
   const initialRow = chart._chartItems.find((row) => row.date === initialDate);
   const displayedStartRow = chart._chartItems[0];
 
@@ -509,7 +509,7 @@ test("integrated chart exploration changes only local chart context", { concurre
   assert.equal(initialDate, evaluationDate);
   assert.equal(
     document.querySelector("#history-kospi-close").textContent,
-    `${new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(initialRow.kospiClose)}pt`
+    `${new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(initialRow.kospiClose)}pt`
   );
   assert.equal(
     document.querySelector("#history-kospi-buyhold").textContent,
@@ -596,7 +596,7 @@ test("integrated chart exploration changes only local chart context", { concurre
   dateInput.value = dateInput.min;
   dateInput.dispatchEvent(new window.Event("change", { bubbles: true }));
   assert.equal(dateInput.value, dateInput.min);
-  assert.equal(document.querySelector("#history-kospi-buyhold").textContent, "+0.00%");
+  assert.equal(document.querySelector("#history-kospi-buyhold").textContent, "+0%");
   assert.equal(dateInput.max, evaluationDate);
   click(window, '[data-chart-latest="history-chart"]');
   assert.equal(dateInput.value, dateInput.max);

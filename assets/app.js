@@ -89,14 +89,14 @@ function qualityLabel(value) {
 }
 
 const fmt = {
-  pct: (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : `${(Number(value) * 100).toFixed(digits)}%`,
-  signedPct: (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : `${Number(value) >= 0 ? "+" : ""}${(Number(value) * 100).toFixed(digits)}%`,
-  score: (value, digits = 1) => value == null || !Number.isFinite(Number(value)) ? "—" : Number(value).toFixed(digits),
-  compact: (value) => value == null || !Number.isFinite(Number(value)) ? "—" : Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 2 }).format(value),
+  pct: (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : `${window.QuantFormat.number(Number(value) * 100)}%`,
+  signedPct: (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : `${Number(value) >= 0 ? "+" : ""}${window.QuantFormat.number(Number(value) * 100)}%`,
+  score: (value, digits = 1) => value == null || !Number.isFinite(Number(value)) ? "—" : window.QuantFormat.number(Number(value)),
+  compact: (value) => value == null || !Number.isFinite(Number(value)) ? "—" : window.QuantFormat.number(Number(value), { notation: "compact" }),
   date: (value) => value ? new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "short", day: "numeric" }).format(new Date(`${value}T00:00:00`)) : "—",
   time: (value) => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value)) : "—",
-  multiple: (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : `${Number(value).toFixed(digits)}×`,
-  price: (value) => value == null || !Number.isFinite(Number(value)) ? "—" : `${new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value))}원`
+  multiple: (value, digits = 2) => value == null || !Number.isFinite(Number(value)) ? "—" : `${window.QuantFormat.number(Number(value))}×`,
+  price: (value) => value == null || !Number.isFinite(Number(value)) ? "—" : `${window.QuantFormat.number(Number(value))}원`
 };
 
 const esc = (value) => String(value ?? "").replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[char]);
@@ -779,7 +779,7 @@ function renderHeader(scenarioBundle = selectedScenarioBundle()) {
   ].join("");
   $("#secondary-metrics").innerHTML = [
     metric("잔차 z", fmt.score(model?.residualZ, 2), "median / 1.4826×MAD"),
-    metric("롤링 R²", fmt.score(model?.rollingR2, 3), `현재일 제외 · 품질 기준 ${Number(store.signalMinimumR2).toFixed(2)}`),
+    metric("롤링 R²", fmt.score(model?.rollingR2, 3), `현재일 제외 · 품질 기준 ${window.QuantFormat.number(Number(store.signalMinimumR2))}`),
     metric("50일 이격도", fmt.score(base.disparity50, 1), "100 = 50일 이동평균"),
     metric("252일 낙폭", fmt.pct(base.mdd252), "롤링 고점 대비")
   ].join("");
@@ -799,7 +799,7 @@ function renderHeader(scenarioBundle = selectedScenarioBundle()) {
   $("#quality-strip").innerHTML = [
     `<span><strong>데이터 기준일:</strong> ${esc(summary.dataAsOf)}</span>`,
     `<span><strong>선택 트랙:</strong> ${esc(modelName())}</span>`,
-    `<span><strong>학습 설정:</strong> ${esc(store.signalLookback)}일 · R²≥${esc(Number(store.signalMinimumR2).toFixed(2))} · 꼬리 ${esc(store.signalExtremeTail)}%</span>`,
+    `<span><strong>학습 설정:</strong> ${esc(store.signalLookback)}일 · R²≥${esc(window.QuantFormat.number(Number(store.signalMinimumR2)))} · 꼬리 ${esc(store.signalExtremeTail)}%</span>`,
     `<span><strong>β:</strong> ${esc(fmt.score(beta, 4))}</span>`,
     `<span><strong>모형 품질:</strong> ${esc(qualityLabel(model?.quality || base.modelQuality))}</span>`,
     `<span><strong>가격:</strong> ${esc(base.sources?.price || base.sourceMode || "KRX")}</span>`,
@@ -1626,7 +1626,7 @@ function historySeriesValue(row, seriesId) {
 
 function historyIndexPointText(value) {
   return value != null && Number.isFinite(Number(value))
-    ? `${new Intl.NumberFormat("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value))}pt`
+    ? `${window.QuantFormat.number(Number(value))}pt`
     : "—";
 }
 
@@ -1725,7 +1725,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     $("#history-callout-context").textContent = "유효 거래일을 8일 이상 선택해 주세요.";
     $("#history-kospi-close").textContent = "—";
     $("#history-kospi-buyhold").textContent = "—";
-    const tableRows = rows.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[rowTrackValue(row, "state")] || rowTrackValue(row, "state"), "—", "—"]);
+    const tableRows = rows.map((row) => [row.date, window.QuantFormat.number(Number(row.kospiClose ?? row.kospi)), labels[rowTrackValue(row, "state")] || rowTrackValue(row, "state"), "—", "—"]);
     $("#history-data-table").innerHTML = dataTable(["날짜", "KOSPI", "선택 트랙 상태", "포지션", "체결"], tableRows, `선택 기간 ${tableRows.length}개 관측값`);
     return showEmpty(container, "통합 분석을 표시하려면 유효 기간을 넓혀 주세요.");
   }
@@ -1876,7 +1876,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
       return `<g class="execution-action reversal${boundaryClass}"><path d="M ${px} ${actionY - 8} L ${px + 8} ${actionY} L ${px} ${actionY + 8} L ${px - 8} ${actionY} Z"/><text x="${px}" y="${actionY + 3}" text-anchor="middle">↔</text><title>${esc(title)}</title></g>`;
     }).join("");
   }).join("");
-  const priceTicks = niceTicks(min - pad, max + pad, 6).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${plotRight}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 12}" y="${y(value) + 4}" text-anchor="end">${Math.round(value).toLocaleString()}</text>`).join("");
+  const priceTicks = niceTicks(min - pad, max + pad, 6).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${plotRight}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 12}" y="${y(value) + 4}" text-anchor="end">${window.QuantFormat.number(value)}</text>`).join("");
   const equityTicks = niceTicks(equityMin0 - equityPad, equityMax0 + equityPad, 5).map((value) => `<line class="grid-line" x1="${p.l}" y1="${equityY(value)}" x2="${plotRight}" y2="${equityY(value)}"/><text class="axis-label" x="${p.l - 12}" y="${equityY(value) + 4}" text-anchor="end">${esc(fmt.pct(value, Math.abs(equityMax0 - equityMin0) < .2 ? 1 : 0))}</text>`).join("");
   const dateAxis = chartDateAxis(plotRows, x, { top: p.priceTop, bottom: p.equityBottom, labelY: p.dateLabel, maxTicks: 7 });
   const longCashLine = showLongCash ? `<g class="history-series line-strategy" data-qr-series-id="long_cash" data-history-series="long_cash">${pathSegments(plotRows, "longCashReturn", x, equityY)}</g>` : "";
@@ -1898,7 +1898,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   const matchedPeriodEndIndex = plotRows.findIndex((row) => row.date === m.end);
   const periodEndIndex = matchedPeriodEndIndex >= 0 ? matchedPeriodEndIndex : plotRows.length - 1;
   const zeroReference = equityMin0 - equityPad <= 0 && equityMax0 + equityPad >= 0 ? `<line class="reference-line performance-zero" x1="${p.l}" y1="${equityY(0)}" x2="${plotRight}" y2="${equityY(0)}"/>` : "";
-  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}<g id="history-range-brush" class="history-range-brush" aria-hidden="true" hidden><rect class="history-range-band" x="0" y="${p.priceTop}" width="0" height="${p.equityBottom - p.priceTop}"/><line class="history-range-boundary start" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/><line class="history-range-boundary end" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/></g>${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="history-series line-price" data-qr-series-id="kospi" data-history-series="kospi">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><g class="history-series history-series-end" data-qr-series-id="kospi" data-history-series="kospi"><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(Math.round(latestPrice).toLocaleString())}</text></g>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="history-series line-buyhold" data-qr-series-id="buyhold" data-history-series="buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<circle id="history-active-point" class="history-active-point" cx="0" cy="0" r="5"/><text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">${esc(Math.abs(Number(firstEtfEvaluation?.buyHoldValue) - 1) < 1e-10 ? "ETF 평가 첫 종가 = 0%" : "ETF 평가 첫 시가 = 0%")}</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
+  container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.priceTop}" width="${plotRight - p.l}" height="${p.priceBottom - p.priceTop}"/><rect class="chart-panel-bg" x="${p.l}" y="${p.equityTop}" width="${plotRight - p.l}" height="${p.equityBottom - p.equityTop}"/>${laneBackgrounds}<g id="history-range-brush" class="history-range-brush" aria-hidden="true" hidden><rect class="history-range-band" x="0" y="${p.priceTop}" width="0" height="${p.equityBottom - p.priceTop}"/><line class="history-range-boundary start" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/><line class="history-range-boundary end" x1="0" y1="${p.priceTop}" x2="0" y2="${p.equityBottom}"/></g>${dateAxis}${priceTicks}${equityTicks}${zeroReference}<line class="axis-line" x1="${p.l}" y1="${p.priceTop}" x2="${p.l}" y2="${p.priceBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.priceBottom}" x2="${plotRight}" y2="${p.priceBottom}"/><g class="history-series line-price" data-qr-series-id="kospi" data-history-series="kospi">${pathSegments(plotRows, (row) => row.kospiClose ?? row.kospi, x, y)}</g><g class="history-series history-series-end" data-qr-series-id="kospi" data-history-series="kospi"><circle class="line-end-dot price" cx="${plotRight}" cy="${latestPriceY}" r="3"/><text class="line-end-label price" x="${plotRight + 12}" y="${latestPriceY + 4}">KOSPI ${esc(window.QuantFormat.number(latestPrice))}</text></g>${executionConnectors}${signalMarks}<text class="panel-title" x="${p.l}" y="24">가격 · KOSPI 종가</text><text class="axis-unit" x="${plotRight}" y="24" text-anchor="end">단위: 지수포인트</text><text class="panel-title" x="${p.l}" y="${p.laneTitle}">체결·보유 · 종가 신호 → 다음 거래일 시가</text>${zones.join("")}${actionMarks}<line class="axis-line panel-divider" x1="${p.l}" y1="${p.equityTop}" x2="${plotRight}" y2="${p.equityTop}"/><line class="axis-line" x1="${p.l}" y1="${p.equityTop}" x2="${p.l}" y2="${p.equityBottom}"/><line class="axis-line" x1="${p.l}" y1="${p.equityBottom}" x2="${plotRight}" y2="${p.equityBottom}"/>${longCashLine}${longShortLine}<g class="history-series line-buyhold" data-qr-series-id="buyhold" data-history-series="buyhold">${pathSegments(plotRows, "buyHoldReturn", x, equityY)}</g>${endLabels}<circle id="history-active-point" class="history-active-point" cx="0" cy="0" r="5"/><text class="panel-title" x="${p.l}" y="${p.equityTop - 16}">성과 · 비용 후 누적수익률</text><text class="axis-unit" x="${plotRight}" y="${p.equityTop - 16}" text-anchor="end">${esc(Math.abs(Number(firstEtfEvaluation?.buyHoldValue) - 1) < 1e-10 ? "ETF 평가 첫 종가 = 0%" : "ETF 평가 첫 시가 = 0%")}</text><text class="axis-title" x="${(p.l + plotRight) / 2}" y="${p.xTitle}" text-anchor="middle">날짜 (KRX 거래일 · KST)</text></svg>`;
   container.setAttribute("aria-label", `${plotRows[0].date}부터 ${plotRows.at(-1).date}까지 ${compactModelName()} KOSPI 종가 신호, ${pairLabel(store.backtestProxy, true)} 다음 시가 체결, ${policyLabel()} 비용 후 누적수익률 통합 차트.`);
   let selectedHistoryRow = plotRows[periodEndIndex];
   let selectedHistoryIndex = periodEndIndex;
@@ -2057,8 +2057,8 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
   $("#history-exposure-note").innerHTML = `${exposure}<span>완결 거래 ${esc(m.tradeCount)}건 · 시작 포지션 ${esc(labels[carry] || carry)}${requested === applied ? "" : ` · 요청 ${esc(requested)} → 적용 ${esc(applied)}`}${carryClosed ? ` · 시작 전 진입 포지션 청산 ${esc(carryClosed)}건 별도` : ""}</span>`;
   const recent = recentRows(plotRows);
   const tableRows = store.backtestPolicy === "compare"
-    ? recent.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[row.trackState] || row.trackState, positionWithTicker(row.longCashPosition), positionWithTicker(row.longShortPosition), row.actions.map((action) => `${policyLabel(action.policy)} ${normalizedActionLabel(action)} (${action.signalDate || action.sourceSignalDate || "—"}→${row.date})`).join(" / ") || "—", fmt.score(row.longCashValue, 3), fmt.score(row.longShortValue, 3)])
-    : recent.map((row) => [row.date, Number(row.kospiClose ?? row.kospi).toLocaleString(), labels[row.trackState] || row.trackState, positionWithTicker(row.position), row.actions.map((action) => `${policyLabel(action.policy)} ${normalizedActionLabel(action)} (${action.signalDate || action.sourceSignalDate || "—"}→${row.date})`).join(" / ") || "—", fmt.score(row.primaryValue, 3)]);
+    ? recent.map((row) => [row.date, window.QuantFormat.number(Number(row.kospiClose ?? row.kospi)), labels[row.trackState] || row.trackState, positionWithTicker(row.longCashPosition), positionWithTicker(row.longShortPosition), row.actions.map((action) => `${policyLabel(action.policy)} ${normalizedActionLabel(action)} (${action.signalDate || action.sourceSignalDate || "—"}→${row.date})`).join(" / ") || "—", fmt.score(row.longCashValue, 3), fmt.score(row.longShortValue, 3)])
+    : recent.map((row) => [row.date, window.QuantFormat.number(Number(row.kospiClose ?? row.kospi)), labels[row.trackState] || row.trackState, positionWithTicker(row.position), row.actions.map((action) => `${policyLabel(action.policy)} ${normalizedActionLabel(action)} (${action.signalDate || action.sourceSignalDate || "—"}→${row.date})`).join(" / ") || "—", fmt.score(row.primaryValue, 3)]);
   const headers = store.backtestPolicy === "compare"
     ? ["날짜", "KOSPI", "선택 트랙 상태", "롱/현금 포지션", "롱/인버스/현금 포지션", "다음 시가 체결 (신호일→체결일)", "롱/현금 가치", "롱/인버스/현금 가치"]
     : ["날짜", "KOSPI", "선택 트랙 상태", "포지션", "다음 시가 체결 (신호일→체결일)", "전략가치"];
@@ -2155,7 +2155,7 @@ function renderScatter() {
   const w = 600, h = 340, p = { l: 68, r: 20, t: 20, b: 50 };
   const x = scale(xmin, xmax, p.l, w - p.r), y = scale(ymin, ymax, h - p.b, p.t);
   const xTicks = niceTicks(xmin, xmax).map((value) => `<line class="grid-line" x1="${x(value)}" y1="${p.t}" x2="${x(value)}" y2="${h - p.b}"/><text class="axis-label" x="${x(value)}" y="${h - p.b + 17}" text-anchor="middle">${esc(fmt.pct(value, 1))}</text>`).join("");
-  const yFormat = store.model === "raw" ? (value) => `${Number(value).toFixed(1)}조` : (value) => fmt.pct(value, 1);
+  const yFormat = store.model === "raw" ? (value) => `${window.QuantFormat.number(Number(value))}조` : (value) => fmt.pct(value, 1);
   const yTicks = niceTicks(ymin, ymax).map((value) => `<line class="grid-line" x1="${p.l}" y1="${y(value)}" x2="${w - p.r}" y2="${y(value)}"/><text class="axis-label" x="${p.l - 8}" y="${y(value) + 3}" text-anchor="end">${esc(yFormat(value))}</text>`).join("");
   const extremeZones = stateBoundaries ? (() => {
     const lineY = (offset, xValue) => y(predicted(xValue) + offset);
@@ -2183,7 +2183,7 @@ function renderScatter() {
   $("#scatter-subtitle").textContent = `${modelName()} · ${current.date} 기준 · 직전 ${regression.trainingCount || regression.window || points.length - 1}거래일 학습`;
   const zoneAria = stateBoundaries ? `잔차 백분위 ${store.signalExtremeTail}% 이하 극단 공포, ${100 - store.signalExtremeTail}% 이상 극단 탐욕.` : "상태 경계 산출 불가.";
   container.setAttribute("aria-label", `${points.length}개 관측치 ${modelName()} 산점도. ${zoneAria} 평가 종료일 ${current.date} 수익률 ${fmt.pct(current.return1d)}, ${inputLabel} ${store.model === "raw" ? `${fmt.score(current.y, 3)}조원` : fmt.pct(current.y, 3)}.`);
-  const cutoffFormat = store.model === "raw" ? (value) => `${fmt.score(value, 3)}조원` : (value) => `${(Number(value) * 100).toFixed(2)}%p`;
+  const cutoffFormat = store.model === "raw" ? (value) => `${fmt.score(value, 3)}조원` : (value) => `${window.QuantFormat.number(Number(value) * 100)}%p`;
   const zoneNote = stateBoundaries
     ? ` · 잔차 경계: ${store.signalExtremeTail}% ${cutoffFormat(stateBoundaries.extremeFearUpper)}, 20% ${cutoffFormat(stateBoundaries.fearUpper)}, 80% ${cutoffFormat(stateBoundaries.greedLower)}, ${100 - store.signalExtremeTail}% ${cutoffFormat(stateBoundaries.extremeGreedLower)} (n=${stateBoundaries.count})`
     : " · 상태 경계 산출 불가";
@@ -3029,7 +3029,7 @@ function syncSignalSettingControls() {
 }
 
 function signalAppliedStatusText() {
-  return `적용됨 · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail} · 최대 ${store.signalMaxHolding}일`;
+  return `적용됨 · 과거 ${store.signalLookback}일 · 최소 R² ${window.QuantFormat.number(Number(store.signalMinimumR2))} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail} · 최대 ${store.signalMaxHolding}일`;
 }
 
 function updateSignalDraftState() {
@@ -3414,7 +3414,7 @@ function bindControls() {
       } });
       renderAll();
       persistControlState();
-      if (!updateSignalDraftState()) status.textContent = `적용됨 · ${modelName()} · 과거 ${store.signalLookback}일 · 최소 R² ${Number(store.signalMinimumR2).toFixed(2)} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail}`;
+      if (!updateSignalDraftState()) status.textContent = `적용됨 · ${modelName()} · 과거 ${store.signalLookback}일 · 최소 R² ${window.QuantFormat.number(Number(store.signalMinimumR2))} · 극단 ≤${store.signalExtremeTail}/≥${100 - store.signalExtremeTail}`;
     } catch (error) {
       restoreResearchSnapshot(snapshot);
       renderAll();

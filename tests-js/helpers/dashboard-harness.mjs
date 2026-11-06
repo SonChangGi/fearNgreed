@@ -1,3 +1,4 @@
+import QuantFormat from "../fixtures/quant-number.cjs";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
@@ -43,6 +44,7 @@ export async function waitFor(predicate, message, timeoutMs = 90_000) {
 export async function bootDashboard({ url = "http://fearngreed.test/", storage = {}, dataOverrides = {}, setupWindow = null } = {}) {
   const window = new Window({ url });
   windows.add(window);
+  window.QuantFormat = QuantFormat;
   const html = (await readFile(path.join(ROOT, "index.html"), "utf8")).replace(/<script\b[\s\S]*?<\/script>/gi, "");
   window.document.write(html);
   window.document.close();
