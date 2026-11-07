@@ -290,7 +290,11 @@ jobs:
       # degraded status commits both reach the public contract.
       - if: steps.refresh.outputs.outcome == 'success' || steps.refresh.outputs.outcome == 'failure' || steps.refresh.outputs.outcome == 'skipped'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
-      - if: steps.refresh.outputs.outcome == 'success' || steps.refresh.outputs.outcome == 'failure' || steps.refresh.outputs.outcome == 'skipped'
+      - name: Verify final design contract
+        id: design_guard
+        if: steps.refresh.outputs.outcome == 'success' || steps.refresh.outputs.outcome == 'failure' || steps.refresh.outputs.outcome == 'skipped'
+        run: python3 src/fearngreed/design_contract/verify_design.py --html dist/index.html --project fearNgreed
+      - if: ${{ (steps.refresh.outputs.outcome == 'success' || steps.refresh.outputs.outcome == 'failure' || steps.refresh.outputs.outcome == 'skipped') && steps.design_guard.outcome == 'success' }}
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: dist

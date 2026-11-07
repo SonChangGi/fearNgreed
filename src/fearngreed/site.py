@@ -6,6 +6,7 @@ import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from .design_contract.verify_design import verify_html
 from .live_signal import expire_live_signal_file
 from .security import scan_public_files
 
@@ -13,6 +14,7 @@ STATIC_PATHS = ("index.html", "assets", "data", "docs", "schemas")
 
 
 def build_site(root: Path, output: Path) -> None:
+    verify_html((root / "index.html").read_text(encoding="utf-8"), "fearNgreed")
     if output.exists():
         shutil.rmtree(output)
     output.mkdir(parents=True)
@@ -43,6 +45,7 @@ def build_site(root: Path, output: Path) -> None:
     findings = scan_public_files(root)
     if findings:
         raise ValueError("credential material detected in public files")
+    verify_html((output / "index.html").read_text(encoding="utf-8"), "fearNgreed")
     (output / ".nojekyll").write_text("", encoding="utf-8")
 
 
