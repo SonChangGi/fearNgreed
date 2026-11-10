@@ -23,10 +23,19 @@ test('return and drawdown use distinct panels with the same strategy and benchma
 
 test('execution symbols preserve long versus inverse entries, exits and reversals from the ledger',()=>{
  const actions=[{policy:'long_inverse_cash',type:'enter',toPosition:'inverse'},{policy:'long_cash',type:'enter',toPosition:'long'},{policy:'long_cash',type:'exit',toPosition:'cash'},{policy:'long_inverse_cash',type:'reverse',toPosition:'long',includedInWindowMetrics:false}];
- const option=trendOption('history-chart',[{date:'2026-01-02',kospiClose:100,actions}]);
+ const option=trendOption('history-chart',[{date:'2026-01-02',kospiClose:100,longCashValue:1,longShortValue:1,actions}]);
  const entries=option.series.filter(s=>s.name==='진입').flatMap(s=>s.data);
  const inverse=entries.find(p=>p.action.toPosition==='inverse'),long=entries.find(p=>p.action.toPosition==='long');
  assert.equal(inverse.symbolRotate,180);assert.equal(long.symbolRotate,0);assert.notEqual(inverse.itemStyle.color,long.itemStyle.color);
  assert.match(option.series.find(s=>s.name==='청산').symbol,/^path:\/\//);
  const reversal=option.series.find(s=>s.name==='교체').data[0];assert.equal(reversal.label.formatter,'↔');assert.equal(reversal.itemStyle.opacity,.45);
+});
+
+test('history policy filters constrain curves, holding lanes and actions together',()=>{
+ const rows=[{date:'2026-01-02',kospiClose:100,longCashValue:1,longShortValue:1,longCashReturn:.03,longShortReturn:-.02,buyHoldReturn:.04,longCashPosition:'long',longShortPosition:'inverse',actions:[{policy:'long_cash',type:'enter',toPosition:'long'},{policy:'long_inverse_cash',type:'enter',toPosition:'inverse'}]}];
+ for(const [policy,labels]of [['compare',['롱/현금','롱/인버스']],['long_cash',['롱/현금']],['long_inverse_cash',['롱/인버스']]]){
+  const option=trendOption('history-chart',rows,{primaryPolicy:policy});assert.deepEqual(option.yAxis[1].data,labels);
+  assert.deepEqual(option.series.filter(s=>s.type==='line'&&s.yAxisIndex===2).map(s=>s.name),[...labels,'ETF B&H']);
+  const actions=option.series.filter(s=>s.name==='진입').flatMap(s=>s.data);assert.equal(actions.length,labels.length);if(policy!=='compare')assert.ok(actions.every(p=>p.action.policy===policy));
+ }
 });

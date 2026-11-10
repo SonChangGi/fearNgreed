@@ -18,12 +18,13 @@ export function trendOption(id,rows,context={}){
   const priceRows=rows.map(r=>({...r,kospi:finite(r.kospiClose)??finite(r.kospi)}));
   series.push(lineSeries(priceRows,'kospi','KOSPI',COLORS.price));
   for(const [state,label,color,symbol]of [['extreme_fear','공포',COLORS.fear,'circle'],['extreme_greed','탐욕',COLORS.greed,'diamond']])series.push({name:label,type:'scatter',xAxisIndex:0,yAxisIndex:0,symbol,symbolSize:7,itemStyle:{color},data:priceRows.flatMap((r,i)=>r.signal?.state===state?[[i,r.kospi]]:[])});
-  const showCash=rows.some(r=>finite(r.longCashValue)!=null),showInverse=rows.some(r=>finite(r.longShortValue)!=null);
-  yAxis[1]={type:'category',gridIndex:1,data:['롱/현금','롱/인버스'],axisLabel:{color:t.muted,fontSize:10},axisTick:{show:false},axisLine:{show:false}};
-  for(const [field,lane]of [['longCashPosition',0],['longShortPosition',1]]){
+  const showCash=context.primaryPolicy!=='long_inverse_cash'&&rows.some(r=>finite(r.longCashValue)!=null),showInverse=context.primaryPolicy!=='long_cash'&&rows.some(r=>finite(r.longShortValue)!=null);
+  const lanes=[...(showCash?[['longCashPosition','long_cash','롱/현금']]:[]),...(showInverse?[['longShortPosition','long_inverse_cash','롱/인버스']]:[])];
+  yAxis[1]={type:'category',gridIndex:1,data:lanes.map(l=>l[2]),axisLabel:{color:t.muted,fontSize:10},axisTick:{show:false},axisLine:{show:false}};
+  for(const [lane,[field]]of lanes.entries()){
    for(const [position,color]of [['long',COLORS.long],['inverse',COLORS.inverse]])series.push({name:position==='long'?'롱 보유':'인버스 보유',type:'scatter',xAxisIndex:1,yAxisIndex:1,symbol:'rect',symbolSize:[4,14],itemStyle:{color},data:rows.flatMap((r,i)=>r[field]===position?[[i,lane]]:[])});
   }
-  for(const [policy,lane]of [['long_cash',0],['long_inverse_cash',1]])for(const [kind,label,symbol,color]of [['entry','진입','triangle',COLORS.long],['exit','청산','path://M-5,-3 L-3,-5 L0,-2 L3,-5 L5,-3 L2,0 L5,3 L3,5 L0,2 L-3,5 L-5,3 L-2,0 Z',COLORS.price],['switch','교체','diamond',COLORS.inverse]]){
+  for(const [lane,[,policy]]of lanes.entries())for(const [kind,label,symbol,color]of [['entry','진입','triangle',COLORS.long],['exit','청산','path://M-5,-3 L-3,-5 L0,-2 L3,-5 L5,-3 L2,0 L5,3 L3,5 L0,2 L-3,5 L-5,3 L-2,0 Z',COLORS.price],['switch','교체','diamond',COLORS.inverse]]){
    const data=rows.flatMap((r,i)=>(r.actions||[]).filter(a=>a.policy===policy&&((kind==='exit'&&/exit|close|liquid/i.test(a.action||a.type||''))||(kind==='switch'&&/switch|revers/i.test(a.action||a.type||''))||(kind==='entry'&&!/exit|close|liquid|switch|revers/i.test(a.action||a.type||'')))).map(a=>({value:[i,lane],action:a,date:r.date,symbolRotate:kind==='entry'&&(a.toPosition||a.to||a.positionAfterOpen)==='inverse'?180:0,itemStyle:{color:kind==='entry'?((a.toPosition||a.to||a.positionAfterOpen)==='inverse'?COLORS.inverse:COLORS.long):color,opacity:a.includedInWindowMetrics===false?.45:1},label:kind==='switch'?{show:true,formatter:'↔',color:t.surface,fontSize:8}:undefined})));
    if(data.length)series.push({name:label,type:'scatter',xAxisIndex:1,yAxisIndex:1,symbol,symbolSize:kind==='switch'?13:10,itemStyle:{color,borderColor:t.text,borderWidth:1},tooltip:{trigger:'item',formatter:p=>`${p.data.date} · ${label}<br>${p.data.action.signalDate||p.data.action.sourceSignalDate||'—'} 종가 → ${p.data.date} 시가<br>${p.data.action.toTicker||p.data.action.fromTicker||''}`},data});
   }
