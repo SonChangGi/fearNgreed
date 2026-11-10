@@ -218,7 +218,7 @@ test('common design v1.2 keeps compact typography and one closed operations surf
   assert.doesNotMatch(css,/font-weight:\s*(?:8\d\d|9\d\d)/);
   assert.match(sharedNav,/\.quant-shared-nav__link\[aria-current="page"\],[\s\S]*?background:\s*var\(--quant-nav-active-bg\)\s*!important/);
   assert.equal((html.match(/id="status-detail-summary"/g)||[]).length,1);
-  assert.match(html,/<details class="card research-details" id="method">[\s\S]*?id="status-detail-summary">데이터·운영/);
+  assert.match(html,/<details\b(?=[^>]*\bclass="card research-details")(?=[^>]*\bid="method")(?![^>]*\bopen(?:\s|=|>))[^>]*>[\s\S]*?id="status-detail-summary">데이터·운영/);
   assert.ok(html.indexOf('id="quality-strip"') > html.indexOf('id="method"'));
   assert.ok(html.indexOf('id="flow-channels"') > html.indexOf('id="method"'));
   for(const phrase of ['전체 분석 다시 계산','차트 선택은 평가 종료일 성과를 바꾸지 않습니다','현재 전략 신호에는 개인 수급 채널이 반영됩니다','정책 외의 모든 입력은 동일하게 유지됩니다']) assert.doesNotMatch(html,new RegExp(phrase));
