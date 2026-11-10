@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko" data-theme="light" data-project-id="fearngreed">
+<html data-design-engine="0.4.0" lang="ko" data-theme="light" data-project-id="fearngreed">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -80,7 +80,6 @@
       <article class="card wide span-2">
         <div class="card-head">
           <div><div class="title-with-scope"><h2>KOSPI · 신호 · 선택 전략 결과</h2><span id="history-model-scope" class="scope-badge practical">분석 설정 연동</span></div><p>종가 신호 · 다음 시가 체결 · 전략 누적가치</p></div>
-          <button class="latest-button" type="button" data-chart-latest="history-chart">평가 종료일로</button>
         </div>
         <div class="history-chart-toolbar">
           <div id="history-series-controls" class="history-series-controls" role="group" aria-label="강조할 차트 계열">
@@ -96,15 +95,16 @@
         </div>
         <div id="history-chart-meta" class="chart-meta-strip" aria-live="polite"></div>
         <section id="history-selected-snapshot" class="history-selected-snapshot" role="region" aria-live="polite" aria-labelledby="history-selected-title"><h3 id="history-selected-title" class="sr-only">차트 선택일 및 구간 수익률</h3><div id="history-selected-content"><div class="history-selected-placeholder">차트를 준비하는 중입니다.</div></div><button id="history-range-clear" class="history-range-clear" type="button" hidden>구간 선택 해제</button></section>
-        <div class="history-chart-frame">
-          <aside id="history-chart-callout" class="history-chart-callout" aria-live="polite">
+        <details class="qe-chart-tools"><summary>차트 도구</summary><button class="latest-button" type="button" data-chart-latest="history-chart">평가 종료일로</button>          <aside id="history-chart-callout" class="history-chart-callout" aria-live="polite">
             <label for="history-chart-date">차트 선택일<input id="history-chart-date" type="date" aria-describedby="history-help"></label>
             <div><span id="history-callout-series">강조 그래프</span><strong id="history-callout-value">—</strong><small id="history-callout-context">값을 준비하는 중입니다.</small></div>
             <dl><div><dt>선택일 KOSPI 종가</dt><dd id="history-kospi-close">—</dd></div><div><dt>KOSPI 지수 B&amp;H · 표시 첫 종가 대비</dt><dd id="history-kospi-buyhold">—</dd></div></dl>
-          </aside>
+          </aside></details>
+        <div class="history-chart-frame">
+
           <div id="history-chart" class="chart chart-large unified-strategy-chart" role="img" aria-roledescription="대화형 통합 시계열 차트" aria-label="KOSPI 가격, 종가 신호, 다음 시가 실행과 선택 전략 결과" aria-describedby="history-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End Shift+ArrowLeft Shift+ArrowRight Shift+Home Shift+End Escape" tabindex="0"></div>
         </div>
-        <p id="history-help" class="chart-note history-interaction-help">드래그: 구간 수익률 · 클릭: 날짜 선택 · Shift+←/→: 구간 선택 · Esc: 해제</p>
+        <p id="history-help" class="sr-only history-interaction-help">드래그: 구간 수익률 · 클릭: 날짜 선택 · Shift+←/→: 구간 선택 · Esc: 해제</p>
         <details class="chart-guide"><summary>신호·체결 기준</summary><div id="history-exposure-note" class="history-exposure-note" aria-live="polite"></div><p>공포 원·탐욕 마름모: 첫 종가 신호 · 교체: 같은 시가에 청산 후 반대 ETF 매수 · 흐린 체결: 평가 시작일 이전</p></details>
         <details class="data-alternative"><summary>차트 값 표로 보기</summary><div class="table-scroll" id="history-data-table"></div></details>
       </article>

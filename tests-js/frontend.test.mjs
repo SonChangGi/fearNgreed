@@ -462,7 +462,7 @@ test('chart selection snapshot is dynamic while period-end cards and tables stay
   assert.match(app,/\$\{pair\.longTicker\} ETF B&H/);
   assert.match(html,/id="history-selected-snapshot"[^>]*aria-live="polite"/);
   assert.match(html,/id="history-chart"[^>]*aria-describedby="history-help"[^>]*aria-keyshortcuts="[^"]*Shift\+ArrowLeft[^"]*Escape"[^>]*tabindex="0"/);
-  assert.match(html,/id="history-help" class="chart-note history-interaction-help"/);
+  assert.match(html,/id="history-help" class="sr-only history-interaction-help"/);
   assert.match(html,/드래그: 구간 수익률[\s\S]*Shift\+←\/→[\s\S]*Esc/);
   assert.doesNotMatch(html,/차트 선택은 평가 종료일 성과를 바꾸지 않습니다/);
   assert.match(html,/평가 종료일 성과/);
