@@ -4,13 +4,13 @@ const finite=v=>typeof v==='number'&&Number.isFinite(v)?v:null;
 const pct=v=>finite(v)==null?'—':`${(v*100).toLocaleString('ko-KR',{maximumFractionDigits:2})}%`;
 const number=v=>finite(v)==null?'—':v.toLocaleString('ko-KR',{maximumFractionDigits:2});
 export function lineSeries(rows,key,name,color,axis=0,percent=false,extra={}){
-  return {name,type:'line',xAxisIndex:axis,yAxisIndex:axis,data:rows.map(r=>finite(r[key])),showSymbol:false,connectNulls:false,symbolSize:7,lineStyle:{width:2.2,color},itemStyle:{color},emphasis:{focus:'series'},tooltip:{valueFormatter:percent?pct:number},...extra};
+  return {name,type:'line',xAxisIndex:axis,yAxisIndex:axis,data:rows.map(r=>finite(r[key])),showSymbol:false,connectNulls:false,symbolSize:7,lineStyle:{width:2.2,color},itemStyle:{color},emphasis:{focus:'none',lineStyle:{width:3.4}},tooltip:{valueFormatter:percent?pct:number},...extra};
 }
 function palette(){const light=document.documentElement.dataset.theme==='light';return {text:light?'#26383e':'#edf3f2',muted:light?'#52676e':'#a6b4b6',grid:light?'#dce3e5':'#2b363c',surface:light?'#ffffff':'#20282c'};}
 export function trendOption(id,rows,context={}){
  const t=palette(), history=id==='history-chart',equity=id==='equity-chart',panels=history?3:equity?2:1;
  const heights=history?[[48,220],[310,72],[440,205]]:equity?[[46,225],[330,190]]:[[44,245]];
- const grid=heights.map(([top,height])=>({left:12,right:30,top,height,containLabel:true}));
+ const grid=heights.map(([top,height])=>({left:60,right:24,top,height,containLabel:false}));
  const xAxis=grid.map((_,i)=>({type:'category',gridIndex:i,data:rows.map(r=>r.date),boundaryGap:false,axisLine:{lineStyle:{color:t.grid}},axisTick:{show:false},axisLabel:{color:t.muted,hideOverlap:true,fontSize:11,formatter:v=>v.slice(2),show:i===panels-1},axisPointer:{show:true}}));
  const yAxis=grid.map((_,i)=>({type:'value',gridIndex:i,scale:true,axisLabel:{color:t.muted,fontSize:11,formatter:history?i===0?number:i===1?number:pct:equity?pct:number},splitNumber:4,splitLine:{lineStyle:{color:t.grid,type:'dashed'}}}));
  let series=[],title=[];
