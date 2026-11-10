@@ -1,4 +1,4 @@
-import { mountTrend, mountScatter } from './chart-engine.js?v=797171855a7da825';
+import { mountTrend, mountScatter } from './chart-engine.js?v=a712ac472fa2ba62';
 import {
   ACTUAL_ETF_PAIRS,
   DEFAULT_LONG_EXIT_PERCENTILE,
@@ -3809,10 +3809,6 @@ if (typeof document !== "undefined") {
    if(!region.hasAttribute('tabindex'))region.tabIndex=0;
    if(!region.hasAttribute('role'))region.setAttribute('role','region');
    if(!region.hasAttribute('aria-label'))region.setAttribute('aria-label',region.querySelector('caption')?.textContent.trim()||'데이터 표');
-  }
-  for(const facet of doc.querySelectorAll('.chart-facet')){
-   const caption=facet.querySelector('figcaption');
-   if(caption&&!caption.querySelector('.qe-native-tools')){const details=doc.createElement('details');details.className='qe-native-tools';const summary=doc.createElement('summary');summary.textContent='차트 도구';details.append(summary);caption.append(details);}
   }
  };
  let pending=false;new view.MutationObserver(()=>{if(pending)return;pending=true;view.requestAnimationFrame(()=>{pending=false;enhance();});}).observe(doc.body,{childList:true,subtree:true});enhance();

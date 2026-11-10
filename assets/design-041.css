@@ -57,3 +57,8 @@ html[data-design-engine] body .card-head{margin-bottom:20px}
 html[data-design-engine] body .history-chart-meta{border:0;background:transparent;padding-inline:0}
 html[data-design-engine] body .history-chart-frame{border:0!important;background:transparent!important;border-radius:0!important}
 html[data-design-engine] body .qe-live-chart{background:transparent!important}
+
+/* Plot gestures own zoom and range selection. */
+html[data-theme] body :is(.qd-focus-button,.qd-focus-tools) {display:none!important}
+[data-quant-touch-chart]:focus-visible {outline:2px solid var(--qs-focus);outline-offset:3px}
+[data-quant-touch-chart][data-quant-gesture=compare] .qe-point-tooltip {visibility:hidden!important}
