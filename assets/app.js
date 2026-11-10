@@ -1,4 +1,4 @@
-import { mountTrend, mountScatter } from './chart-engine.js?v=fb09139f7b6b21c9';
+import { mountTrend, mountScatter } from './chart-engine.js?v=797171855a7da825';
 import {
   ACTUAL_ETF_PAIRS,
   DEFAULT_LONG_EXIT_PERCENTILE,

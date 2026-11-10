@@ -9,12 +9,13 @@
   <title>Fear &amp; Greed Flow Lab</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <script>try{const k="quant-research-theme",a=["quant-calm-theme","quant-dashboard-theme","dram-price-theme"],v=x=>x==="dark"||x==="light",q=new URLSearchParams(location.search).get("theme");let s=null,p=null;try{const c=localStorage.getItem(k);s=v(c)?c:a.map(x=>localStorage.getItem(x)).find(v);if(v(s)&&c!==s)localStorage.setItem(k,s);a.forEach(x=>localStorage.removeItem(x))}catch(_){}try{p=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}catch(_){}document.documentElement.dataset.theme=v(q)?q:(s||p||"light")}catch(_){}</script>
-  <link rel="stylesheet" href="assets/styles.css?v=20261110-041-847a1fc7abe2">
+  <link rel="stylesheet" href="assets/styles.css?v=20261110-042-5cf89975c6c3">
   <link rel="stylesheet" href="assets/shared-nav.css?v=20260728-shared-nav">
   <link rel="stylesheet" href="https://sonchanggi.github.io/quant-dashboard/shared/navigation/v1/nav.css">
 
-<link rel="stylesheet" href="assets/design-041.css?v=98d02c2395bb0ed4">
-<link rel="stylesheet" href="https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.2.0/fearNgreed.css" data-quant-first-paint-css>
+<link rel="stylesheet" href="assets/design-041.css?v=7ef7e7305a1858b3">
+<link rel="stylesheet" href="https://sonchanggi.github.io/quant-dashboard/shared/design/tokens/0.4.2/shell.css?v=d3ef280dc5d3" data-quant-design="0.4.2">
+  <link rel="stylesheet" href="https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.2.0/fearNgreed.css" data-quant-first-paint-css>
 <script src="https://sonchanggi.github.io/quant-dashboard/shared/design/startup/1.2.0/start.js" data-quant-design-project="fearNgreed"></script>
 </head>
 <body id="top" class="has-quant-shared-nav">
@@ -79,7 +80,7 @@
     </section>
 
     <section class="chart-grid" aria-label="핵심 차트">
-      <article class="card wide span-2">
+      <article data-quant-card class="card wide span-2">
         <div class="card-head">
           <div><div class="title-with-scope"><h2>KOSPI · 신호 · 선택 전략 결과</h2><span id="history-model-scope" class="scope-badge practical">분석 설정 연동</span></div><p>종가 신호 · 다음 시가 체결 · 전략 누적가치</p></div>
         </div>
@@ -111,7 +112,7 @@
         <details class="data-alternative"><summary>차트 값 표로 보기</summary><div class="table-scroll" id="history-data-table"></div></details>
       </article>
 
-      <article class="card">
+      <article data-quant-card class="card">
         <div class="card-head"><div><div class="title-with-scope"><h2 id="scatter-title">수익률 × 거래대금 대비 개인 순매수 비율</h2><span id="scatter-model-scope" class="scope-badge">선택 모형</span></div><p id="scatter-subtitle">학습 표본 · 회귀선 · 잔차</p></div></div>
         <div class="legend"><span><i class="legend-dot observation"></i>학습 관측</span><span><i class="legend-dot current"></i>평가 종료일 관측</span><span><i class="legend-line regression"></i>회귀선</span><span id="scatter-zone-legend-fear"><i class="legend-zone fear"></i>극단적 공포 영역</span><span id="scatter-zone-legend-greed"><i class="legend-zone greed"></i>극단적 탐욕 영역</span></div>
         <div id="scatter-chart" class="chart" role="img" aria-roledescription="대화형 산점도" aria-label="KOSPI 수익률과 개인 순매수 산점도" aria-describedby="scatter-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div>
@@ -120,7 +121,7 @@
         <details class="data-alternative"><summary>최근 관측값 표로 보기</summary><div class="table-scroll" id="scatter-data-table"></div></details>
       </article>
 
-      <article class="card">
+      <article data-quant-card class="card">
         <div class="card-head"><div><div class="title-with-scope"><h2>선택 트랙 잔차 백분위</h2><span id="residual-model-scope" class="scope-badge practical">분석 설정 연동</span></div><p>회색 점선: 최소 R² 미달</p></div><button class="latest-button" type="button" data-chart-latest="residual-chart">기간 끝으로</button></div>
         <div id="residual-chart" class="chart" role="img" aria-roledescription="대화형 시계열 차트" aria-label="규모보정 회귀 잔차의 과거 분포 백분위 시계열" aria-describedby="residual-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div>
         <p id="residual-help" class="sr-only">화살표 키로 날짜를 이동합니다. 차트에서 확대하거나 이동할 수 있습니다.</p>
@@ -202,14 +203,14 @@
         <div class="control-group"><span class="control-label">수익률 자산</span><div class="segmented" role="group" aria-label="사건 연구 자산"><button type="button" data-event-asset="KOSPI" aria-pressed="true">KOSPI</button><button type="button" data-event-asset="226490" aria-pressed="false">226490</button><button type="button" data-event-asset="069500" aria-pressed="false">069500</button></div></div>
         <div class="control-group"><span class="control-label">사건 표본</span><div class="segmented" role="group" aria-label="사건 표본"><button type="button" data-event-sample="nonOverlapping20d" aria-pressed="false">20일 비중첩</button><button type="button" data-event-sample="all" aria-pressed="true">전체 사건</button></div></div>
       </div>
-      <article class="card event-visual-card">
+      <article data-quant-card class="card event-visual-card">
         <div class="card-head"><div><h3>평균 선행수익률과 95% 신뢰구간</h3><p id="event-visual-subtitle">결과 불러오는 중…</p></div></div>
         <div class="legend"><span><i class="legend-dot fear"></i>극단 공포 평균</span><span><i class="legend-dot greed"></i>극단 탐욕 평균</span><span><i class="legend-line interval"></i>95% CI</span><span id="event-benchmark-legend"><i class="legend-dot benchmark"></i>비교 벤치마크</span></div>
         <div id="event-ci-chart" class="chart event-ci-chart" role="img" aria-roledescription="대화형 사건 신뢰구간 차트" aria-label="극단 상태 이후 평균 선행수익률과 95% 신뢰구간" aria-describedby="event-chart-help event-benchmark-note" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div>
         <p id="event-chart-help" class="sr-only">포인터로 사건 요약을 확인하고, 키보드는 좌우 화살표·Home·End를 사용합니다.</p>
         <p id="event-benchmark-note" class="chart-note"></p>
       </article>
-      <article class="card table-card">
+      <article data-quant-card class="card table-card">
         <div class="table-toolbar table-toolbar-actions"><button type="button" data-export-table="event-table">CSV 저장</button></div>
         <div class="table-scroll"><table id="event-table"><caption>KOSPI 20일 비중첩 극단 상태 이후 선행수익률</caption><thead><tr><th scope="col">상태</th><th scope="col">기간</th><th scope="col">사건 수</th><th scope="col">평균</th><th scope="col">중앙값</th><th scope="col">상승 비중</th><th scope="col">평균 95% CI</th></tr></thead><tbody></tbody></table></div>
         <p id="event-note" class="chart-note padded-note"></p>
@@ -219,23 +220,23 @@
     <section id="strategy" class="section-block" aria-labelledby="strategy-title">
       <div class="section-head"><div><div class="title-with-scope"><h2 id="strategy-title">롱 / 현금 · 롱 / 인버스 과거검증</h2><span id="strategy-model-scope" class="scope-badge fixed">실전 신호</span></div></div><p class="source-line">ETF 익일 시가 체결 · 현금 수익률 0%</p></div>
       <div class="strategy-grid">
-        <article class="card secondary-detail-card"><div class="card-head"><div><h3 id="equity-title">선택 모형 누적수익률과 낙폭</h3><p id="equity-subtitle">수익률 · 낙폭</p></div><button class="latest-button" type="button" data-chart-latest="equity-chart">기간 끝으로</button></div><div class="legend"><span id="equity-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="equity-legend-long-inverse"><i class="legend-line longshort"></i>롱 / 인버스 / 현금</span><span><i class="legend-line buyhold"></i>롱 ETF B&amp;H</span></div><div id="equity-chart" class="chart chart-stack" role="img" aria-roledescription="대화형 보조 성과 차트" aria-label="선택 실제 ETF 페어의 롱 현금, 롱 인버스 현금, ETF 매수·보유 누적수익률 및 낙폭 상세" aria-describedby="equity-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div><p id="equity-help" class="sr-only">화살표 키로 날짜를 이동합니다.</p><details class="data-alternative"><summary>차트 끝값 표로 보기</summary><div class="table-scroll" id="equity-data-table"></div></details></article>
-        <article class="card"><div class="card-head"><div><h3>평가 종료일 성과</h3><p id="backtest-card-subtitle">결과 불러오는 중…</p></div></div><div id="backtest-cards" class="backtest-cards" aria-live="polite"></div></article>
+        <article data-quant-card class="card secondary-detail-card"><div class="card-head"><div><h3 id="equity-title">선택 모형 누적수익률과 낙폭</h3><p id="equity-subtitle">수익률 · 낙폭</p></div><button class="latest-button" type="button" data-chart-latest="equity-chart">기간 끝으로</button></div><div class="legend"><span id="equity-legend-long-cash"><i class="legend-line strategy"></i>롱 / 현금</span><span id="equity-legend-long-inverse"><i class="legend-line longshort"></i>롱 / 인버스 / 현금</span><span><i class="legend-line buyhold"></i>롱 ETF B&amp;H</span></div><div id="equity-chart" class="chart chart-stack" role="img" aria-roledescription="대화형 보조 성과 차트" aria-label="선택 실제 ETF 페어의 롱 현금, 롱 인버스 현금, ETF 매수·보유 누적수익률 및 낙폭 상세" aria-describedby="equity-help" aria-keyshortcuts="ArrowLeft ArrowRight Home End" tabindex="0"></div><p id="equity-help" class="sr-only">화살표 키로 날짜를 이동합니다.</p><details class="data-alternative"><summary>차트 끝값 표로 보기</summary><div class="table-scroll" id="equity-data-table"></div></details></article>
+        <article data-quant-card class="card"><div class="card-head"><div><h3>평가 종료일 성과</h3><p id="backtest-card-subtitle">결과 불러오는 중…</p></div></div><div id="backtest-cards" class="backtest-cards" aria-live="polite"></div></article>
       </div>
-      <article id="open-trade-card" class="card open-trade-card" aria-labelledby="open-trade-title">
+      <article id="open-trade-card" data-quant-card class="card open-trade-card" aria-labelledby="open-trade-title">
         <div class="card-head"><div><h3 id="open-trade-title">평가 종료일 현재 거래</h3><p id="open-trade-subtitle">평가 종료일 종가 기준</p></div></div>
         <div id="open-trades" class="open-trades" aria-live="polite"></div>
       </article>
-      <article id="policy-comparison-card" class="card proxy-comparison-card" hidden><div class="card-head"><div><h3>포지션 정책 나란히 비교</h3><p id="policy-comparison-subtitle">동일 조건 · 정책 비교</p></div></div><div id="policy-comparison" class="proxy-comparison" aria-live="polite"></div><div id="strategy-exposure" class="strategy-exposure" aria-label="정책별 롱 인버스 현금 노출도"></div><div id="exit-sensitivity" class="exit-sensitivity"></div></article>
-      <article id="proxy-comparison-card" class="card proxy-comparison-card" hidden>
+      <article id="policy-comparison-card" data-quant-card class="card proxy-comparison-card" hidden><div class="card-head"><div><h3>포지션 정책 나란히 비교</h3><p id="policy-comparison-subtitle">동일 조건 · 정책 비교</p></div></div><div id="policy-comparison" class="proxy-comparison" aria-live="polite"></div><div id="strategy-exposure" class="strategy-exposure" aria-label="정책별 롱 인버스 현금 노출도"></div><div id="exit-sensitivity" class="exit-sensitivity"></div></article>
+      <article id="proxy-comparison-card" data-quant-card class="card proxy-comparison-card" hidden>
         <div class="card-head"><div><h3>1X · 2X 실제 ETF 페어 비교</h3><p id="proxy-comparison-subtitle">동일 신호·비용 · 4개 ETF 공통 기간</p></div></div>
         <div id="proxy-comparison" class="proxy-comparison" aria-live="polite"></div>
       </article>
-      <article class="card table-card"><div class="table-toolbar table-toolbar-actions"><button type="button" data-export-table="backtest-table">CSV 저장</button></div><div class="table-scroll"><table id="backtest-table"><caption>선택한 실제 ETF 백테스트의 전략 성과 상세</caption><thead><tr><th scope="col">정책 / ETF 페어 / 변형</th><th scope="col">기간</th><th scope="col">총수익률</th><th scope="col">CAGR</th><th scope="col">변동성</th><th scope="col">Sharpe</th><th scope="col">MDD</th><th scope="col">승률</th><th scope="col">롱 ETF</th><th scope="col">인버스 ETF</th><th scope="col">현금</th><th scope="col">총 보유비율</th><th scope="col">순 자본배분</th><th scope="col">동일 타이밍 0bp</th><th scope="col">위험 일치 BH</th><th scope="col">연환산 매매측수*</th><th scope="col">거래 수</th><th scope="col">평균 보유</th><th scope="col">롱 ETF Buy &amp; Hold</th><th scope="col">BH MDD</th></tr></thead><tbody></tbody></table></div><details class="table-method-note"><summary>지표 계산 기준</summary><p>보유비율·자본배분: 보유기간 비중 · 연환산 매매측수: 목표 포지션 변화의 절댓값 (ETF 교체 2측)</p></details></article>
-      <article class="card table-card"><div class="card-head"><div><h3>선택 모형 최근 실제 ETF 거래</h3><p id="trade-card-subtitle">종가 신호 → 다음 시가 체결</p></div></div><div class="table-toolbar"><label for="trade-filter">거래 검색</label><input id="trade-filter" type="search" placeholder="정책·ETF·방향·신호일·체결일·근거" data-filter-table="trade-table" autocomplete="off"><span id="trade-filter-status" class="table-filter-status" aria-live="polite"></span><button type="button" data-export-table="trade-table">CSV 저장</button></div><div class="table-scroll"><table id="trade-table"><caption>선택한 정책·실제 ETF 페어·비용·연구 트랙·기간의 최근 거래내역</caption><thead><tr><th scope="col">정책</th><th scope="col">방향</th><th scope="col">실제 ETF</th><th scope="col">진입 신호일(종가)</th><th scope="col">진입 체결일(시가)</th><th scope="col">청산 신호일(종가)</th><th scope="col">청산 체결일(시가)</th><th scope="col">보유일</th><th scope="col">청산 근거</th><th scope="col">비용 후 수익률</th></tr></thead><tbody></tbody></table></div></article>
+      <article data-quant-card class="card table-card"><div class="table-toolbar table-toolbar-actions"><button type="button" data-export-table="backtest-table">CSV 저장</button></div><div class="table-scroll"><table id="backtest-table"><caption>선택한 실제 ETF 백테스트의 전략 성과 상세</caption><thead><tr><th scope="col">정책 / ETF 페어 / 변형</th><th scope="col">기간</th><th scope="col">총수익률</th><th scope="col">CAGR</th><th scope="col">변동성</th><th scope="col">Sharpe</th><th scope="col">MDD</th><th scope="col">승률</th><th scope="col">롱 ETF</th><th scope="col">인버스 ETF</th><th scope="col">현금</th><th scope="col">총 보유비율</th><th scope="col">순 자본배분</th><th scope="col">동일 타이밍 0bp</th><th scope="col">위험 일치 BH</th><th scope="col">연환산 매매측수*</th><th scope="col">거래 수</th><th scope="col">평균 보유</th><th scope="col">롱 ETF Buy &amp; Hold</th><th scope="col">BH MDD</th></tr></thead><tbody></tbody></table></div><details class="table-method-note"><summary>지표 계산 기준</summary><p>보유비율·자본배분: 보유기간 비중 · 연환산 매매측수: 목표 포지션 변화의 절댓값 (ETF 교체 2측)</p></details></article>
+      <article data-quant-card class="card table-card"><div class="card-head"><div><h3>선택 모형 최근 실제 ETF 거래</h3><p id="trade-card-subtitle">종가 신호 → 다음 시가 체결</p></div></div><div class="table-toolbar"><label for="trade-filter">거래 검색</label><input id="trade-filter" type="search" placeholder="정책·ETF·방향·신호일·체결일·근거" data-filter-table="trade-table" autocomplete="off"><span id="trade-filter-status" class="table-filter-status" aria-live="polite"></span><button type="button" data-export-table="trade-table">CSV 저장</button></div><div class="table-scroll"><table id="trade-table"><caption>선택한 정책·실제 ETF 페어·비용·연구 트랙·기간의 최근 거래내역</caption><thead><tr><th scope="col">정책</th><th scope="col">방향</th><th scope="col">실제 ETF</th><th scope="col">진입 신호일(종가)</th><th scope="col">진입 체결일(시가)</th><th scope="col">청산 신호일(종가)</th><th scope="col">청산 체결일(시가)</th><th scope="col">보유일</th><th scope="col">청산 근거</th><th scope="col">비용 후 수익률</th></tr></thead><tbody></tbody></table></div></article>
     </section>
 
-    <details class="card research-details" id="method">
+    <details data-quant-card class="card research-details" id="method">
       <summary id="status-detail-summary">데이터·운영</summary>
       <div class="details-grid">
         <section class="span-details operations-status"><h3>운영 상태</h3><p id="status-note">데이터 상태를 읽는 중입니다.</p></section>
@@ -288,7 +289,7 @@
   <div id="tooltip" class="tooltip" role="status" aria-live="polite" hidden></div>
 
   <script src="assets/vendor/echarts.min.js?v=b66b25aeb4df84e3" defer></script>
-  <script type="module" src="assets/app.js?v=20261110-041-847a1fc7abe2"></script>
+  <script type="module" src="assets/app.js?v=20261110-042-5cf89975c6c3"></script>
   <script defer src="https://sonchanggi.github.io/quant-dashboard/shared/navigation/v1/nav.js" data-quant-project="fearngreed"></script>
 </body>
 </html>
