@@ -20,3 +20,13 @@ test('return and drawdown use distinct panels with the same strategy and benchma
  assert.equal(option.grid.length,2);assert.equal(option.yAxis[1].max,0);
  const strategy=option.series.filter(s=>s.name==='롱/현금');assert.equal(strategy[0].lineStyle.color,strategy[1].lineStyle.color);assert.deepEqual(strategy[1].data,[0,-.1]);
 });
+
+test('execution symbols preserve long versus inverse entries, exits and reversals from the ledger',()=>{
+ const actions=[{policy:'long_inverse_cash',type:'enter',toPosition:'inverse'},{policy:'long_cash',type:'enter',toPosition:'long'},{policy:'long_cash',type:'exit',toPosition:'cash'},{policy:'long_inverse_cash',type:'reverse',toPosition:'long',includedInWindowMetrics:false}];
+ const option=trendOption('history-chart',[{date:'2026-01-02',kospiClose:100,actions}]);
+ const entries=option.series.filter(s=>s.name==='진입').flatMap(s=>s.data);
+ const inverse=entries.find(p=>p.action.toPosition==='inverse'),long=entries.find(p=>p.action.toPosition==='long');
+ assert.equal(inverse.symbolRotate,180);assert.equal(long.symbolRotate,0);assert.notEqual(inverse.itemStyle.color,long.itemStyle.color);
+ assert.match(option.series.find(s=>s.name==='청산').symbol,/^path:\/\//);
+ const reversal=option.series.find(s=>s.name==='교체').data[0];assert.equal(reversal.label.formatter,'↔');assert.equal(reversal.itemStyle.opacity,.45);
+});
