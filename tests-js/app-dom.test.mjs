@@ -534,8 +534,8 @@ test("integrated chart exploration changes only local chart context", { concurre
   assert.equal(window.location.href, initialUrl);
   assert.equal(window.localStorage.getItem("fearngreed-controls-v8"), initialStorage);
 
-  click(window, '[data-history-series="long_cash"]');
-  assert.equal(document.querySelector('[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true");
+  click(window, 'button[data-history-series="long_cash"]');
+  assert.equal(document.querySelector('button[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true");
   assert.match(document.querySelector("#history-callout-series").textContent, /롱 \/ 현금/);
   assert.equal(signature(document, fixedOutputs), initialOutputs);
   assert.equal(window.location.href, initialUrl);
@@ -601,12 +601,12 @@ test("integrated chart exploration changes only local chart context", { concurre
   click(window, '[data-chart-latest="history-chart"]');
   assert.equal(dateInput.value, dateInput.max);
 
-  click(window, '[data-history-series="long_inverse_cash"]');
+  click(window, 'button[data-history-series="long_inverse_cash"]');
   click(window, '[data-backtest-policy="long_cash"]');
-  assert.equal(document.querySelector('[data-history-series="long_inverse_cash"]').hidden, true);
-  assert.equal(document.querySelector('[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true");
+  assert.equal(document.querySelector('button[data-history-series="long_inverse_cash"]').hidden, true);
+  assert.equal(document.querySelector('button[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true");
   click(window, '[data-backtest-policy="compare"]');
-  assert.equal(document.querySelector('[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true", "a hidden series must not revive when compare mode returns");
+  assert.equal(document.querySelector('button[data-history-series="long_cash"]').getAttribute("aria-pressed"), "true", "a hidden series must not revive when compare mode returns");
 });
 
 test("scatter and event charts select both letterboxed edges and reposition their marker after resize", { concurrency: false, timeout: 120_000 }, async () => {
