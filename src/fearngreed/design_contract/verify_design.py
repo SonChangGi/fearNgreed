@@ -75,7 +75,7 @@ def verify_html(html, project, navigation="static"):
         "stylesheet must immediately precede startup in head",
     )
     preferences_url = (
-        "https://sonchanggi.github.io/quant-dashboard/shared/preferences/1.0.0/preferences.js"
+        "https://sonchanggi.github.io/quant-dashboard/shared/preferences/1.0.1/preferences.js"
     )
     preferences = [
         (i, a, head)
