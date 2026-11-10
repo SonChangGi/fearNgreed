@@ -15,3 +15,7 @@ UI 변경은 데이터·계산·수집 일정과 분리하며, 배포 전 프로
 ## 생성 경로
 
 운영 화면은 `python -m fearngreed.site --output dist`로 생성한다. 루트 HTML과 활성 `assets/`를 입력으로 사용하며 직접 작성한 대체 빌드를 배포하지 않는다.
+
+## 공통 환경설정
+
+`shared/preferences/1.0.0/preferences.js`를 head에서 startup보다 먼저 동기로 한 번 로드한다. 기존 즐겨찾기·메뉴 접힘·보기 설정을 복원하고, 공통 메뉴가 준비되면 탭 및 연결 사이트의 상태를 함께 반영한다. startup 1.2.0과 데이터·수집 계약은 유지한다.
