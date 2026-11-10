@@ -1,0 +1,20 @@
+/* 0.4.1 application: plots fit their viewport; domain colours remain semantic. */
+html body .chart.qe-live-chart{width:100%;min-width:0;max-width:100%;height:auto;min-height:0;overflow:hidden;scroll-behavior:auto;touch-action:pan-y;position:relative}
+html body .qe-live-chart .qe-plot{width:100%;min-width:0;overflow:hidden;position:relative}
+html body .qe-live-chart svg{min-width:0!important;width:auto;max-width:none;height:auto;aspect-ratio:auto}
+html body .qe-live-chart svg text{font-family:inherit}
+.qe-live-tools{display:flex;justify-content:flex-end;align-items:flex-start;gap:8px;flex-wrap:wrap;margin-top:8px;min-width:0}
+.qe-live-tools:empty{display:none}.qe-live-tools button,.qe-live-tools summary,.qe-live-tools input{min-height:44px;max-width:100%;font:inherit;font-size:12px}.qe-live-tools details{padding:0;border:0}.qe-live-tools summary{display:flex;align-items:center;cursor:pointer;color:var(--muted)}
+.qe-live-tools details[open]{display:flex;flex-wrap:wrap;gap:8px}.qe-live-tools button[hidden]{display:none!important}
+.history-chart-toolbar{align-items:flex-start;gap:12px}.history-series-controls{flex-wrap:wrap}
+.history-chart-frame{min-width:0}.card,.card-head>div{min-width:0}.card-head h2,.card-head h3{overflow-wrap:anywhere;line-height:1.45}
+.metric-card,.backtest-metric,.result-card{padding:20px!important}.metric-card strong,.backtest-metric strong{font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.table-scroll{max-width:100%;overscroll-behavior-x:contain}.table-scroll table{font-variant-numeric:tabular-nums}.table-scroll th{position:sticky;top:0;background:var(--surface)}
+html body .history-selected-snapshot:not(.qr-native-readout){display:block;margin:12px 0}.history-selected-values{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.chart-help{display:none}
+@media(max-width:600px){
+ .card{padding:16px!important}.card-head{gap:12px;align-items:flex-start}.card-head h2,.card-head h3{font-size:16px}
+ .history-chart-toolbar{display:block}.history-series-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.history-series-controls button{min-height:44px;white-space:normal;text-align:left}
+ .history-chart-meta{grid-template-columns:1fr}.table-scroll td,.table-scroll th{padding:12px}
+ .metric-card,.backtest-metric,.result-card{padding:16px!important}.qe-live-tools input{width:135px}
+}

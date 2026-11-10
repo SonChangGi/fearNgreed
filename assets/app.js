@@ -1,3 +1,4 @@
+import { mountTrend, mountScatter } from './chart-engine.js';
 import {
   ACTUAL_ETF_PAIRS,
   DEFAULT_LONG_EXIT_PERCENTILE,
@@ -1112,6 +1113,7 @@ function showTooltip(chart, text, point = null) {
 }
 
 function attachChartNavigation(chart, items, formatter, geometry = {}) {
+  if (mountTrend(chart, items.filter(Boolean), formatter, geometry, {cut:store.signalExtremeTail,primaryPolicy:store.backtestPolicy,primaryLabel:policyLabel()})) return;
   const valid = items.filter(Boolean);
   const fallbackIndex = Math.max(0, valid.length - 1);
   const latestIndex = Number.isInteger(geometry.latestIndex) ? Math.max(0, Math.min(fallbackIndex, geometry.latestIndex)) : fallbackIndex;
@@ -1120,7 +1122,7 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
   const rangeSelection = geometry.rangeSelection === true && typeof geometry.onRangeSelect === "function";
   if(!rangeSelection&&valid.length){
     const groups=chart.id==='equity-chart'?[[['value','전략','relative',1,'strategyReturn'],['longShortValue','비교 전략','relative',1,'longShortReturn'],['buyHoldValue','ETF B&H','relative',1,'buyHoldReturn']],[['drawdown','전략 낙폭','pp',100],['longShortDrawdown','비교 전략 낙폭','pp',100],['buyHoldDrawdown','ETF 낙폭','pp',100]]]:chart.id==='residual-chart'?[[['selectedPercentile','잔차 백분위','absolute',1]]]:[];
-    [...chart.querySelectorAll('svg')].forEach((svg,n)=>{const keys=groups[n];if(!keys)return;window.QuantRange?.svg({id:'fear-'+chart.id+(n?'-drawdown':''),element:svg,host:chart.parentElement,currentIndex:()=>chart._chartIndex,domain:valid.map(r=>({key:r.date,label:r.date})),series:keys.filter(([k])=>valid.some(r=>Number.isFinite(r[k]))).map(([key,label,measure,scale,pointField])=>({id:key,label,measure,scale,unit:measure==='pp'?'%':key==='selectedPercentile'?'백분위점':'배',...(pointField?{pointUnit:'%',pointScale:100}:{}),points:valid.map(r=>({key:r.date,value:r[key],...(pointField?{pointValue:r[pointField]}:{})}))})),x:i=>(geometry.plotLeft||0)+i/Math.max(1,valid.length-1)*((geometry.plotRight||geometry.viewBoxWidth)-(geometry.plotLeft||0))})});
+    [...chart.querySelectorAll('svg')].forEach((svg,n)=>{const keys=groups[n];if(!keys)return;(!window.echarts ? window.QuantRange : null)?.svg({id:'fear-'+chart.id+(n?'-drawdown':''),element:svg,host:chart.parentElement,currentIndex:()=>chart._chartIndex,domain:valid.map(r=>({key:r.date,label:r.date})),series:keys.filter(([k])=>valid.some(r=>Number.isFinite(r[k]))).map(([key,label,measure,scale,pointField])=>({id:key,label,measure,scale,unit:measure==='pp'?'%':key==='selectedPercentile'?'백분위점':'배',...(pointField?{pointUnit:'%',pointScale:100}:{}),points:valid.map(r=>({key:r.date,value:r[key],...(pointField?{pointValue:r[pointField]}:{})}))})),x:i=>(geometry.plotLeft||0)+i/Math.max(1,valid.length-1)*((geometry.plotRight||geometry.viewBoxWidth)-(geometry.plotLeft||0))})});
   }
   let dragState = null;
   let suppressClick = false;
@@ -1358,6 +1360,8 @@ function attachChartNavigation(chart, items, formatter, geometry = {}) {
 }
 
 function attachScatterNavigation(chart, items, formatter, viewBox) {
+  const regression = chart.id === "scatter-chart" ? regressionPayload() : {};
+  if (mountScatter(chart, items.map(item=>item.row || item), formatter, {raw:store.model === "raw", ...regression,bounds:chart.id === "scatter-chart" ? publishedScatterStateBoundaries():null})) return;
   const valid = items.filter((item) => Number.isFinite(item.plotX) && Number.isFinite(item.plotY));
   chart._resizeObserver?.disconnect();
   chart._chartItems = valid;
@@ -1913,6 +1917,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     const shownSeries = preview ? historyChartState.preview(seriesId, visibleSeriesIds) : historyChartState.activate(seriesId, visibleSeriesIds);
     const persistedSeries = historyChartState.activeSeries;
     container.dataset.activeSeries = shownSeries;
+    if(container._quantEngine){container._quantEngine.dispatchAction({type:'downplay'});container._quantEngine.dispatchAction({type:'highlight',seriesName:({kospi:'KOSPI',long_cash:'롱/현금',long_inverse_cash:'롱/인버스',buyhold:'ETF B&H'})[shownSeries]});}
     container.classList.add("has-active-series");
     container.querySelectorAll(".history-series").forEach((node) => node.classList.toggle("is-active", node.dataset.historySeries === shownSeries));
     $$("#history-series-controls [data-history-series]").forEach((button) => {
@@ -1986,7 +1991,7 @@ function renderHistory(scenarioBundle = selectedScenarioBundle()) {
     const fields={kospi:r=>r.kospiClose??r.kospi,long_cash:r=>r.longCashValue,long_inverse_cash:r=>r.longShortValue,buyhold:r=>r.buyHoldValue};
     rangeHud?.present({start:{index:snapshot.startIndex},end:{index:snapshot.endIndex}}, {kind:'timeseries',a:snapshot.startIndex,b:snapshot.endIndex,start:{key:snapshot.startDate,label:snapshot.startDate},end:{key:snapshot.endDate,label:snapshot.endDate},count:snapshot.count,series:visibleSeriesIds.map(id=>({id,label:historySnapshotSeriesLabel(id,pair),unit:id==='kospi'?'pt':'배',precision:id==='kospi'?2:3,start:fields[id](first),end:fields[id](last),delta:{value:snapshot.returns[id]==null?null:snapshot.returns[id]*100,unit:'%'}}))});
   };
-  rangeHud=window.QuantRange?.svg({id:'fear-native-history',element:container.querySelector('svg'),host:container.parentElement,interaction:'external',band:false,primarySeries:activeHistorySeries,domain:plotRows.map(r=>({key:r.date,label:r.date})),series:visibleSeriesIds.map(id=>({id,label:historySnapshotSeriesLabel(id,pair),measure:id==='kospi'?'relative':'pp',scale:id==='kospi'?1:100,unit:id==='kospi'?'pt':'%',points:plotRows.map(r=>({key:r.date,value:historySeriesValue(r,id)}))})),currentIndex:()=>selectedHistoryIndex,onSeriesRequest:(id,ctx)=>{if(ctx.mode==='point'){container._selectIndex?.(ctx.index);updateHistorySeriesView(id)}else{updateHistorySeriesView(id);updateHistoryRange(ctx.selection.start.index,ctx.selection.end.index)}},x:i=>x(i),plotTop:p.priceTop,plotBottom:p.equityBottom,onReset:()=>{container._chartPinnedIndex=periodEndIndex;container._clearRange?.();container.classList.remove('is-exploring')},onSeriesChange:id=>updateHistorySeriesView(id),onTouchMode:enabled=>{container.dataset.quantTouchSelection=String(enabled);container.style.touchAction=enabled?'none':''}});
+  rangeHud=(!window.echarts ? window.QuantRange : null)?.svg({id:'fear-native-history',element:container.querySelector('svg'),host:container.parentElement,interaction:'external',band:false,primarySeries:activeHistorySeries,domain:plotRows.map(r=>({key:r.date,label:r.date})),series:visibleSeriesIds.map(id=>({id,label:historySnapshotSeriesLabel(id,pair),measure:id==='kospi'?'relative':'pp',scale:id==='kospi'?1:100,unit:id==='kospi'?'pt':'%',points:plotRows.map(r=>({key:r.date,value:historySeriesValue(r,id)}))})),currentIndex:()=>selectedHistoryIndex,onSeriesRequest:(id,ctx)=>{if(ctx.mode==='point'){container._selectIndex?.(ctx.index);updateHistorySeriesView(id)}else{updateHistorySeriesView(id);updateHistoryRange(ctx.selection.start.index,ctx.selection.end.index)}},x:i=>x(i),plotTop:p.priceTop,plotBottom:p.equityBottom,onReset:()=>{container._chartPinnedIndex=periodEndIndex;container._clearRange?.();container.classList.remove('is-exploring')},onSeriesChange:id=>updateHistorySeriesView(id),onTouchMode:enabled=>{container.dataset.quantTouchSelection=String(enabled);container.style.touchAction=enabled?'none':''}});
   if(rangeHud)$('#history-selected-snapshot').classList.add('qr-native-readout');
 
   $$("#history-series-controls [data-history-series]").forEach((button) => {
@@ -2322,7 +2327,7 @@ function renderEventVisual(section) {
     return `<text class="event-row-label" x="${p.l - 12}" y="${y + 4}" text-anchor="end">${esc(`${stateLabel} · ${row.horizon}일 · n=${row.eventCount}`)}</text>${interval}${benchmarkMark}${excessInterval}${meanMark}${excessLabel}`;
   }).join("");
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">${ticks}<line class="reference-line" x1="${x(0)}" y1="${p.t}" x2="${x(0)}" y2="${h - p.b}"/>${marks}<line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><text class="axis-title" x="${p.l}" y="14">평균 선행수익률 · 95% CI</text></svg>`;
-  window.QuantRange?.svg({id:'fear-event-ci',element:container.querySelector('svg'),host:container.parentElement,kind:'category',orientation:'vertical',domain:rows.map((r,i)=>({key:String(i),label:(labels[r.state]||r.state)+' · '+r.horizon+'일'})),series:[['mean','평균 수익률',r=>Number(r.mean)],['benchmark','벤치마크',eventBenchmark],['excess','초과 수익률',eventExcess]].map(([id,label,value])=>({id,label,unit:'%',measure:'pp',scale:100,points:rows.map((r,i)=>({key:String(i),value:value(r)}))})),x:i=>rowY(i),plotLeft:p.l,plotRight:w-p.r});
+  (!window.echarts ? window.QuantRange : null)?.svg({id:'fear-event-ci',element:container.querySelector('svg'),host:container.parentElement,kind:'category',orientation:'vertical',domain:rows.map((r,i)=>({key:String(i),label:(labels[r.state]||r.state)+' · '+r.horizon+'일'})),series:[['mean','평균 수익률',r=>Number(r.mean)],['benchmark','벤치마크',eventBenchmark],['excess','초과 수익률',eventExcess]].map(([id,label,value])=>({id,label,unit:'%',measure:'pp',scale:100,points:rows.map((r,i)=>({key:String(i),value:value(r)}))})),x:i=>rowY(i),plotLeft:p.l,plotRight:w-p.r});
   container.setAttribute("aria-label", `${store.eventAsset} ${rows.length}개 사건 요약. 평균과 95% 신뢰구간${hasBenchmark ? ", 비교 벤치마크" : ""}${hasExcess ? ", 초과수익" : ""}.`);
   attachScatterNavigation(container, geometry, (row) => `${labels[row.state] || row.state} ${row.horizon}일, 평균 ${fmt.signedPct(row.mean)}, 95% 신뢰구간 ${fmt.pct(row.meanCi95?.[0])}에서 ${fmt.pct(row.meanCi95?.[1])}, 사건 ${row.eventCount}개${eventBenchmark(row) == null ? "" : `, 벤치마크 ${fmt.signedPct(eventBenchmark(row))}`}${eventExcess(row) == null ? "" : `, 초과수익 ${fmt.signedPct(eventExcess(row))}`}`, { width: w, height: h });
   $("#event-benchmark-legend").hidden = !hasBenchmark;
@@ -2937,7 +2942,7 @@ function renderDiagnostics() {
   const dateAxis = chartDateAxis(rows, x, { top: p.t, bottom: h - p.b, labelY: h - 19, maxTicks: 5 });
   container.innerHTML = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="chart-panel-bg" x="${p.l}" y="${p.t}" width="${w - p.l - p.r}" height="${h - p.t - p.b}"/>${dateAxis}${ticks}${reference}<line class="axis-line" x1="${p.l}" y1="${p.t}" x2="${p.l}" y2="${h - p.b}"/><line class="axis-line" x1="${p.l}" y1="${h - p.b}" x2="${w - p.r}" y2="${h - p.b}"/><g data-qr-series-id="${field}" class="line-accent">${pathSegments(rows, field, x, y)}</g><text class="panel-title" x="${p.l}" y="19">${field === "muHynixRelativeSpread" ? "MU 대비 하이닉스 상대 스프레드 (지수포인트)" : "MU / 하이닉스 비율지수"}</text><text class="axis-unit" x="${w - p.r}" y="19" text-anchor="end">${field === "muHynixRelativeSpread" ? "미국 선행 세션 · 환율 환산" : "시작 = 100"}</text><text class="axis-title" x="${(p.l + w - p.r) / 2}" y="${h - 4}" text-anchor="middle">날짜 (KRX 거래일)</text></svg>`;
   container.setAttribute("aria-label", `${rows[0].date}부터 ${rows.at(-1).date}까지 선택 평가 기간의 ${field === "muHynixRelativeSpread" ? "Micron 대비 SK하이닉스 상대 스프레드" : "Micron 대 SK하이닉스 비율지수"}. 기간 끝 관측 ${formatValue(rows.at(-1)[field])}.`);
-  window.QuantRange?.svg({id:'fear-diagnostics',element:container.querySelector('svg'),host:container.parentElement,domain:rows.map(r=>({key:r.date,label:r.date})),series:[{id:field,label:field==='muHynixRelativeSpread'?'상대 스프레드':'비율지수',unit:'pt',measure:field==='muHynixRelativeSpread'?'absolute':'relative',scale:1,points:rows.map(r=>({key:r.date,value:r[field]}))}],x:i=>x(i),plotTop:p.t,plotBottom:h-p.b});
+  (!window.echarts ? window.QuantRange : null)?.svg({id:'fear-diagnostics',element:container.querySelector('svg'),host:container.parentElement,domain:rows.map(r=>({key:r.date,label:r.date})),series:[{id:field,label:field==='muHynixRelativeSpread'?'상대 스프레드':'비율지수',unit:'pt',measure:field==='muHynixRelativeSpread'?'absolute':'relative',scale:1,points:rows.map(r=>({key:r.date,value:r[field]}))}],x:i=>x(i),plotTop:p.t,plotBottom:h-p.b});
   attachChartNavigation(container, rows, (row) => `${row.date}, ${field === "muHynixRelativeSpread" ? "상대 스프레드" : "비율지수"} ${formatValue(row[field])}`, { viewBoxWidth: w, plotLeft: p.l, plotRight: w - p.r });
 }
 
