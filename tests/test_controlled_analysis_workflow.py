@@ -143,14 +143,15 @@ def test_controlled_workflow_scopes_callback_secrets_and_reports_failure() -> No
     assert "--proto '=https'" in failure_callback
 
 
-def test_controlled_workflow_does_not_replace_periodic_or_public_workflows() -> None:
+def test_controlled_workflow_preserves_manual_and_public_workflows_after_retirement() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "\n  schedule:" not in workflow
     assert "KRX_API_KEY" not in workflow
     assert "KRX_ID" not in workflow
     assert "KRX_PW" not in workflow
 
-    for filename in ("refresh.yml", "live-signal.yml", "pages.yml"):
+    assert not (ROOT / ".github" / "workflows" / "refresh.yml").exists()
+    for filename in ("live-signal.yml", "pages.yml"):
         existing = (ROOT / ".github" / "workflows" / filename).read_text(encoding="utf-8")
         assert "fearngreed.control_run" not in existing
         assert "analysis_inputs_json" not in existing
